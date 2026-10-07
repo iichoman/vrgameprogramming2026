@@ -1,0 +1,84 @@
+{
+  "source": "car models\\Camry_Converted\\FrontDoorParts\\p2000352_395_frontdoorouter.obj",
+  "note": "Outer-shell edge samples, not OEM gauges. Body anchors are virtual 3mm references; not sampled body surfaces. Import maps OBJ (x,y,z) to Unreal (x,-y,z).",
+  "stations": [
+    {
+      "name": "FrontLower",
+      "door_m": [
+        -1.410073,
+        0.8948711,
+        0.4122391
+      ],
+      "gap_direction_body": [
+        1,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "FrontMiddle",
+      "door_m": [
+        -1.382913,
+        0.9010469,
+        0.6340009
+      ],
+      "gap_direction_body": [
+        1,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "FrontUpper",
+      "door_m": [
+        -1.384805,
+        0.8688184,
+        0.8417408
+      ],
+      "gap_direction_body": [
+        1,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "RearLower",
+      "door_m": [
+        -2.55861,
+        0.8819941,
+        0.4041635
+      ],
+      "gap_direction_body": [
+        -1,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "RearMiddle",
+      "door_m": [
+        -2.537814,
+        0.9103438,
+        0.6274379
+      ],
+      "gap_direction_body": [
+        -1,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "RearUpper",
+      "door_m": [
+        -2.560677,
+        0.8955,
+        0.8483335
+      ],
+      "gap_direction_body": [
+        -1,
+        0,
+        0
+      ]
+    }
+  ]
+}

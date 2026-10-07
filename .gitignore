@@ -1,0 +1,32 @@
+# Share only the Unreal project, Markdown documents, and Git configuration.
+*
+!*/
+!*.md
+!/.gitignore
+!/.gitattributes
+!/unreal projects/test1/**
+
+# Unreal-generated build products, caches, and saved editor data.
+/unreal projects/test1/**/Binaries/
+/unreal projects/test1/**/Intermediate/
+/unreal projects/test1/**/Intermediate.Before*/
+/unreal projects/test1/**/DerivedDataCache/
+/unreal projects/test1/**/Saved/
+
+# Local IDE state and generated solution files.
+/unreal projects/test1/**/.vs/
+/unreal projects/test1/**/.idea/
+/unreal projects/test1/**/.vscode/
+/unreal projects/test1/**/*.sln
+/unreal projects/test1/**/*.slnx
+/unreal projects/test1/**/*.suo
+/unreal projects/test1/**/*.user
+/unreal projects/test1/**/*.VC.db
+/unreal projects/test1/**/*.VC.opendb
+
+# Python caches and operating-system metadata.
+**/__pycache__/
+**/*.pyc
+**/.DS_Store
+**/Thumbs.db
+**/desktop.ini
