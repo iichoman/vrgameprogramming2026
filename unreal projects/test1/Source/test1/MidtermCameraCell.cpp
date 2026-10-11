@@ -56,20 +56,25 @@ void AMidtermCameraCell::BeginPlay()
 			Joints.Add(Found);
 			RestRotations.Add(Found ? Found->GetRelativeRotation() : FRotator::ZeroRotator);
 		}
+		for (USceneComponent* Component : Components)
+		{
+			if (Component && Component->GetFName() == TEXT("TCP_Estimate")) { Tool = Component; break; }
+		}
 	}
 	bSensorReady = ConfigureSensor();
+	bCarryReady = ConfigureCarry();
 	ResetDemo();
 	if (FParse::Param(FCommandLine::Get(), TEXT("MidtermAutoTest")))
 	{
 		StartNormal();
-		Tick(0.3f);
-		const bool bNormal = State == EMidtermCellState::UpperHinge && FMath::Abs(CameraMeasuredErrorMm) <= StopThresholdMm;
+		for (int32 Step = 0; Step < 100 && State != EMidtermCellState::Complete && State != EMidtermCellState::Stopped; ++Step) Tick(0.1f);
+		const bool bNormal = State == EMidtermCellState::Complete && FMath::Abs(CameraMeasuredErrorMm) <= StopThresholdMm;
 		StartMisaligned();
-		Tick(0.3f);
+		for (int32 Step = 0; Step < 100 && State != EMidtermCellState::Complete && State != EMidtermCellState::Stopped; ++Step) Tick(0.1f);
 		const bool bFault = State == EMidtermCellState::Stopped && FMath::Abs(CameraMeasuredErrorMm) > StopThresholdMm;
 		ResetDemo();
-		UE_LOG(LogTemp, Display, TEXT("MIDTERM_AUTO_TEST %s normal=%d fault=%d joints=%d"),
-			bNormal && bFault && Joints.Num() == 6 ? TEXT("PASS") : TEXT("FAIL"), bNormal, bFault, Joints.Num());
+		UE_LOG(LogTemp, Display, TEXT("MIDTERM_AUTO_TEST %s normal=%d fault=%d pickup_cm=%.2f mount_cm=%.2f"),
+			bNormal && bFault && bCarryReady ? TEXT("PASS") : TEXT("FAIL"), bNormal, bFault, PickupReachErrorCm, MountReachErrorCm);
 		FPlatformMisc::RequestExit(false);
 	}
 }
@@ -88,6 +93,8 @@ bool AMidtermCameraCell::ConfigureSensor()
 		return false;
 	}
 	Pose->RestoreReferencePose();
+	DoorPose = Pose;
+	ReferenceDoorWorld = Pose->GetReferencePoseInBody() * Assembly->GetBodyFrame()->GetComponentTransform();
 	ReferenceMarkerWorld = Assembly->GetLeftDoor()->GetComponentLocation();
 	const FTransform Body = Assembly->GetBodyFrame()->GetComponentTransform();
 	const FVector CameraWorld = ReferenceMarkerWorld + Body.TransformVectorNoScale(FVector(120, -180, 70));
@@ -99,6 +106,100 @@ bool AMidtermCameraCell::ConfigureSensor()
 	CameraFeed->UpdateResourceImmediate(true);
 	Camera->TextureTarget = CameraFeed;
 	return true;
+}
+
+void AMidtermCameraCell::SetJointAngles(const TArray<double>& Angles)
+{
+	if (Angles.Num() != 6 || Joints.Num() != 6) return;
+	for (int32 Index = 0; Index < 6; ++Index)
+	{
+		if (!Joints[Index].IsValid()) continue;
+		FRotator Offset = FRotator::ZeroRotator;
+		if (Index == 0 || Index == 3 || Index == 5) Offset.Yaw = Angles[Index];
+		else Offset.Pitch = Angles[Index];
+		Joints[Index]->SetRelativeRotation(RestRotations[Index] + Offset);
+	}
+}
+
+bool AMidtermCameraCell::SolveTarget(const FVector& TargetWorld, TArray<double>& OutAngles, double& OutErrorCm)
+{
+	if (!Tool.IsValid()) return false;
+	TArray<double> Best; Best.Init(0.0, 6);
+	OutErrorCm = TNumericLimits<double>::Max();
+	const double Seeds[][3] = {{0,0,0},{90,0,0},{-90,0,0},{0,40,-40},{0,-40,40},{90,40,-40},{-90,-40,40}};
+	for (const auto& Seed : Seeds)
+	{
+		TArray<double> Angles; Angles.Init(0.0, 6);
+		Angles[0] = Seed[0]; Angles[1] = Seed[1]; Angles[2] = Seed[2];
+		for (int32 Iteration = 0; Iteration < 120; ++Iteration)
+		{
+			SetJointAngles(Angles);
+			const FVector Current = Tool->GetComponentLocation();
+			const FVector Error = TargetWorld - Current;
+			const double Distance = Error.Size();
+			if (Distance < OutErrorCm) { OutErrorCm = Distance; Best = Angles; }
+			if (Distance < 1.5) break;
+			FVector Columns[6];
+			for (int32 Axis = 0; Axis < 6; ++Axis)
+			{
+				Angles[Axis] += 0.5;
+				SetJointAngles(Angles);
+				Columns[Axis] = (Tool->GetComponentLocation() - Current) * 2.0;
+				Angles[Axis] -= 0.5;
+			}
+			double A[3][4] = {};
+			for (int32 Row = 0; Row < 3; ++Row)
+			{
+				for (int32 Col = 0; Col < 3; ++Col)
+				{
+					A[Row][Col] = Row == Col ? 0.25 : 0.0;
+					for (const FVector& J : Columns) A[Row][Col] += J[Row] * J[Col];
+				}
+				A[Row][3] = Error[Row];
+			}
+			for (int32 Pivot = 0; Pivot < 3; ++Pivot)
+			{
+				const double Divisor = A[Pivot][Pivot];
+				if (FMath::Abs(Divisor) < 1.e-9) break;
+				for (int32 Col = Pivot; Col < 4; ++Col) A[Pivot][Col] /= Divisor;
+				for (int32 Row = 0; Row < 3; ++Row) if (Row != Pivot)
+				{
+					const double Factor = A[Row][Pivot];
+					for (int32 Col = Pivot; Col < 4; ++Col) A[Row][Col] -= Factor * A[Pivot][Col];
+				}
+			}
+			const FVector Correction(A[0][3], A[1][3], A[2][3]);
+			for (int32 Axis = 0; Axis < 6; ++Axis)
+			{
+				Angles[Axis] = FMath::Clamp(Angles[Axis] + FMath::Clamp(FVector::DotProduct(Columns[Axis], Correction), -8.0, 8.0), -150.0, 150.0);
+			}
+		}
+	}
+	OutAngles = Best;
+	SetJointAngles(Best);
+	return OutErrorCm <= 10.0;
+}
+
+bool AMidtermCameraCell::ConfigureCarry()
+{
+	if (!bSensorReady || !Robot || !Tool.IsValid() || !DoorPose.IsValid() || Joints.Num() != 6) return false;
+	for (const auto& Joint : Joints) if (!Joint.IsValid()) return false;
+	const FVector BodyY = Assembly->GetBodyFrame()->GetComponentTransform().TransformVectorNoScale(FVector::RightVector);
+	PickupWorld = ReferenceMarkerWorld - BodyY * PickupOutwardDistanceCm;
+	Robot->SetActorRotation(FRotator(0.0, 180.0, 0.0));
+	const bool bPickup = SolveTarget(PickupWorld + GripOffsetWorld, PickupAngles, PickupReachErrorCm);
+	const bool bMount = SolveTarget(ReferenceMarkerWorld + GripOffsetWorld, MountAngles, MountReachErrorCm);
+	TArray<double> Rest; Rest.Init(0.0, 6); SetJointAngles(Rest);
+	UE_LOG(LogTemp, Display, TEXT("MIDTERM_REACH pickup=%.2fcm mount=%.2fcm"), PickupReachErrorCm, MountReachErrorCm);
+	return bPickup && bMount;
+}
+
+void AMidtermCameraCell::MoveDoorTo(const FVector& WorldLocation)
+{
+	if (!DoorPose.IsValid()) return;
+	FTransform Pose = ReferenceDoorWorld;
+	Pose.SetLocation(WorldLocation);
+	DoorPose->SetDoorWorldPose(Pose);
 }
 
 bool AMidtermCameraCell::ObserveDoor()
@@ -137,20 +238,13 @@ bool AMidtermCameraCell::ObserveDoor()
 
 void AMidtermCameraCell::Start(bool bMisaligned)
 {
-	if (!bSensorReady || !Assembly) { State = EMidtermCellState::Stopped; Status = TEXT("STOP: sensor not ready"); return; }
-	UDoorPoseComponent* Pose = Assembly->GetDoorPoseController(ECamryDoorSide::Left);
-	if (!Pose || !Pose->ApplyReferenceOffsetMm(FVector(0, bMisaligned ? -InjectedErrorMm : 0.0, 0)))
-	{
-		State = EMidtermCellState::Stopped; Status = TEXT("STOP: failed to position door"); return;
-	}
-	SetJointPose(0.0, false);
-	State = EMidtermCellState::Verify;
+	if (!bSensorReady || !bCarryReady) { State = EMidtermCellState::Stopped; Status = TEXT("STOP: camera or robot reach not ready"); return; }
+	ResetDemo();
+	bFaultRequested = bMisaligned;
+	State = EMidtermCellState::ApproachPickup;
 	StateSeconds = 0.0;
-	Status = bMisaligned
-		? FString::Printf(TEXT("FAULT REQUESTED: door Y offset -%.1f mm; camera verifying"), InjectedErrorMm)
-		: TEXT("NORMAL REQUESTED: camera verifying door position");
-	UE_LOG(LogTemp, Display, TEXT("MIDTERM_DEMO_INPUT scenario=%s door_y_offset_mm=%.2f"),
-		bMisaligned ? TEXT("fault") : TEXT("normal"), bMisaligned ? -InjectedErrorMm : 0.0);
+	Status = TEXT("Robot approaching staged door");
+	UE_LOG(LogTemp, Display, TEXT("MIDTERM_DEMO_INPUT scenario=%s"), bMisaligned ? TEXT("fault") : TEXT("normal"));
 }
 
 void AMidtermCameraCell::StartNormal() { Start(false); }
@@ -161,65 +255,62 @@ void AMidtermCameraCell::HandleResetKey() { ResetDemo(); }
 
 void AMidtermCameraCell::ResetDemo()
 {
-	if (Assembly)
-	{
-		if (UDoorPoseComponent* Pose = Assembly->GetDoorPoseController(ECamryDoorSide::Left)) Pose->RestoreReferencePose();
-	}
-	SetJointPose(0.0, false);
+	if (DoorPose.IsValid()) MoveDoorTo(PickupWorld);
+	TArray<double> Rest; Rest.Init(0.0, 6); SetJointAngles(Rest);
 	State = EMidtermCellState::Idle;
 	StateSeconds = 0.0;
 	CameraMeasuredErrorMm = 0.0;
-	Status = bSensorReady ? TEXT("Idle: 1 normal, 2 door error, R reset") : TEXT("STOP: sensor not ready");
+	bGripped = false;
+	bFaultRequested = false;
+	Status = bSensorReady && bCarryReady ? TEXT("Door staged: 1 normal, 2 fault, R reset") : TEXT("STOP: camera or robot reach not ready");
 }
 
-void AMidtermCameraCell::SetJointPose(double Alpha, bool bLower)
-{
-	if (Joints.Num() != 6 || RestRotations.Num() != 6) return;
-	// Small illustrative motion only. Exact hinge TCP poses still need calibration.
-	for (int32 Index = 0; Index < 6; ++Index)
-	{
-		if (!Joints[Index].IsValid()) continue;
-		FRotator Offset = FRotator::ZeroRotator;
-		if (Index == 0) Offset.Yaw = bLower ? FMath::Lerp(11.0, 17.0, Alpha) : 11.0;
-		if (Index == 1) Offset.Roll = bLower ? FMath::Lerp(8.0, -8.0, Alpha) : 8.0;
-		if (Index == 2) Offset.Roll = bLower ? FMath::Lerp(-6.0, 6.0, Alpha) : -6.0;
-		Joints[Index]->SetRelativeRotation(RestRotations[Index] + Offset * (bLower ? 1.0 : Alpha));
-	}
-}
-
-void AMidtermCameraCell::DriveRobot(float DeltaSeconds)
+void AMidtermCameraCell::UpdateSequence(float DeltaSeconds)
 {
 	StateSeconds += DeltaSeconds;
-	if (State == EMidtermCellState::UpperHinge)
+	if (State == EMidtermCellState::ApproachPickup || State == EMidtermCellState::Carry)
 	{
-		SetJointPose(FMath::Clamp(StateSeconds / 2.0, 0.0, 1.0), false);
-		if (StateSeconds >= 2.0) { State = EMidtermCellState::LowerHinge; StateSeconds = 0.0; Status = TEXT("Upper station complete; moving to lower station"); }
+		const bool bCarrying = State == EMidtermCellState::Carry;
+		const double Alpha = FMath::Clamp(StateSeconds / (bCarrying ? 3.0 : 2.0), 0.0, 1.0);
+		TArray<double> Angles; Angles.Init(0.0, 6);
+		for (int32 Index = 0; Index < 6; ++Index)
+			Angles[Index] = bCarrying ? FMath::Lerp(PickupAngles[Index], MountAngles[Index], Alpha) : FMath::Lerp(0.0, PickupAngles[Index], Alpha);
+		SetJointAngles(Angles);
+		if (bGripped && Tool.IsValid()) MoveDoorTo(Tool->GetComponentLocation() - GripOffsetWorld);
+		if (Alpha >= 1.0)
+		{
+			State = bCarrying ? EMidtermCellState::Verify : EMidtermCellState::Grip;
+			StateSeconds = 0.0;
+			Status = bCarrying ? TEXT("Door at body; camera checking alignment") : TEXT("Robot at pickup; gripping door");
+			if (bCarrying && DoorPose.IsValid())
+			{
+				DoorPose->ApplyReferenceOffsetMm(FVector(0, bFaultRequested ? -InjectedErrorMm : 0.0, 0));
+				bGripped = false;
+			}
+		}
 	}
-	else if (State == EMidtermCellState::LowerHinge)
+	else if (State == EMidtermCellState::Grip && StateSeconds >= 0.5)
 	{
-		SetJointPose(FMath::Clamp(StateSeconds / 2.0, 0.0, 1.0), true);
-		if (StateSeconds >= 2.0) { State = EMidtermCellState::Complete; Status = TEXT("Demo sequence complete (fastening events only)"); }
+		bGripped = true;
+		State = EMidtermCellState::Carry; StateSeconds = 0.0;
+		Status = TEXT("Door gripped; carrying to body");
+	}
+	else if (State == EMidtermCellState::Verify && StateSeconds >= 0.25)
+	{
+		if (!ObserveDoor()) State = EMidtermCellState::Stopped;
+		else if (FMath::Abs(CameraMeasuredErrorMm) > StopThresholdMm)
+		{
+			State = EMidtermCellState::Stopped;
+			Status = FString::Printf(TEXT("STOP: door Y error %.2f mm > %.2f mm"), CameraMeasuredErrorMm, StopThresholdMm);
+		}
+		else { State = EMidtermCellState::Complete; Status = TEXT("Door placed at reference pose; camera PASS"); }
 	}
 }
 
 void AMidtermCameraCell::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
-	if (State == EMidtermCellState::Verify)
-	{
-		StateSeconds += DeltaSeconds;
-		if (StateSeconds >= 0.25)
-		{
-			if (!ObserveDoor()) { State = EMidtermCellState::Stopped; }
-			else if (FMath::Abs(CameraMeasuredErrorMm) > StopThresholdMm)
-			{
-				State = EMidtermCellState::Stopped;
-				Status = FString::Printf(TEXT("STOP: camera error %.2f mm > %.2f mm"), CameraMeasuredErrorMm, StopThresholdMm);
-			}
-			else { State = EMidtermCellState::UpperHinge; StateSeconds = 0.0; Status = TEXT("Camera PASS; upper station"); }
-		}
-	}
-	else if (State == EMidtermCellState::UpperHinge || State == EMidtermCellState::LowerHinge) DriveRobot(DeltaSeconds);
+	if (State != EMidtermCellState::Idle && State != EMidtermCellState::Complete && State != EMidtermCellState::Stopped) UpdateSequence(DeltaSeconds);
 	ShowStatus();
 }
 
