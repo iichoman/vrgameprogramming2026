@@ -41,6 +41,8 @@ public:
 	UDoorInspectionComponent();
 	void Configure(UDoorPoseComponent* InPose, USceneComponent* InBody, const TArray<UTextRenderComponent*>& InLabels);
 	UFUNCTION() bool RefreshMeasurements();
+	/** Pure virtual gauge evaluation; does not change the door, baseline or displayed results. */
+	bool EvaluateDoorPose(const FTransform& DoorWorld, TArray<FDoorInspectionResult>& Out) const;
 	UPROPERTY(EditInstanceOnly, Category="Inspection") TArray<FDoorInspectionPoint> Points;
 	UPROPERTY(EditAnywhere, Category="Inspection") bool bShowInspection = true;
 	UPROPERTY(VisibleAnywhere, Category="Inspection") FString MeasurementModel = TEXT("Approximate signed changes from baseline. Virtual body anchors; not OEM gaps or sensor readings.");

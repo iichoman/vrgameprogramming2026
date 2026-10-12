@@ -80,39 +80,9 @@ void UDoorInspectionComponent::TickComponent(float DeltaTime, ELevelTick TickTyp
 bool UDoorInspectionComponent::RefreshMeasurements()
 {
 	TArray<FDoorInspectionResult> Next;
-	bool Valid = Pose && BodyFrame && Pose->GetControlledDoor() && Points.Num()>0;
-	FTransform BodyWorld, DoorWorld;
-	if (Valid)
-	{
-		BodyWorld = BodyFrame->GetComponentTransform();
-		DoorWorld = Pose->GetControlledDoor()->GetComponentTransform();
-		Valid = BodyWorld.IsValid() && DoorWorld.IsValid()
-			&& BodyWorld.GetScale3D().Equals(FVector::OneVector,1.e-6)
-			&& DoorWorld.GetScale3D().Equals(FVector::OneVector,1.e-6);
-	}
-	if (Valid) for (const auto& P : Points)
-	{
-		if (P.DoorPointLocalCm.ContainsNaN() || P.BodyPointLocalCm.ContainsNaN() || P.ReferenceDoorPointBodyCm.ContainsNaN()
-			|| P.GapDirectionBody.ContainsNaN() || P.FlushDirectionBody.ContainsNaN()
-			|| P.GapDirectionBody.IsNearlyZero() || P.FlushDirectionBody.IsNearlyZero()
-			|| FMath::Abs(FVector::DotProduct(P.GapDirectionBody.GetSafeNormal(),P.FlushDirectionBody.GetSafeNormal()))>1.e-4)
-		{ Valid=false; break; }
-		FDoorInspectionResult R;
-		R.Name=P.Name;
-		R.DoorWorld=DoorWorld.TransformPosition(P.DoorPointLocalCm);
-		R.BodyWorld=BodyWorld.TransformPosition(P.BodyPointLocalCm);
-		const FVector CurrentDoorBody=BodyWorld.InverseTransformPosition(R.DoorWorld);
-		const FVector Gap=P.GapDirectionBody.GetSafeNormal(), Flush=P.FlushDirectionBody.GetSafeNormal();
-		const double CurrentGap=FVector::DotProduct(P.BodyPointLocalCm-CurrentDoorBody,Gap);
-		const double BaselineGap=FVector::DotProduct(P.BodyPointLocalCm-P.ReferenceDoorPointBodyCm,Gap);
-		const double CurrentFlush=FVector::DotProduct(CurrentDoorBody-P.BodyPointLocalCm,Flush);
-		const double BaselineFlush=FVector::DotProduct(P.ReferenceDoorPointBodyCm-P.BodyPointLocalCm,Flush);
-		R.GapChangeMm=(CurrentGap-BaselineGap)*10;
-		R.FlushChangeMm=(CurrentFlush-BaselineFlush)*10;
-		R.GapWorld=BodyWorld.TransformVectorNoScale(Gap);
-		R.FlushWorld=BodyWorld.TransformVectorNoScale(Flush);
-		Next.Add(R);
-	}
+	const bool Valid = Pose && Pose->GetControlledDoor()
+		&& EvaluateDoorPose(Pose->GetControlledDoor()->GetComponentTransform(), Next);
+	const FTransform BodyWorld = BodyFrame ? BodyFrame->GetComponentTransform() : FTransform::Identity;
 	if (!Valid) Next.Reset();
 	bool Changed = bMeasurementsValid!=Valid || Measurements.Num()!=Next.Num();
 	if (!Changed) for (int32 i=0;i<Next.Num();++i)
@@ -138,6 +108,32 @@ bool UDoorInspectionComponent::RefreshMeasurements()
 	SetVisibility(bShowInspection);
 	if (Changed && IsRegistered()) { UpdateBounds(); MarkRenderStateDirty(); }
 	return Valid;
+}
+
+bool UDoorInspectionComponent::EvaluateDoorPose(const FTransform& DoorWorld, TArray<FDoorInspectionResult>& Out) const
+{
+	Out.Reset();
+	if (!IsValid(BodyFrame) || Points.Num()==0 || !DoorWorld.IsValid()
+		|| !DoorWorld.GetScale3D().Equals(FVector::OneVector,1.e-6)) return false;
+	const FTransform BodyWorld=BodyFrame->GetComponentTransform();
+	if (!BodyWorld.IsValid() || !BodyWorld.GetScale3D().Equals(FVector::OneVector,1.e-6)) return false;
+	for (const auto& P:Points)
+	{
+		if (P.DoorPointLocalCm.ContainsNaN() || P.BodyPointLocalCm.ContainsNaN() || P.ReferenceDoorPointBodyCm.ContainsNaN()
+			|| P.GapDirectionBody.ContainsNaN() || P.FlushDirectionBody.ContainsNaN()
+			|| P.GapDirectionBody.IsNearlyZero() || P.FlushDirectionBody.IsNearlyZero()
+			|| FMath::Abs(FVector::DotProduct(P.GapDirectionBody.GetSafeNormal(),P.FlushDirectionBody.GetSafeNormal()))>1.e-4)
+		{ Out.Reset(); return false; }
+		FDoorInspectionResult R; R.Name=P.Name;
+		R.DoorWorld=DoorWorld.TransformPosition(P.DoorPointLocalCm);
+		R.BodyWorld=BodyWorld.TransformPosition(P.BodyPointLocalCm);
+		const FVector Delta=BodyWorld.InverseTransformPosition(R.DoorWorld)-P.ReferenceDoorPointBodyCm;
+		R.GapChangeMm=-FVector::DotProduct(Delta,P.GapDirectionBody.GetSafeNormal())*10;
+		R.FlushChangeMm=FVector::DotProduct(Delta,P.FlushDirectionBody.GetSafeNormal())*10;
+		R.GapWorld=BodyWorld.TransformVectorNoScale(P.GapDirectionBody.GetSafeNormal());
+		R.FlushWorld=BodyWorld.TransformVectorNoScale(P.FlushDirectionBody.GetSafeNormal()); Out.Add(R);
+	}
+	return true;
 }
 
 FPrimitiveSceneProxy* UDoorInspectionComponent::CreateSceneProxy()
