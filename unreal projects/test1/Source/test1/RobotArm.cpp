@@ -107,6 +107,36 @@ bool ARobotArm::CommandTCPWorld(const FTransform& World)
 	LastStatus=TEXT("IK solved; tracking joint trajectory with PID."); UpdateVisuals(); return true;
 }
 
+bool ARobotArm::CommandJointDegrees(const TArray<double>& AnglesDegrees)
+{
+	if (!bInitialized || AnglesDegrees.Num() != Definitions.Num())
+	{ LastStatus = TEXT("Invalid joint-space target."); return false; }
+	TArray<double> NewTargets;
+	for (int32 Index = 0; Index < AnglesDegrees.Num(); ++Index)
+	{
+		const double Value = FMath::DegreesToRadians(AnglesDegrees[Index]);
+		if (!FMath::IsFinite(Value) || Value < Definitions[Index].MinRadians || Value > Definitions[Index].MaxRadians)
+		{ LastStatus = TEXT("Joint-space target exceeds calibrated range."); return false; }
+		NewTargets.Add(Value);
+	}
+	SegmentStart = Angles; Targets = MoveTemp(NewTargets); SegmentElapsed = 0; SegmentDuration = 0.25;
+	for (int32 Index = 0; Index < Targets.Num(); ++Index)
+	{
+		const double Travel = FMath::Abs(Targets[Index] - Angles[Index]);
+		SegmentDuration = FMath::Max(SegmentDuration, 1.875 * Travel / Definitions[Index].MaxVelocityRadians);
+		SegmentDuration = FMath::Max(SegmentDuration, FMath::Sqrt(6 * Travel / Definitions[Index].MaxAccelerationRadians));
+	}
+	LastStatus = TEXT("Tracking calibrated joint-space transit with PID.");
+	UpdateVisuals(); return true;
+}
+
+FTransform ARobotArm::GetTargetTCPWorld() const
+{
+	FTransform Local;
+	return bInitialized && FRobotKinematics::ForwardKinematics(Definitions, Targets, ToolInLastJointCm, Local)
+		? Local * GetActorTransform() : GetActorTransform();
+}
+
 bool ARobotArm::StepControl(double Dt)
 {
 	if (!bInitialized || !FMath::IsFinite(Dt) || Dt<=0 || Dt>0.1

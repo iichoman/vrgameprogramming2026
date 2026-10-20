@@ -53,6 +53,9 @@ public:
 	UFUNCTION() bool InitializeArm();
 	UFUNCTION() FTransform GetTCPWorld() const;
 	UFUNCTION() bool CommandTCPWorld(const FTransform& TargetWorld);
+	/** Smooth joint-space transit between calibrated station poses. Angles are degrees. */
+	UFUNCTION() bool CommandJointDegrees(const TArray<double>& AnglesDegrees);
+	UFUNCTION() FTransform GetTargetTCPWorld() const;
 	UFUNCTION() bool StepControl(double DeltaSeconds);
 	UFUNCTION() void Halt();
 	UFUNCTION() bool IsAtJointTarget(double ToleranceDegrees = 0.1) const;
