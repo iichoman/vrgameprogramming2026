@@ -105,7 +105,8 @@ namespace
 								return FText::FromString(FString::Printf(TEXT("상황: %s / 제어: %s / 결과: %s\n좌측: %s    우측: %s\n장착: %d/4    경과: %.2f초\n%s"),
 									*ScenarioLabel(Cell->Scenario), Cell->ControlMode == EWheelControlMode::Basic ? TEXT("기본") : TEXT("독립 검증"),
 									*OutcomeLabel(Cell->Outcome), *Cell->GetLaneStage(true), *Cell->GetLaneStage(false),
-									Cell->MountedCount, Cell->SimulationTimeSeconds, *Cell->Status));
+									Cell->MountedCount, Cell->SimulationTimeSeconds,
+									*(Cell->bEnableTransport ? FString::Printf(TEXT("차체 운반 %.0f%% · %s"), Cell->TransportProgress * 100, *Cell->Status) : Cell->Status)));
 							})
 						]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 10)
@@ -207,7 +208,9 @@ void AWheelAssemblyPlayerController::StopAssembly() { if (IsValid(Cell)) Cell->S
 void AWheelAssemblyPlayerController::ResetAssembly() { if (IsValid(Cell)) Cell->ResetCycle(); }
 void AWheelAssemblyPlayerController::ResetCamera()
 {
-	const FVector Offset(430, -650, 320);
+	const bool bTransport = IsValid(Cell) && Cell->bEnableTransport;
+	Focus = bTransport ? FVector(-250, 0, 70) : FVector(0, 0, 70);
+	const FVector Offset = bTransport ? FVector(850, -1200, 650) : FVector(430, -650, 320);
 	Distance = Offset.Length(); Orbit = Offset.Rotation(); UpdateCamera();
 }
 void AWheelAssemblyPlayerController::UpdateCamera()

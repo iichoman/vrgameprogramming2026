@@ -41,6 +41,14 @@ class TEST1_API AWheelAssemblyCell : public AActor
 	GENERATED_BODY()
 public:
 	AWheelAssemblyCell();
+	/** CAD carriage is moved with the vehicle; rails and robots remain fixed. */
+	UPROPERTY(EditAnywhere, Category="Wheel Cell|Transport") bool bEnableTransport = false;
+	UPROPERTY(EditInstanceOnly, Category="Wheel Cell|Transport") TObjectPtr<AActor> TransportCarriage;
+	UPROPERTY(EditAnywhere, Category="Wheel Cell|Transport", meta=(Units="cm")) FVector TransportStartOffsetCm = FVector(-600, 0, 0);
+	UPROPERTY(EditAnywhere, Category="Wheel Cell|Transport", meta=(Units="s")) double TransportSeconds = 8;
+	UPROPERTY(EditAnywhere, Category="Wheel Cell|Transport", meta=(Units="s")) double DockSettleSeconds = 1;
+	UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Transport") bool bTransporting = false;
+	UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Transport") double TransportProgress = 0;
 	UPROPERTY(EditInstanceOnly, Category="Wheel Cell|References") TObjectPtr<ACamryAssembly> Assembly;
 	UPROPERTY(EditInstanceOnly, Category="Wheel Cell|References") TObjectPtr<ARobotArm> LeftRobot;
 	UPROPERTY(EditInstanceOnly, Category="Wheel Cell|References") TObjectPtr<ARobotArm> RightRobot;
@@ -103,6 +111,13 @@ private:
 	FTransform RobotAtStart[2];
 	double Accumulator = 0;
 	bool bRunning = false;
+	bool bStationCaptured = false;
+	FTransform VehicleAtStation;
+	FTransform CarriageAtStation;
+	FTransform ExpectedVehicle;
+	FTransform ExpectedCarriage;
+	double TransportTime = 0;
+	void SetTransportProgress(double Progress);
 	bool ValidateSetup();
 	void Fail(const FString& Reason);
 	void SetStage(int32 Side, EWheelStage Next, const FString& Message);

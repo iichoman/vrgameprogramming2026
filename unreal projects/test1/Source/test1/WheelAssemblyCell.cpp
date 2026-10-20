@@ -55,7 +55,8 @@ FTransform AWheelAssemblyCell::GetPickupWorld(int32 Index) const
 	if (!IsValid(Assembly) || !Assembly->GetBodyFrame() || Index < 0 || Index > 3) return FTransform::Identity;
 	const double X = Index % 2 == 0 ? FrontXcm : RearXcm;
 	const double Y = Index < 2 ? -PickupHalfTrackCm : PickupHalfTrackCm;
-	return FTransform(FRotator::ZeroRotator, FVector(X, Y, HubHeightCm)) * Assembly->GetBodyFrame()->GetComponentTransform();
+	// Wheel racks stay at the station while the vehicle travels toward them.
+	return FTransform(FRotator::ZeroRotator, FVector(X, Y, HubHeightCm)) * (bEnableTransport && bStationCaptured ? BodyAtStart : Assembly->GetBodyFrame()->GetComponentTransform());
 }
 
 FTransform AWheelAssemblyCell::GetWheelWorld(int32 Index) const
@@ -104,8 +105,25 @@ bool AWheelAssemblyCell::ResetCycle()
 	if (LeftRobot) LeftRobot->Halt();
 	if (RightRobot) RightRobot->Halt();
 	bRunning = false;
+	bTransporting = false;
+	if (bStationCaptured && bEnableTransport && IsValid(Assembly) && IsValid(TransportCarriage))
+	{
+		Assembly->SetActorTransform(VehicleAtStation);
+		TransportCarriage->SetActorTransform(CarriageAtStation);
+	}
 	if (!ValidateSetup() || !LeftRobot->InitializeArm() || !RightRobot->InitializeArm())
 	{ Outcome = EWheelOutcome::Blocked; Status += TEXT(" Robot calibration failed or references missing."); return false; }
+	if (bEnableTransport)
+	{
+		if (!IsValid(TransportCarriage) || TransportCarriage == Assembly || TransportCarriage == LeftRobot || TransportCarriage == RightRobot
+			|| TransportStartOffsetCm.ContainsNaN() || TransportStartOffsetCm.IsNearlyZero()
+			|| !FMath::IsFinite(TransportSeconds) || TransportSeconds <= 0
+			|| !FMath::IsFinite(DockSettleSeconds) || DockSettleSeconds < 0)
+		{ Outcome = EWheelOutcome::Blocked; Status = TEXT("Invalid transport carriage, travel or docking settings."); return false; }
+		VehicleAtStation = Assembly->GetActorTransform();
+		CarriageAtStation = TransportCarriage->GetActorTransform();
+		bStationCaptured = true;
+	}
 	MountedCount = 0; SimulationTimeSeconds = 0; Accumulator = 0;
 	Outcome = EWheelOutcome::NotEvaluated;
 	MountPositionErrorMm.Init(0, 4); MountOrientationErrorDeg.Init(0, 4); FastenedWheels.Init(false, 4);
@@ -124,6 +142,8 @@ bool AWheelAssemblyCell::ResetCycle()
 	}
 	for (int32 Side = 0; Side < 2; ++Side) Lanes[Side] = FWheelLane();
 	RefreshQuality();
+	TransportTime = 0; TransportProgress = 0;
+	if (bEnableTransport) SetTransportProgress(0);
 	Status = TEXT("Ready: Enter starts both arms; Space stops; R resets.");
 	return true;
 }
@@ -131,7 +151,11 @@ bool AWheelAssemblyCell::ResetCycle()
 bool AWheelAssemblyCell::StartCycle()
 {
 	if (bRunning || Outcome != EWheelOutcome::NotEvaluated) { Status = TEXT("Reset before starting a new cycle."); return false; }
-	if (!ValidateSetup()) { Fail(Status); return false; }
+	if (!bEnableTransport && !ValidateSetup()) { Fail(Status); return false; }
+	if (bEnableTransport && (!bStationCaptured || !IsValid(Assembly) || !IsValid(TransportCarriage)
+		|| !Assembly->GetActorTransform().Equals(ExpectedVehicle, 1.e-3)
+		|| !TransportCarriage->GetActorTransform().Equals(ExpectedCarriage, 1.e-3)))
+	{ Fail(TEXT("Transport setup changed; reset before starting.")); return false; }
 	if (!bAlignmentSensorValid) { Fail(TEXT("Alignment sensor invalid; both robots remain stopped.")); return false; }
 	for (int32 Index = 0; Index < 4; ++Index)
 	{
@@ -144,6 +168,12 @@ bool AWheelAssemblyCell::StartCycle()
 		{ Fail(TEXT("Pickup blocked: reversed wheel or invalid grasp orientation.")); return false; }
 	}
 	SimulationTimeSeconds = 0; Accumulator = 0; bRunning = true;
+	if (bEnableTransport)
+	{
+		bTransporting = true; TransportTime = 0;
+		Status = TEXT("차체 운반 중 — 도킹 완료 후 타이어 조립을 시작합니다.");
+		return true;
+	}
 	for (int32 Side = 0; Side < 2; ++Side) if (!BeginWheel(Side)) return false;
 	Status = TEXT("Both arms installing front wheels.");
 	return true;
@@ -182,7 +212,7 @@ bool AWheelAssemblyCell::MoveTo(int32 Side, EWheelStage Next, const FTransform& 
 void AWheelAssemblyCell::Fail(const FString& Reason)
 {
 	const FString Saved = Reason;
-	bRunning = false; Outcome = EWheelOutcome::Blocked;
+	bRunning = false; bTransporting = false; Outcome = EWheelOutcome::Blocked;
 	if (LeftRobot) LeftRobot->Halt();
 	if (RightRobot) RightRobot->Halt();
 	for (FWheelLane& Lane : Lanes) if (Lane.Stage != EWheelStage::Complete) Lane.Stage = EWheelStage::Fault;
@@ -192,7 +222,7 @@ void AWheelAssemblyCell::Fail(const FString& Reason)
 void AWheelAssemblyCell::StopCycle()
 {
 	if (!bRunning) return;
-	bRunning = false; Outcome = EWheelOutcome::Stopped;
+	bRunning = false; bTransporting = false; Outcome = EWheelOutcome::Stopped;
 	LeftRobot->Halt(); RightRobot->Halt();
 	for (FWheelLane& Lane : Lanes) if (Lane.Stage != EWheelStage::Complete) Lane.Stage = EWheelStage::Stopped;
 	Status = TEXT("Stopped. Reset to restart; mounted wheels stay in place until reset.");
@@ -333,8 +363,32 @@ bool AWheelAssemblyCell::AdvanceSimulation(double DeltaSeconds)
 	while (bRunning && Accumulator + 1.e-10 >= FixedStepSeconds)
 	{
 		Accumulator -= FixedStepSeconds; SimulationTimeSeconds += FixedStepSeconds;
+		if (bTransporting)
+		{
+			if (!IsValid(Assembly) || !IsValid(TransportCarriage) || !IsValid(LeftRobot) || !IsValid(RightRobot)
+				// Scene components may elide sub-micron moves at the ends of the
+				// smooth trajectory. Allow 0.01 mm, below assembly tolerances.
+				|| !Assembly->GetActorTransform().Equals(ExpectedVehicle, 1.e-3)
+				|| !TransportCarriage->GetActorTransform().Equals(ExpectedCarriage, 1.e-3)
+				|| !LeftRobot->GetActorTransform().Equals(RobotAtStart[0], 1.e-6)
+				|| !RightRobot->GetActorTransform().Equals(RobotAtStart[1], 1.e-6))
+			{ Fail(TEXT("Vehicle, carriage or robot moved externally during transport.")); break; }
+			TransportTime += FixedStepSeconds;
+			const double T = FMath::Clamp(TransportTime / TransportSeconds, 0.0, 1.0);
+			SetTransportProgress(T*T*T*(10 + T*(-15 + 6*T)));
+			Status = T < 1 ? TEXT("차체 운반 중") : TEXT("차체 도킹 · 위치 안정화 중");
+			RefreshQuality();
+			if (TransportTime + 1.e-9 >= TransportSeconds + DockSettleSeconds)
+			{
+				bTransporting = false;
+				for (int32 Side = 0; Side < 2; ++Side) if (!BeginWheel(Side)) break;
+			}
+			continue;
+		}
 		if (!IsValid(Assembly) || !Assembly->GetBodyFrame()
-			|| !Assembly->GetBodyFrame()->GetComponentTransform().Equals(BodyAtStart, 1.e-6)
+			|| !IsValid(LeftRobot) || !IsValid(RightRobot)
+			|| (bEnableTransport && (!IsValid(TransportCarriage) || !TransportCarriage->GetActorTransform().Equals(CarriageAtStation, 1.e-3)))
+			|| !Assembly->GetBodyFrame()->GetComponentTransform().Equals(BodyAtStart, bEnableTransport ? 1.e-3 : 1.e-6)
 			|| !LeftRobot->GetActorTransform().Equals(RobotAtStart[0], 1.e-6)
 			|| !RightRobot->GetActorTransform().Equals(RobotAtStart[1], 1.e-6))
 		{ Fail(TEXT("Vehicle or robot base moved during assembly.")); break; }
@@ -376,7 +430,18 @@ bool AWheelAssemblyCell::SelectScenario(EWheelScenario Preset, EWheelControlMode
 
 FString AWheelAssemblyCell::GetLaneStage(bool bLeft) const
 {
+	if (bTransporting) return TEXT("차체 도착 대기");
 	return StaticEnum<EWheelStage>()->GetNameStringByValue(int64(Lanes[bLeft ? 0 : 1].Stage));
+}
+
+void AWheelAssemblyCell::SetTransportProgress(double Progress)
+{
+	TransportProgress = Progress;
+	const FVector Offset = BodyAtStart.TransformVectorNoScale(TransportStartOffsetCm) * (1 - Progress);
+	ExpectedVehicle = VehicleAtStation; ExpectedVehicle.AddToTranslation(Offset);
+	ExpectedCarriage = CarriageAtStation; ExpectedCarriage.AddToTranslation(Offset);
+	Assembly->SetActorTransform(ExpectedVehicle);
+	TransportCarriage->SetActorTransform(ExpectedCarriage);
 }
 
 void AWheelAssemblyCell::BeginPlay() { Super::BeginPlay(); ResetCycle(); }
