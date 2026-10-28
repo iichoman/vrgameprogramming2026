@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "map": "/Game/DigitalTwin/Maps/factory_p1",
+  "units": "cm",
+  "purpose": "Initial editable space reservations only. Not a measured factory, process simulation, reach study or certified safety layout.",
+  "hall": {"length_cm": 7200, "width_cm": 4000, "reference_height_cm": 700, "floor_top_z_cm": 0, "flow_axis": "+X"},
+  "bays": [
+    {"id": "P01", "center_cm": [600, 0], "title": "01 / INBOUND", "subtitle": "BODY PREP / DOOR OFF"},
+    {"id": "P02", "center_cm": [1800, 0], "title": "02 / TRIM", "subtitle": "WIRING / COCKPIT"},
+    {"id": "P03", "center_cm": [3000, 0], "title": "03 / UNDERBODY", "subtitle": "POWERTRAIN / MARRIAGE"},
+    {"id": "P04", "center_cm": [4200, 0], "title": "04 / WHEELS", "subtitle": "FIRST DETAIL CELL"},
+    {"id": "P05", "center_cm": [5400, 0], "title": "05 / FINISH", "subtitle": "GLASS / SEATS / DOORS"},
+    {"id": "P06", "center_cm": [6600, 0], "title": "06 / INSPECT", "subtitle": "FINAL CHECK / OUT"}
+  ],
+  "side_zones": [
+    {"id": "S01", "center_cm": [600, 1300], "size_cm": [1120, 800], "title": "RECEIVING", "subtitle": "PARTS / KITTING", "material": "Supply"},
+    {"id": "S02", "center_cm": [1800, 1300], "size_cm": [1120, 800], "title": "COCKPIT", "subtitle": "PRE-ASSEMBLY / SUPPLY", "material": "Supply"},
+    {"id": "S03", "center_cm": [3000, 1300], "size_cm": [1120, 800], "title": "POWERTRAIN", "subtitle": "MODULE SUPPLY", "material": "Supply"},
+    {"id": "S04", "center_cm": [4200, 1300], "size_cm": [1120, 800], "title": "WHEEL SUPPLY", "subtitle": "FIRST SUPPLY AREA", "material": "Supply"},
+    {"id": "S05", "center_cm": [5400, 1300], "size_cm": [1120, 800], "title": "FINISH SUPPLY", "subtitle": "GLASS / SEATS / DOORS", "material": "Supply"},
+    {"id": "S06", "center_cm": [6600, 1300], "size_cm": [1120, 800], "title": "OUT BUFFER", "subtitle": "COMPLETED VEHICLES", "material": "Buffer"},
+    {"id": "R01", "center_cm": [1200, -1300], "size_cm": [2320, 800], "title": "DOOR / MODULE PREP", "subtitle": "OFF-LINE SUB-ASSEMBLY RESERVE", "material": "Reserve"},
+    {"id": "R02", "center_cm": [3600, -1300], "size_cm": [2320, 800], "title": "EXPANSION RESERVE", "subtitle": "ALTERNATIVE CELL / SUPPLY / BUFFER", "material": "Reserve"},
+    {"id": "R03", "center_cm": [6000, -1300], "size_cm": [2320, 800], "title": "REWORK / QUALITY", "subtitle": "DIVERSION ROUTE TO BE DESIGNED", "material": "Rework"}
+  ],
+  "palette": {
+    "Floor": [0.20, 0.23, 0.27], "Shell": [0.49, 0.54, 0.60], "Column": [0.27, 0.33, 0.41],
+    "Cell": [0.09, 0.18, 0.25], "Wheel": [0.06, 0.29, 0.35], "Line": [0.43, 0.55, 0.64],
+    "WheelLine": [0.16, 0.80, 0.87], "Route": [0.35, 0.80, 0.92], "Walk": [0.08, 0.25, 0.18],
+    "WalkLine": [0.42, 0.69, 0.48], "Supply": [0.31, 0.23, 0.11], "SupplyLine": [0.90, 0.62, 0.19],
+    "Reserve": [0.23, 0.24, 0.31], "Rework": [0.36, 0.19, 0.12], "Buffer": [0.14, 0.28, 0.26]
+  }
+}
