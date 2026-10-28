@@ -1,4 +1,5 @@
 #include "FactoryRuntime.h"
+#include "AutonomousAssemblyLine.h"
 #include "FactoryEquipment.h"
 #include "FactoryEquipmentRegistry.h"
 #include "FactoryViewport.h"
@@ -44,6 +45,7 @@ void Color(UStaticMeshComponent* C,FLinearColor Value)
 AFactoryRuntime::AFactoryRuntime()
 {
     PrimaryActorTick.bCanEverTick=true;
+    AssemblyProcess=CreateDefaultSubobject<UFactoryAssemblyProcessRunner>(TEXT("AssemblyProcess"));
     WheelProcess=CreateDefaultSubobject<UFactoryWheelProcessRunner>(TEXT("WheelProcess"));
     RootComponent=CreateDefaultSubobject<USceneComponent>(TEXT("FactoryOrigin"));
     RootComponent->SetMobility(EComponentMobility::Movable);
@@ -112,7 +114,7 @@ void AFactoryRuntime::Rebuild(bool bRefreshPanel)
         for(const auto& V:VisualOverrides)if(V.EquipmentKind.ToString()==FFactoryLayout::KindName(Item.Kind))Override=V.Mesh;
         A->Configure(Item,Override);A->SetLabelVisible(Item.Kind==EFactoryItemKind::Zone?bZoneLabels:bEquipmentLabels);Equipment.Add(Item.Id,A);
     }
-    BuildVehicle();ResetCycle();RefreshHighlights();UpdateCamera();bNeedsPanel|=bRefreshPanel;
+    if(!bUseAssemblyIntegration)BuildVehicle();ResetCycle();RefreshHighlights();UpdateCamera();bNeedsPanel|=bRefreshPanel;
 }
 void AFactoryRuntime::BuildPreview()
 {
@@ -132,12 +134,18 @@ bool AFactoryRuntime::VerifySetup() const
 
 void AFactoryRuntime::BeginPlay()
 {
-    Super::BeginPlay();LoadViewSettings();BuildPreview();
+    Super::BeginPlay();
+    if(TestAssemblyLine)TestAssemblyLine->SetActorTickEnabled(false);
+    if(FParse::Param(FCommandLine::Get(),TEXT("FactoryRuntimeAutoTest")))
+    { bUseAssemblyIntegration=false; InitialLayoutJson=FFactoryLayout::Default().ToJson(); }
+    LoadViewSettings();BuildPreview();
+    if(FParse::Param(FCommandLine::Get(),TEXT("FactoryAssemblyAutoTest")))
+    { const bool Ok=RunAssemblyIntegrationChecks(); FPlatformMisc::RequestExitWithStatus(false,Ok?0:1); return; }
     const bool bTest=FParse::Param(FCommandLine::Get(),TEXT("FactoryRuntimeAutoTest"));
     bCapturing=FParse::Param(FCommandLine::Get(),TEXT("FactoryRuntimeCapture"));
     if(bTest){RunChecks();return;}
-    Status=TEXT("편집 모드: 설비를 드래그하거나 속성 값을 변경하세요. 배치는 A/B 슬롯에 따로 저장됩니다.");
-    if(!bCapturing && (IFileManager::Get().FileExists(*SlotPath(TEXT("A")))
+    if(!bUseAssemblyIntegration)Status=TEXT("편집 모드: 설비를 드래그하거나 속성 값을 변경하세요. 배치는 A/B 슬롯에 따로 저장됩니다.");
+    if(!bCapturing && !bUseAssemblyIntegration && (IFileManager::Get().FileExists(*SlotPath(TEXT("A")))
         || IFileManager::Get().FileExists(*(SlotPath(TEXT("A"))+TEXT(".bak")))))LoadLayout(TEXT("A"));
     History.Clear();SavedSnapshot=Layout.ToJson();RefreshDirty();
     auto* PC=UGameplayStatics::GetPlayerController(this,0);
@@ -171,11 +179,11 @@ void AFactoryRuntime::Tick(float Dt)
         if(auto* PC=UGameplayStatics::GetPlayerController(this,0))if(!PC->IsInputKeyDown(EKeys::LeftMouseButton))OnPointerUp();
     }
     */
-    if(Active(RunState))
+    if(Active(RunState)||bUseAssemblyIntegration)
     {
         SimRemainder+=Dt;
         int32 Budget=120;
-        while(SimRemainder>=FixedStep && Budget-->0 && Active(RunState))
+        while(SimRemainder>=FixedStep && Budget-->0 && (Active(RunState)||bUseAssemblyIntegration))
         {SimRemainder-=FixedStep;StepSimulation(FixedStep);}
     }
     if(bNeedsPanel && bInputConfigured && !bDragging){CreatePanel();bNeedsPanel=false;}
@@ -256,6 +264,7 @@ FString AFactoryRuntime::SlotPath(const FString& Slot) const
 {
     if(Slot!=TEXT("A") && Slot!=TEXT("B"))return FString();
     FString Dir=FPaths::ProjectSavedDir()/TEXT("FactoryLayouts");
+    if(bUseAssemblyIntegration)Dir/=TEXT("AssemblyIntegration");
     if(FParse::Param(FCommandLine::Get(),TEXT("FactoryRuntimeAutoTest")))Dir/=TEXT("AutomatedTests");
     return Dir/(TEXT("layout_")+Slot+TEXT(".json"));
 }
@@ -288,11 +297,12 @@ bool AFactoryRuntime::LoadLayout(const FString& Slot)
     if(!FFileHelper::LoadFileToString(Json,*(FromBackup?Path+TEXT(".bak"):Path))){Status=TEXT("저장된 배치 파일을 읽을 수 없습니다.");return false;}
     if(!FFactoryLayout::FromJson(Json,Candidate,Error)){Status=TEXT("불러오기 거부: ")+Error;return false;}
     EnsureRegistry();if(!Registry->Validate(Candidate,Error)){Status=Error;return false;}
+    if(bUseAssemblyIntegration){for(const auto& I:Candidate.Items)if(I.Kind!=EFactoryItemKind::Zone){Status=TEXT("통합 시험용 구역 배치만 불러올 수 있습니다.");return false;}}
     BeginEdit();Layout=MoveTemp(Candidate);SelectedId.Empty();Rebuild();EndEdit();SavedSnapshot=FromBackup?FString():Layout.ToJson();RefreshDirty();FitView();Status=TEXT("배치 ")+Slot+(FromBackup?TEXT(" 백업 복구 완료 · 다시 저장하세요."):TEXT(" 불러오기 완료"));return true;
 }
 void AFactoryRuntime::RestoreDefault()
 {
-    if(!CanEdit())return;BeginEdit();Layout=FFactoryLayout::Default();SelectedId.Empty();Rebuild();FinishDiscreteEdit();FitView();Status=TEXT("기본 배치로 복원했습니다. 저장 파일은 유지됩니다.");
+    if(!CanEdit())return;BeginEdit();if(bUseAssemblyIntegration){FString Error;FFactoryLayout::FromJson(InitialLayoutJson,Layout,Error);}else Layout=FFactoryLayout::Default();SelectedId.Empty();Rebuild();FinishDiscreteEdit();FitView();Status=TEXT("기본 배치로 복원했습니다. 저장 파일은 유지됩니다.");
 }
 bool AFactoryRuntime::PointerOverPanel() const { return false; } // Slate hit testing owns UI isolation.
 bool AFactoryRuntime::PointerOnFloor(FVector& Point) const
@@ -313,7 +323,7 @@ void AFactoryRuntime::UpdateCamera()
     for(const auto& Entry:Equipment)if(Entry.Value)Entry.Value->OrientLabel(ViewCamera->GetActorRotation().Yaw);
 }
 void AFactoryRuntime::FitView(){CameraWidth=FMath::Max(Layout.LengthCm*1.5,Layout.WidthCm*2.4);CameraCentre=Layout.HallOrigin+FVector2D(Layout.LengthCm*.5-CameraWidth*.1,0);CameraYaw=-90;bTopView=true;UpdateCamera();}
-void AFactoryRuntime::FocusWorkcell(){auto* S=Layout.Find(Layout.StationId);CameraCentre=S?S->Position+FVector2D(100,-180):FVector2D(Layout.LengthCm*.5,0);CameraWidth=1800;CameraYaw=90;CameraPitch=-46;bTopView=false;UpdateCamera();}
+void AFactoryRuntime::FocusWorkcell(){if(bUseAssemblyIntegration){CameraCentre=FVector2D(400,-120);CameraWidth=2800;CameraYaw=90;CameraPitch=-40;bTopView=false;UpdateCamera();return;}auto* S=Layout.Find(Layout.StationId);CameraCentre=S?S->Position+FVector2D(100,-180):FVector2D(Layout.LengthCm*.5,0);CameraWidth=1800;CameraYaw=90;CameraPitch=-46;bTopView=false;UpdateCamera();}
 void AFactoryRuntime::ToggleView(){bTopView=!bTopView;UpdateCamera();}
 void AFactoryRuntime::ZoomIn(){CameraWidth=FMath::Max(250.,CameraWidth*.85);UpdateCamera();}
 void AFactoryRuntime::ZoomOut(){CameraWidth=FMath::Min(30000.,CameraWidth/ .85);UpdateCamera();}
@@ -343,6 +353,7 @@ bool AFactoryRuntime::Obstructed(const FVector& A,const FVector& B,FString& Obst
 bool AFactoryRuntime::ValidateRun(FString& Error) const
 {
     if(!Layout.Validate(Error))return false;
+    if(bUseAssemblyIntegration)return AssemblyProcess&&AssemblyProcess->Validate(Error);
     if(!Equipment.FindRef(Layout.StationId).Get()||!Equipment.FindRef(Layout.SupplyId).Get()||!Equipment.FindRef(Layout.HandlerId).Get())
     {Error=TEXT("차량 정지대·휠 공급대·직교 이송장치를 각각 작업에 연결하세요.");return false;}
     for(const auto& I:Layout.Items)if(I.Kind!=EFactoryItemKind::Zone && !Layout.Contains(I))
@@ -353,21 +364,24 @@ bool AFactoryRuntime::ValidateRun(FString& Error) const
         {Error=TEXT("설비 바닥 영역 겹침: ")+Layout.Items[A].DisplayName()+TEXT(" / ")+Layout.Items[B].DisplayName();return false;}
     return WheelProcess&&WheelProcess->Validate(Error);
 }
-bool AFactoryRuntime::StartCycle(){return WheelProcess&&WheelProcess->Start();}
-void AFactoryRuntime::StopCycle(){if(WheelProcess)WheelProcess->Stop();}
-void AFactoryRuntime::ResetCycle(){if(WheelProcess)WheelProcess->Reset();}
-void AFactoryRuntime::StepSimulation(double Dt){if(WheelProcess)WheelProcess->Step(Dt);}
+bool AFactoryRuntime::StartCycle(){return bUseAssemblyIntegration?AssemblyProcess->Start():(WheelProcess&&WheelProcess->Start());}
+void AFactoryRuntime::StopCycle(){if(bUseAssemblyIntegration)AssemblyProcess->Stop();else if(WheelProcess)WheelProcess->Stop();}
+void AFactoryRuntime::ResetCycle(){if(bUseAssemblyIntegration)AssemblyProcess->Reset();else if(WheelProcess)WheelProcess->Reset();}
+void AFactoryRuntime::StepSimulation(double Dt){if(bUseAssemblyIntegration)AssemblyProcess->Step(Dt);else if(WheelProcess)WheelProcess->Step(Dt);}
 FString AFactoryRuntime::StateText() const
 {
+    if(bUseAssemblyIntegration){if(RunState==EFactoryRunState::Complete)return TEXT("조립 시퀀스 완료");if(RunState==EFactoryRunState::Transfer)return TEXT("통합 조립 실행 중");}
     switch(RunState){case EFactoryRunState::Editing:return TEXT("편집");case EFactoryRunState::Approach:return TEXT("공급점 접근");case EFactoryRunState::Pickup:return TEXT("휠 인수");case EFactoryRunState::Lift:return TEXT("휠 상승");case EFactoryRunState::Transfer:return TEXT("운반");case EFactoryRunState::Align:return TEXT("허브 접근");case EFactoryRunState::Verify:return TEXT("정렬·검사");case EFactoryRunState::Complete:return TEXT("정렬 완료");case EFactoryRunState::Stopped:return TEXT("정지");default:return TEXT("이상 중단");}
 }
 FString AFactoryRuntime::BindingText() const
 {
+    if(bUseAssemblyIntegration)return TEXT("고정 통합 셀: 반입 → 도킹 → 휠 4개 → 이송 → 왼쪽 앞문\n설비 개별 이동·복제 연결은 후속 범위");
     auto Name=[&](const FString& Id){auto* I=Layout.Find(Id);return I?I->NameKo:TEXT("미지정");};
     return TEXT("차량: ")+Name(Layout.StationId)+TEXT("\n공급: ")+Name(Layout.SupplyId)+TEXT("\n이송: ")+Name(Layout.HandlerId);
 }
 FString AFactoryRuntime::ValidationText() const
 {
+    if(bUseAssemblyIntegration){FString Error;return ValidateRun(Error)?TEXT("통합 셀 연결 정상 · 고정 배치 기능 시험"):Error;}
     const FString Key=Layout.ToJson();if(Key==ValidationKey&&!ValidationMessage.IsEmpty())return ValidationMessage;
     ValidationKey=Key;FString Error;
     if(!ValidateRun(Error))ValidationMessage=TEXT("실행 조건: ")+Error;

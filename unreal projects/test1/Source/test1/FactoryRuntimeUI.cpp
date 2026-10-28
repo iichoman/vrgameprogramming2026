@@ -119,7 +119,7 @@ void AFactoryRuntime::CreatePanel()
                 })]];
     };
 
-    Heading(TEXT("공장 배치·휠 작업"));
+    Heading(bUseAssemblyIntegration?TEXT("공장·조립 통합 테스트"):TEXT("공장 배치·휠 작업"));
     Rows->AddSlot().AutoHeight().Padding(0, 3)[SNew(STextBlock).Font(Font).ColorAndOpacity(TextColor)
         .Text_Lambda([this]() { return FText::FromString(StateText()
             + (bDirty ? TEXT(" · 저장되지 않은 변경") : TEXT(""))); }).AutoWrapText(true)];
@@ -138,6 +138,7 @@ void AFactoryRuntime::CreatePanel()
             }))]];
     Rows->AddSlot().AutoHeight().Padding(0, 3)[SNew(STextBlock).Font(Font).ColorAndOpacity(TextColor)
         .Text_Lambda([this]() {
+            if(bUseAssemblyIntegration)return FText::FromString(AssemblyMetrics());
             const FString Alignment = RunState == EFactoryRunState::Complete
                 ? FString::Printf(TEXT("%.2fmm"), AlignmentMm) : TEXT("완료 후 표시");
             const FString PreviousCycle = LastCycleSeconds > 0
@@ -150,13 +151,13 @@ void AFactoryRuntime::CreatePanel()
         .ColorAndOpacity(FLinearColor(.99f, .83f, .48f, 1)).Text_Lambda([this]() {
             return FText::FromString(Status);
         }).AutoWrapText(true)];
-    Label(TEXT("IK·관절 PID / 체결·접촉 물리 미포함"));
+    Label(bUseAssemblyIntegration?TEXT("고정 셀 기능 시험 · 구역 편집은 설비를 이동시키지 않음\nIK·PID / 하중·마찰·체결 토크 미포함"):TEXT("IK·관절 PID / 체결·접촉 물리 미포함"));
     Pair(Button(TEXT("실행 취소"),[this](){UndoEdit();},TAttribute<bool>::CreateLambda([this](){return CanUndo();})),
         Button(TEXT("다시 실행"),[this](){RedoEdit();},TAttribute<bool>::CreateLambda([this](){return CanRedo();})));
 
     Heading(TEXT("시점"));
     Pair(Button(TEXT("공장 전체"), [this]() { FitView(); }, true),
-        Button(TEXT("휠 작업 구역"), [this]() { FocusWorkcell(); }, true));
+        Button(bUseAssemblyIntegration?TEXT("통합 작업 구역"):TEXT("휠 작업 구역"), [this]() { FocusWorkcell(); }, true));
     Rows->AddSlot().AutoHeight().Padding(0, 3)[SNew(SButton).IsFocusable(false).ContentPadding(6)
         .OnClicked_Lambda([this]() { ToggleView(); return FReply::Handled(); })[
             SNew(STextBlock).Font(Font).Justification(ETextJustify::Center).Text_Lambda([this]() {
@@ -340,6 +341,7 @@ void AFactoryRuntime::CreatePanel()
     EnsureRegistry();
     for(const auto& D:Registry->All())
     {
+        if(bUseAssemblyIntegration&&D->Kind!=TEXT("zone"))continue;
         if(PaletteCategory!=TEXT("전체")&&D->Category!=PaletteCategory)continue;
         const FString Id=D->TypeId.ToString();
         Cards->AddSlot().AutoWidth().Padding(0,8,8,5)[SNew(SBox).WidthOverride(170).HeightOverride(82)[

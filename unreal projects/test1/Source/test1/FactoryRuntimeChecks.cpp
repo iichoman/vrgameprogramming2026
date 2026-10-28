@@ -138,9 +138,9 @@ void AFactoryRuntime::CaptureRuntime(float Dt)
     const FString Dir=FPaths::ProjectSavedDir()/TEXT("FactoryRuntimePreview");
     IFileManager::Get().MakeDirectory(*Dir,true);
     if(!bUIProbeDone&&CaptureClock>2){bUIProbePassed=RunUIChecks();bUIProbeDone=true;}
-    if(CaptureStage==0&&CaptureClock>3){FitView();CaptureStage=1;}
+    if(CaptureStage==0&&CaptureClock>3){if(bUseAssemblyIntegration)FocusWorkcell();else FitView();CaptureStage=1;}
     if(CaptureStage==1&&CaptureClock>6){FScreenshotRequest::RequestScreenshot(Dir/TEXT("Layout_Korean.png"),true,false);CaptureStage=2;}
-    if(CaptureStage==2&&CaptureClock>9){Layout=FFactoryLayout::Default();Rebuild();FocusWorkcell();StartCycle();CaptureStage=3;}
+    if(CaptureStage==2&&CaptureClock>9){if(!bUseAssemblyIntegration){Layout=FFactoryLayout::Default();Rebuild();}FocusWorkcell();if(StartCycle())CaptureStage=3;}
     if(CaptureStage==3&&RunState==EFactoryRunState::Complete){CaptureStage=4;CaptureClock=0;}
     if(CaptureStage==4&&CaptureClock>3){FScreenshotRequest::RequestScreenshot(Dir/TEXT("Wheel_Complete_Korean.png"),true,false);CaptureStage=5;}
     if(CaptureStage==5&&CaptureClock>6)
@@ -150,5 +150,5 @@ void AFactoryRuntime::CaptureRuntime(float Dt)
         FString Json;FJsonSerializer::Serialize(Report,TJsonWriterFactory<>::Create(&Json));FFileHelper::SaveStringToFile(Json,*(Dir/TEXT("report.json")));
         FPlatformMisc::RequestExitWithStatus(false,Report->GetBoolField(TEXT("success"))?0:1);
     }
-    if(CaptureClock>150)FPlatformMisc::RequestExitWithStatus(false,1);
+    if(CaptureClock>(bUseAssemblyIntegration?420:150))FPlatformMisc::RequestExitWithStatus(false,1);
 }

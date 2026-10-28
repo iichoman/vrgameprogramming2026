@@ -1,4 +1,28 @@
-# factory_p1 — 공장 편집기와 휠 작업
+# factory_p1 — 공장 편집기와 조립 통합 테스트
+
+## 2026-10-28 통합 시험 모드
+
+현재 저장된 맵은 `AutonomousAssemblyLine`의 네이티브 설비를 복제한 **고정 배치 기능 통합 시험**이다. 아래 기존 단일 휠 편집 예제 설명은 `bUseAssemblyIntegration=false`인 기존 모드에 해당한다.
+
+1. `factory_p1`을 열고 Play한다. 왼쪽 제목은 **공장·조립 통합 테스트**다.
+2. 센서 초기 갱신(약 0.1초) 후 **작업 실행**을 누른다.
+3. 차체 반입 → 도킹 확인 → 양쪽 로봇의 휠 4개 작업 → 차체 이송 → 세 번째 로봇의 왼쪽 앞문 작업을 확인한다.
+4. **정지**는 반입 중 감속을 명령한다. **편집 복귀**는 차량·로봇·센서·공정을 초기화한다.
+5. **통합 작업 구역**으로 카메라를 되돌릴 수 있다. 기존 우클릭 회전·휠클릭 이동·휠 확대/축소는 유지한다.
+
+고장 주입·복구는 팀원 코드의 난수 시드를 사용한다. 일부 실행에서 타이어 누락·센서 끊김·파지 실패 등의 대기와 복구가 보이는 것이 정상이다.
+
+이번 모드에서 하단 추가 도구는 구역만 제공한다. 로봇·레일·차체는 고정 테스트 셀이며 구역을 옮겨도 따라 움직이지 않는다. 개별 설비 자유 배치·복제·레시피 연결은 아직 지원하지 않는다. 구역 배치는 `Saved/FactoryLayouts/AssemblyIntegration/layout_A.json` 또는 `layout_B.json`에 수동 저장/로드한다. 기존 단일 휠 A/B 저장 파일은 자동 로드하지 않는다.
+
+원본 `AutonomousAssemblyLine` 맵은 변경하지 않는다. 이전 factory 맵은 `Saved/FactoryRuntimeBackups/assembly_integration_<날짜시각>/factory_p1.umap`에 백업한다. 백업은 Git 공유 대상이 아니며 이전 커밋으로도 원본을 확인할 수 있다.
+
+`Scripts/RunFactoryAssemblyTest.ps1 -Mode Test`는 새 프로세스에서 통합 검사를 실행한다. `-Mode Capture`는 화면·Slate 입력 검사와 전체 조립 사이클을 실행하고 `Saved/FactoryRuntimePreview`에 화면을 저장한다. `-Mode Install`은 최초 이식용이며 이미 통합된 맵의 재실행을 거부한다.
+
+검증 결과(2026-10-28): 통합 검사 12개, 기존 모드 회귀 검사 50개, Slate 입력 검사 8개 통과. 서로 다른 3개 시드에서 휠 4개·왼쪽 앞문 작업 완료를 확인했다. 기존 모드 회귀 검사는 `-Mode Regression`으로 실행한다. 결과는 `Saved/FactoryAssemblyIntegrationReport.json`, `FactoryRuntimeTestReport.json`, `FactoryEditorUIReport.json`에 저장한다. Slate 검사는 프로그램 생성 입력을 사용하며 수동 조작·패키징 검증을 대신하지 않는다.
+
+센서는 현재 장면 좌표/상태를 표본화하는 가상 센서다. PID는 간소화된 관절 응답이고 파지·체결·레일은 하중/마찰/체결 토크를 계산하지 않는다. 통합 성공을 물리 검증 완료로 해석하지 않는다.
+
+---
 
 수정일: 2026-10-27
 

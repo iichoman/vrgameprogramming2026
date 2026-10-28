@@ -38,7 +38,7 @@ bool AFactoryRuntime::RunUIChecks()
     Mouse(Canvas,Canvas+FVector2D(40,20),EKeys::RightMouseButton);
     Check(TEXT("right_mouse_drag_orbits_camera"),!FMath::IsNearlyEqual(CameraYaw,OldYaw)||!FMath::IsNearlyEqual(CameraPitch,OldPitch));
     CameraCentre=Centre;CameraYaw=OldYaw;CameraPitch=OldPitch;UpdateCamera();
-    const FString Initial=Layout.ToJson();SelectedId=Layout.SupplyId;bSnap=false;
+    const FString Initial=Layout.ToJson();SelectedId=bUseAssemblyIntegration?Layout.Items[0].Id:Layout.SupplyId;bSnap=false;
     SetSelectedPosition(Selected()->Position.X/100+.5,Selected()->Position.Y/100);
     App.SetKeyboardFocus(ViewportSurface.ToSharedRef(),EFocusCause::SetDirectly);
     const FModifierKeysState Ctrl(false,false,true,false,false,false,false,false,false);

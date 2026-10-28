@@ -46,13 +46,13 @@ void AFactoryRuntime::CancelEdit()
 void AFactoryRuntime::SelectHall(){if(!CanEdit())return;CancelEdit();SelectedId.Empty();bHallSelected=true;RefreshHighlights();bNeedsPanel=true;}
 void AFactoryRuntime::BeginPlacement(const FString& Id)
 {
-    if(!CanEdit())return;CancelEdit();EnsureRegistry();const auto* D=Registry->Find(Id);if(!D)return;
+    if(!CanEdit())return;CancelEdit();EnsureRegistry();const auto* D=Registry->Find(Id);if(!D)return;if(bUseAssemblyIntegration&&D->Kind!=TEXT("zone")){Status=TEXT("통합 시험에서는 구역만 추가할 수 있습니다.");return;}
     PendingTypeId=Id;bCreateZone=D->Kind==TEXT("zone");bHallSelected=false;
     Status=bCreateZone?TEXT("바닥에서 드래그하여 구역 만들기 · Esc 취소"):D->NameKo+TEXT(": 바닥을 클릭해 배치 · Esc 취소");
 }
 void AFactoryRuntime::AddRegisteredItem(const FString& Id,const FVector2D& Point)
 {
-    if(!CanEdit()||Layout.Items.Num()>=128)return;EnsureRegistry();const auto* D=Registry->Find(Id);if(!D)return;
+    if(!CanEdit()||Layout.Items.Num()>=128)return;EnsureRegistry();const auto* D=Registry->Find(Id);if(!D)return;if(bUseAssemblyIntegration&&D->Kind!=TEXT("zone")){Status=TEXT("통합 시험에서는 구역만 추가할 수 있습니다.");return;}
     BeginEdit();FFactoryLayoutItem Item;Item.Id=TEXT("item_")+FGuid::NewGuid().ToString(EGuidFormats::Digits);
     Item.TypeId=Id;Item.NameKo=D->NameKo;Item.NameEn=D->NameEn;Item.Size=D->FootprintCm;
     FFactoryLayout::ParseKind(D->Kind,Item.Kind);Item.Position=Point;

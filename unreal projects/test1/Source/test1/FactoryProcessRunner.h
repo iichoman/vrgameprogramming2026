@@ -41,3 +41,17 @@ private:
     bool bHolding=false;
     double StateSeconds=0;
 };
+
+/** Fixed-layout team cell adapter. Owns scheduling, not robot/sensor algorithms. */
+UCLASS(NotBlueprintable)
+class TEST1_API UFactoryAssemblyProcessRunner : public UFactoryProcessRunner
+{
+    GENERATED_BODY()
+public:
+    virtual FName OperationType() const override { return TEXT("assembly_line_test"); }
+    virtual bool Validate(FString& Error) const override;
+    virtual bool Start() override;
+    virtual void Stop() override;
+    virtual void Reset() override;
+    virtual void Step(double Dt) override;
+};
