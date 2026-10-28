@@ -161,6 +161,7 @@ void AFactoryRuntime::Tick(float Dt)
 {
     Super::Tick(Dt);
     EditorTick();
+    if(WheelProcess)WheelProcess->DrawFeatureVisualization();
     /* Legacy input replaced by the Slate viewport surface.
     if(bDragging && CanEdit())
     {

@@ -3,6 +3,7 @@
 #include "FactoryMotionController.h"
 #include "FactoryRobotEquipment.h"
 #include "FactoryEquipmentRegistry.h"
+#include "FactoryProcessRunner.h"
 #include "Components/WidgetComponent.h"
 #include "Components/SceneComponent.h"
 #include "Dom/JsonObject.h"
@@ -123,6 +124,42 @@ void AFactoryRuntime::RunChecks()
     AddItem(EFactoryItemKind::ArticulatedRobot);auto* SecondRobot=Equipment.FindRef(SelectedId).Get();
     Check(TEXT("two_robot_instances_have_independent_controller_state"),SecondRobot&&SecondRobot->Controller()!=Equipment.FindRef(Layout.HandlerId)->Controller());
     ResetCycle();Layout=FFactoryLayout::Default();Rebuild();
+    const FString FeatureLayout=Layout.ToJson();
+    for(int32 Kind=0;Kind<5;++Kind)
+    {
+        ResetCycle();bool Started=WheelProcess->StartFeatureCheck(Kind);
+        bool Restored=false;
+        for(int32 I=0;I<120*90&&RunState!=EFactoryRunState::Complete&&RunState!=EFactoryRunState::Fault;++I)
+        {
+            StepSimulation(1./120);
+            if(!Restored&&((Kind==1||Kind==2)?SimulationSeconds>1:Kind==3&&WheelProcess->GripRetries>=2))
+            {WheelProcess->RestoreFeatureInputs();Restored=true;}
+        }
+        const FString Name=FString::Printf(TEXT("ported_feature_%d_observed_and_completed"),Kind);
+        UE_LOG(LogTemp,Display,TEXT("FEATURE %d %s / %s"),Kind,*WheelProcess->FeatureSummary(),*Status);
+        Check(*Name,Started&&WheelProcess->FeaturePassed()&&Layout.ToJson()==FeatureLayout);
+    }
+    ResetCycle();WheelProcess->StartFeatureCheck(1);
+    for(int32 I=0;I<120*6;++I)StepSimulation(1./120);
+    Check(TEXT("ported_missing_supply_times_out_without_pickup"),RunState==EFactoryRunState::Fault&&TravelCm==0&&!WheelProcess->FeaturePassed());
+    ResetCycle();WheelProcess->StartFeatureCheck(3);Finish();
+    Check(TEXT("ported_grip_failure_retry_limit_blocks_lift"),RunState==EFactoryRunState::Fault&&WheelProcess->GripRetries==7&&TravelCm==0);
+    ResetCycle();WheelProcess->StartFeatureCheck(0);
+    for(int32 I=0;I<120*40&&RunState!=EFactoryRunState::Lift&&RunState!=EFactoryRunState::Fault;++I)StepSimulation(1./120);
+    const bool Held=RunState==EFactoryRunState::Lift;WheelProcess->InterruptFeaturePose();
+    for(int32 I=0;I<120;++I)StepSimulation(1./120);
+    WheelProcess->RestoreFeatureInputs();const FTransform HeldStop=WheelRoot->GetComponentTransform();
+    for(int32 I=0;I<120;++I)StepSimulation(1./120);
+    Check(TEXT("ported_held_part_sensor_loss_requires_reset"),Held&&RunState==EFactoryRunState::Fault&&WheelRoot->GetComponentTransform().Equals(HeldStop,.0001));
+    ResetCycle();WheelProcess->StartFeatureCheck(2);for(int32 I=0;I<60;++I)StepSimulation(1./120);
+    StopCycle();WheelProcess->RestoreFeatureInputs();for(int32 I=0;I<120;++I)StepSimulation(1./120);
+    Check(TEXT("ported_wait_stop_cannot_auto_resume"),RunState==EFactoryRunState::Stopped);
+    ResetCycle();Check(TEXT("ported_reset_restores_visibility_and_legacy_execution"),WheelRoot->IsVisible()&&!WheelProcess->FeaturesEnabled()&&StartCycle()&&Finish());
+    ResetCycle();
+    FFactoryTransferSensors SensorA,SensorB;
+    SensorA.PublishPose=false;SensorA.Sample(1,true,FVector::ZeroVector,FVector::ZeroVector);
+    SensorB.Sample(1,true,FVector::ZeroVector,FVector::ZeroVector);
+    Check(TEXT("ported_sensor_instances_do_not_share_faults"),!SensorA.Reading.Fresh(1)&&SensorB.Reading.Fresh(1));
     FFileHelper::SaveStringToFile(Layout.ToJson(),*(FPaths::ProjectSavedDir()/TEXT("FactoryDefaultV2.json")),FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
     auto Report=MakeShared<FJsonObject>();Report->SetBoolField(TEXT("success"),Pass);Report->SetArrayField(TEXT("checks"),Checks);Report->SetNumberField(TEXT("baseline_cycle_sim_seconds"),Baseline);
     Report->SetNumberField(TEXT("robot_cycle_seconds"),RobotCycle);

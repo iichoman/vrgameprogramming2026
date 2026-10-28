@@ -3,6 +3,7 @@
 #include "Components/ActorComponent.h"
 #include "FactoryRuntime.h"
 #include "FactoryMotionController.h"
+#include "FactoryTransferSensors.h"
 #include "FactoryProcessRunner.generated.h"
 class UFactoryMotionController;
 
@@ -32,6 +33,17 @@ public:
     virtual void Stop() override;
     virtual void Reset() override;
     virtual void Step(double Dt) override;
+    // Explicit, transient feature checks; no random scenario or layout schema change.
+    bool StartFeatureCheck(int32 Kind);
+    void RestoreFeatureInputs();
+    void InterruptFeaturePose() {if(bSensorFeatures)Sensors.PublishPose=false;}
+    FString FeatureSummary() const;
+    void DrawFeatureVisualization() const;
+    FString VisualizationSummary() const;
+    bool bShowSensors=true, bShowRoute=true;
+    bool FeaturePassed() const;
+    bool FeaturesEnabled() const {return bSensorFeatures;}
+    int32 Replans=0, GripRetries=0, Recoveries=0;
 private:
     AFactoryRuntime* Runtime() const;
     UFactoryMotionController* Controller() const;
@@ -40,4 +52,13 @@ private:
     FFactoryRequestId Pending;
     bool bHolding=false;
     double StateSeconds=0;
+    FFactoryTransferSensors Sensors;
+    FVector ObservedPickup=FVector::ZeroVector;
+    FVector ActiveGoal=FVector::ZeroVector;
+    bool bSensorFeatures=false, bWaiting=false, bObservedFault=false;
+    int32 FeatureKind=0, GripAttempts=0;
+    double WaitSeconds=0, StableSeconds=0, GripSeconds=0;
+    FString FeatureStatus=TEXT("미실행");
+    bool CheckObservations(double Dt);
+    void FeatureFault(const FString& Reason);
 };

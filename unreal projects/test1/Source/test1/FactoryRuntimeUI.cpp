@@ -1,6 +1,7 @@
 #include "FactoryRuntime.h"
 #include "FactoryEquipmentRegistry.h"
 #include "FactoryViewport.h"
+#include "FactoryProcessRunner.h"
 #include "Widgets/Layout/SWrapBox.h"
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
@@ -151,6 +152,33 @@ void AFactoryRuntime::CreatePanel()
             return FText::FromString(Status);
         }).AutoWrapText(true)];
     Label(TEXT("IK·관절 PID / 체결·접촉 물리 미포함"));
+    Heading(TEXT("이식된 기능 검증"));
+    for(int32 Toggle=0;Toggle<2;++Toggle)
+        Rows->AddSlot().AutoHeight().Padding(0,2)[SNew(SCheckBox)
+            .IsChecked_Lambda([this,Toggle](){return WheelProcess&&(Toggle==0?WheelProcess->bShowSensors:WheelProcess->bShowRoute)?ECheckBoxState::Checked:ECheckBoxState::Unchecked;})
+            .OnCheckStateChanged_Lambda([this,Toggle](ECheckBoxState V){if(WheelProcess)(Toggle==0?WheelProcess->bShowSensors:WheelProcess->bShowRoute)=V==ECheckBoxState::Checked;})
+            [SNew(STextBlock).Font(Font).Text(FText::FromString(Toggle==0?TEXT("센서·휠 중심·장착점 표시"):TEXT("작업 경로·현재 목표 표시")))]];
+    Label(TEXT("청록 상자: 가상 센서 기준점\n흰색: 실제 휠 중심 / 노랑: 측정 위치\n빨강: 측정 지연·부품 없음\n초록: 장착점 / 툴 초록: 파지 확인\n파랑: 작업 경유점 / 자홍: 현재 목표\n경로 선은 관절 운동의 실제 궤적이 아닙니다."));
+    Rows->AddSlot().AutoHeight().Padding(0,3)[Button(TEXT("센서·휠 작업 확대"),[this](){FocusWorkcell();},true)];
+    Rows->AddSlot().AutoHeight().Padding(0,3)[SNew(STextBlock).Font(Font).ColorAndOpacity(Accent)
+        .Text_Lambda([this](){return FText::FromString(WheelProcess?WheelProcess->VisualizationSummary():TEXT(""));}).AutoWrapText(true)];
+    Label(TEXT("연결된 로봇·공급대의 휠 작업으로 개별 기능을 확인합니다.\n전체 조립 시나리오·랜덤 사건은 실행하지 않습니다."));
+    const TCHAR* FeatureNames[]={TEXT("센서 정상 확인"),TEXT("부품 없음 → 대기"),TEXT("통신 끊김 → 대기"),TEXT("파지 실패 → 재시도"),TEXT("위치 변화 → 재계산")};
+    for(int32 Kind=0;Kind<5;++Kind)
+        Rows->AddSlot().AutoHeight().Padding(0,2)[Button(FeatureNames[Kind],[this,Kind](){
+            if(WheelProcess)WheelProcess->StartFeatureCheck(Kind);
+        },Editing)];
+    Rows->AddSlot().AutoHeight().Padding(0,3)[Button(TEXT("공급·통신·그리퍼 복원"),[this](){
+        if(WheelProcess)WheelProcess->RestoreFeatureInputs();
+    },TAttribute<bool>::CreateLambda([this](){return WheelProcess&&WheelProcess->FeaturesEnabled()
+        &&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;}))];
+    Label(TEXT("대기 확인 후 5초 안에 복원하세요.\n파지 실패는 재시도 표시 후 복원하세요.\n중단/완료 후 상단 ‘편집 복귀’로 다시 검사합니다."));
+    Rows->AddSlot().AutoHeight().Padding(0,3)[Button(TEXT("운반 중 위치 센서 차단"),[this](){
+        if(WheelProcess)WheelProcess->InterruptFeaturePose();
+    },TAttribute<bool>::CreateLambda([this](){return WheelProcess&&WheelProcess->FeaturesEnabled()
+        &&RunState>=EFactoryRunState::Lift&&RunState<=EFactoryRunState::Verify;}))];
+    Rows->AddSlot().AutoHeight().Padding(0,4)[SNew(STextBlock).Font(Font).ColorAndOpacity(Accent)
+        .Text_Lambda([this](){return FText::FromString(WheelProcess?WheelProcess->FeatureSummary():TEXT("연결 없음"));}).AutoWrapText(true)];
     Pair(Button(TEXT("실행 취소"),[this](){UndoEdit();},TAttribute<bool>::CreateLambda([this](){return CanUndo();})),
         Button(TEXT("다시 실행"),[this](){RedoEdit();},TAttribute<bool>::CreateLambda([this](){return CanRedo();})));
 
