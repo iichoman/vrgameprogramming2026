@@ -5,11 +5,40 @@
 #include "Components/StaticMeshComponent.h"
 #include "UObject/ConstructorHelpers.h"
 
+void UWheelRobotSensorBank::Reset()
+{
+	LastSample = -1; LastWheelIndex = INDEX_NONE; bGripClosed = false; bPublishPickupPose = true; bGripActuatorFault = false;
+	Presence = PickupPose = Gripped = MountPose = FWheelSensorReading();
+}
+
+void UWheelRobotSensorBank::Sample(double Now, const AWheelAssemblyCell* Cell, int32 WheelIndex)
+{
+	if (LastWheelIndex == WheelIndex && LastSample >= 0 && Now - LastSample + 1.e-9 < SamplePeriod) return;
+	LastSample = Now; LastWheelIndex = WheelIndex;
+	const bool Ready = IsValid(Cell) && IsValid(Cell->LeftRobot) && WheelIndex >= 0 && WheelIndex < 2;
+	const bool Present = Ready && Cell->IsWheelVisible(WheelIndex);
+	Presence = FWheelSensorReading(); Presence.bValid = Ready; Presence.bDetected = Present; Presence.MeasuredAt = Now;
+	if (bPublishPickupPose)
+	{
+		PickupPose.bValid = Present; PickupPose.bDetected = Present;
+		PickupPose.Pose = Present ? Cell->GetWheelWorld(WheelIndex) : FTransform::Identity;
+		PickupPose.MeasuredAt = Now;
+	}
+	const FTransform Wheel = Present ? Cell->GetWheelWorld(WheelIndex) : FTransform::Identity;
+	const FTransform TCP = Ready ? Cell->LeftRobot->GetTCPWorld() : FTransform::Identity;
+	const FTransform Contact = Ready ? Cell->LeftTCPInWheel * Wheel : FTransform::Identity;
+	const bool AtContact = Present && FVector::Distance(Contact.GetLocation(), TCP.GetLocation()) * 10 <= Cell->PositionToleranceMm
+		&& FMath::RadiansToDegrees(Contact.GetRotation().AngularDistance(TCP.GetRotation())) <= Cell->OrientationToleranceDeg;
+	Gripped.bValid = Ready; Gripped.bDetected = bGripClosed && !bGripActuatorFault && AtContact; Gripped.MeasuredAt = Now;
+	MountPose.bValid = Present; MountPose.bDetected = Present; MountPose.Pose = Wheel; MountPose.MeasuredAt = Now;
+}
+
 AWheelAssemblyCell::AWheelAssemblyCell()
 {
 	PrimaryActorTick.bCanEverTick = true;
 	CellRoot = CreateDefaultSubobject<USceneComponent>(TEXT("WheelCellRoot"));
 	SetRootComponent(CellRoot);
+	LeftSensors = CreateDefaultSubobject<UWheelRobotSensorBank>(TEXT("LeftRobotSensors"));
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> Cylinder(TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
 	for (int32 Index = 0; Index < 4; ++Index)
 	{
@@ -47,21 +76,65 @@ FTransform AWheelAssemblyCell::GetMountWorld(int32 Index) const
 	if (!IsValid(Assembly) || !Assembly->GetBodyFrame() || Index < 0 || Index > 3) return FTransform::Identity;
 	const double X = Index % 2 == 0 ? FrontXcm : RearXcm;
 	const double Y = Index < 2 ? -HubHalfTrackCm : HubHalfTrackCm;
-	return FTransform(FRotator::ZeroRotator, FVector(X, Y, HubHeightCm)) * Assembly->GetBodyFrame()->GetComponentTransform();
+	return FTransform(FRotator::ZeroRotator, MountCentersCm.Num() == 4 ? MountCentersCm[Index] : FVector(X, Y, HubHeightCm)) * Assembly->GetBodyFrame()->GetComponentTransform();
 }
 
 FTransform AWheelAssemblyCell::GetPickupWorld(int32 Index) const
 {
 	if (!IsValid(Assembly) || !Assembly->GetBodyFrame() || Index < 0 || Index > 3) return FTransform::Identity;
-	const double X = Index % 2 == 0 ? FrontXcm : RearXcm;
+	const double X = MountCentersCm.Num() == 4 ? MountCentersCm[Index].X : (Index % 2 == 0 ? FrontXcm : RearXcm);
 	const double Y = Index < 2 ? -PickupHalfTrackCm : PickupHalfTrackCm;
 	// Wheel racks stay at the station while the vehicle travels toward them.
-	return FTransform(FRotator::ZeroRotator, FVector(X, Y, HubHeightCm)) * (bEnableTransport && bStationCaptured ? BodyAtStart : Assembly->GetBodyFrame()->GetComponentTransform());
+	return FTransform(FRotator::ZeroRotator, FVector(X, Y, MountCentersCm.Num() == 4 ? MountCentersCm[Index].Z : HubHeightCm)) * (bEnableTransport && bStationCaptured ? BodyAtStart : Assembly->GetBodyFrame()->GetComponentTransform());
 }
 
 FTransform AWheelAssemblyCell::GetWheelWorld(int32 Index) const
 {
 	return WheelRoots.IsValidIndex(Index) && WheelRoots[Index] ? WheelRoots[Index]->GetComponentTransform() : FTransform::Identity;
+}
+
+bool AWheelAssemblyCell::IsWheelVisible(int32 Index) const
+{
+	return TireVisuals.IsValidIndex(Index) && IsValid(TireVisuals[Index]) && TireVisuals[Index]->IsVisible();
+}
+
+void AWheelAssemblyCell::InjectLeftWheelMissing()
+{
+	SetLeftWheelSupplyVisible(0, false);
+}
+
+void AWheelAssemblyCell::InjectLeftWheelDisplacement(FVector OffsetCm)
+{
+	DisplaceLeftWheel(0, OffsetCm);
+}
+
+void AWheelAssemblyCell::SetLeftWheelSupplyVisible(int32 Index, bool bVisible)
+{
+	if (Index < 0 || Index > 1 || (FastenedWheels.IsValidIndex(Index) && FastenedWheels[Index])) return;
+	if (TireVisuals.IsValidIndex(Index)) TireVisuals[Index]->SetVisibility(bVisible);
+	if (HubVisuals.IsValidIndex(Index)) HubVisuals[Index]->SetVisibility(bVisible);
+}
+
+void AWheelAssemblyCell::DisplaceLeftWheel(int32 Index, FVector OffsetCm)
+{
+	if (Index >= 0 && Index <= 1 && WheelRoots.IsValidIndex(Index) && WheelRoots[Index]
+		&& !OffsetCm.ContainsNaN() && !(FastenedWheels.IsValidIndex(Index) && FastenedWheels[Index]))
+		WheelRoots[Index]->AddWorldOffset(OffsetCm);
+}
+
+FString AWheelAssemblyCell::GetLeftSensorSummary() const
+{
+	if (!bSensorDrivenLeftRobot || !LeftSensors) return TEXT("왼팔 센서: 비활성");
+	const double Now = SimulationTimeSeconds;
+	const int32 Index = Lanes[0].WheelIndex;
+	const bool PoseFresh = LeftSensors->PickupPose.Fresh(Now, LeftSensors->MaxAge);
+	const bool GripFresh = LeftSensors->Gripped.Fresh(Now, LeftSensors->MaxAge);
+	return FString::Printf(TEXT("왼팔 %s · 타이어 %d · 부품 %s · 위치 %s · 파지 %s · 장착 측정 %s · 재시도 %d"),
+		*GetLaneStage(true), Index + 1,
+		LeftSensors->Presence.Fresh(Now, LeftSensors->MaxAge) ? (LeftSensors->Presence.bDetected ? TEXT("있음") : TEXT("없음")) : TEXT("신호 지연"),
+		PoseFresh ? TEXT("유효") : TEXT("무효/지연"), GripFresh ? (LeftSensors->Gripped.bDetected ? TEXT("확인") : TEXT("미확인")) : TEXT("지연"),
+		LeftSensors->MountPose.Fresh(Now, LeftSensors->MaxAge) ? TEXT("유효") : TEXT("무효/지연"), Lanes[0].GripAttempts)
+		+ FString::Printf(TEXT(" · 경로 재계산 %d · 파지 재시도 %d"), LeftPickupReplans, LeftGripRetries);
 }
 
 FTransform AWheelAssemblyCell::OffsetOutward(const FTransform& Pose, int32 Side, double Centimeters) const
@@ -73,14 +146,20 @@ FTransform AWheelAssemblyCell::OffsetOutward(const FTransform& Pose, int32 Side,
 
 bool AWheelAssemblyCell::ValidateSetup()
 {
+	if (MountCentersCm.Num() != 0 && MountCentersCm.Num() != 4)
+	{ Status = TEXT("Provide all four measured wheel centers or leave the array empty."); return false; }
+	for (const FVector& Center : MountCentersCm) if (Center.ContainsNaN())
+	{ Status = TEXT("Wheel centers must be finite."); return false; }
 	if (!IsValid(Assembly) || !Assembly->GetBodyFrame() || !IsValid(LeftRobot) || !IsValid(RightRobot) || LeftRobot == RightRobot)
 	{ Status = TEXT("Assign one vehicle and two distinct calibrated robots."); return false; }
 	const double Positive[] = {FrontXcm, HubHalfTrackCm, HubHeightCm, PickupHalfTrackCm, PositionToleranceMm,
 		OrientationToleranceDeg, QualityToleranceMm, QualityOrientationDeg, SettleSeconds, FasteningSeconds,
-		StageTimeoutSeconds, FixedStepSeconds, MaxPickupDisplacementMm, MaxPickupRotationDeg};
+		StageTimeoutSeconds, FixedStepSeconds, MaxPickupDisplacementMm, MaxPickupRotationDeg,
+		LeftRecoveryTimeoutSeconds, LeftRecoveryStableSeconds};
 	for (double Value : Positive) if (!FMath::IsFinite(Value) || Value <= 0)
 	{ Status = TEXT("Wheel geometry, control times and tolerances must be positive finite values."); return false; }
 	if (!FMath::IsFinite(RearXcm) || FixedStepSeconds > 0.02 || FaultWheelIndex < 0 || FaultWheelIndex > 3
+		|| MaxAutoGripAttempts < 2
 		|| SensorBiasMm.ContainsNaN() || InitialOffsetMm.ContainsNaN() || InitialRotationDeg.ContainsNaN()
 		|| !LeftTCPInWheel.IsValid() || !RightTCPInWheel.IsValid()
 		|| !LeftTCPInWheel.GetScale3D().Equals(FVector::OneVector, 1.e-6)
@@ -125,6 +204,7 @@ bool AWheelAssemblyCell::ResetCycle()
 		bStationCaptured = true;
 	}
 	MountedCount = 0; SimulationTimeSeconds = 0; Accumulator = 0;
+	LeftPickupReplans = LeftGripRetries = 0;
 	Outcome = EWheelOutcome::NotEvaluated;
 	MountPositionErrorMm.Init(0, 4); MountOrientationErrorDeg.Init(0, 4); FastenedWheels.Init(false, 4);
 	for (int32 Index = 0; Index < 4; ++Index)
@@ -141,6 +221,7 @@ bool AWheelAssemblyCell::ResetCycle()
 		TireVisuals[Index]->SetVisibility(Visible); HubVisuals[Index]->SetVisibility(Visible);
 	}
 	for (int32 Side = 0; Side < 2; ++Side) Lanes[Side] = FWheelLane();
+	if (LeftSensors) LeftSensors->Reset();
 	RefreshQuality();
 	TransportTime = 0; TransportProgress = 0;
 	if (bEnableTransport) SetTransportProgress(0);
@@ -159,7 +240,8 @@ bool AWheelAssemblyCell::StartCycle()
 	if (!bAlignmentSensorValid) { Fail(TEXT("Alignment sensor invalid; both robots remain stopped.")); return false; }
 	for (int32 Index = 0; Index < 4; ++Index)
 	{
-		if (Index == FaultWheelIndex && !bWheelPresent) { Fail(TEXT("Pickup blocked: wheel missing.")); return false; }
+		if (!(bSensorDrivenLeftRobot && Index < 2) && Index == FaultWheelIndex && !bWheelPresent) { Fail(TEXT("Pickup blocked: wheel missing.")); return false; }
+		if (bSensorDrivenLeftRobot && Index < 2) continue;
 		const FTransform Actual = GetWheelWorld(Index), Expected = GetPickupWorld(Index);
 		if (!Actual.IsValid() || !Actual.GetScale3D().Equals(FVector::OneVector, 1.e-6)
 			|| FVector::Distance(Actual.GetLocation(), Expected.GetLocation()) * 10 > MaxPickupDisplacementMm)
@@ -183,8 +265,26 @@ bool AWheelAssemblyCell::BeginWheel(int32 Side)
 {
 	FWheelLane& Lane = Lanes[Side];
 	Lane.WheelIndex = Side * 2 + Lane.Completed;
-	Lane.Pickup = GetWheelWorld(Lane.WheelIndex);
 	Lane.bHeld = false; Lane.bFastened = false; Lane.Corrections = 0;
+	Lane.GripAttempts = 0; Lane.bGripCommanded = false; Lane.GripCommandTime = 0;
+	if (Side == 0 && bSensorDrivenLeftRobot)
+	{
+		if (!LeftSensors) { Fail(TEXT("Left robot sensor bank missing.")); return false; }
+		LeftSensors->CommandGrip(false);
+		LeftSensors->Sample(SimulationTimeSeconds, this, Lane.WheelIndex);
+		if (!LeftSensors->Presence.Fresh(SimulationTimeSeconds, LeftSensors->MaxAge) || !LeftSensors->Presence.bDetected)
+		{
+			if (bAutoRecoverLeftRobot) { WaitForLeftSensor(EWheelStage::WaitSupply, TEXT("Left robot: waiting for wheel supply")); return true; }
+			Fail(TEXT("Left robot: pickup presence sensor reports no wheel.")); return false;
+		}
+		if (!LeftSensors->PickupPose.Fresh(SimulationTimeSeconds, LeftSensors->MaxAge))
+		{
+			if (bAutoRecoverLeftRobot) { WaitForLeftSensor(EWheelStage::WaitPose, TEXT("Left robot: waiting for pickup measurement")); return true; }
+			Fail(TEXT("Left robot: pickup pose measurement unavailable.")); return false;
+		}
+		Lane.Pickup = LeftSensors->PickupPose.Pose;
+	}
+	else Lane.Pickup = GetWheelWorld(Lane.WheelIndex);
 	return MoveTo(Side, EWheelStage::ApproachPickup, OffsetOutward(Lane.Pickup, Side, 25));
 }
 
@@ -207,6 +307,14 @@ bool AWheelAssemblyCell::MoveTo(int32 Side, EWheelStage Next, const FTransform& 
 	}
 	SetStage(Side, Next, StaticEnum<EWheelStage>()->GetNameStringByValue(int64(Next)));
 	return true;
+}
+
+void AWheelAssemblyCell::WaitForLeftSensor(EWheelStage WaitStage, const FString& Message)
+{
+	LeftRobot->Halt();
+	LeftSensors->CommandGrip(false);
+	Lanes[0].bGripCommanded = false;
+	SetStage(0, WaitStage, Message);
 }
 
 void AWheelAssemblyCell::Fail(const FString& Reason)
@@ -244,6 +352,55 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
 	FWheelLane& Lane = Lanes[Side];
 	if (Lane.Stage == EWheelStage::Complete) return;
 	ARobotArm* Robot = RobotFor(Side);
+	const bool SensorDriven = Side == 0 && bSensorDrivenLeftRobot;
+	if (SensorDriven && (Lane.Stage == EWheelStage::WaitSupply || Lane.Stage == EWheelStage::WaitPose))
+	{
+		Lane.StageTime += Dt;
+		if (Lane.StageTime > LeftRecoveryTimeoutSeconds)
+		{ Fail(TEXT("Left robot: supply or sensor recovery timed out.")); return; }
+		const bool Ready = LeftSensors && LeftSensors->Presence.Fresh(SimulationTimeSeconds, LeftSensors->MaxAge)
+			&& LeftSensors->Presence.bDetected && LeftSensors->PickupPose.Fresh(SimulationTimeSeconds, LeftSensors->MaxAge);
+		Lane.StableTime = Ready ? Lane.StableTime + Dt : 0;
+		if (Lane.StableTime < LeftRecoveryStableSeconds) return;
+		const FTransform Measured = LeftSensors->PickupPose.Pose;
+		const FTransform Expected = GetPickupWorld(Lane.WheelIndex);
+		if (FVector::Distance(Measured.GetLocation(), Expected.GetLocation()) * 10 > MaxPickupDisplacementMm
+			|| FMath::RadiansToDegrees(Measured.GetRotation().AngularDistance(Expected.GetRotation())) > MaxPickupRotationDeg)
+		{ Fail(TEXT("Left robot: restored supply is outside pickup range.")); return; }
+		Lane.Pickup = Measured;
+		MoveTo(Side, EWheelStage::ApproachPickup, OffsetOutward(Measured, Side, 25));
+		return;
+	}
+	if (SensorDriven)
+	{
+		if (!LeftSensors || !LeftSensors->Presence.Fresh(SimulationTimeSeconds, LeftSensors->MaxAge) || !LeftSensors->Presence.bDetected)
+		{
+			if (bAutoRecoverLeftRobot && !Lane.bHeld && (Lane.Stage == EWheelStage::ApproachPickup || Lane.Stage == EWheelStage::Grip))
+			{ WaitForLeftSensor(EWheelStage::WaitSupply, TEXT("Left robot: supply missing; request replacement")); return; }
+			Fail(TEXT("Left robot: wheel missing or presence reading stale.")); return;
+		}
+		if (!LeftSensors->PickupPose.Fresh(SimulationTimeSeconds, LeftSensors->MaxAge))
+		{
+			if (bAutoRecoverLeftRobot && !Lane.bHeld && (Lane.Stage == EWheelStage::ApproachPickup || Lane.Stage == EWheelStage::Grip))
+			{ WaitForLeftSensor(EWheelStage::WaitPose, TEXT("Left robot: sensor link stale; waiting for new measurement")); return; }
+			Fail(TEXT("Left robot: pickup pose reading stale.")); return;
+		}
+		if (Lane.bHeld && !Lane.bFastened && (!LeftSensors->Gripped.Fresh(SimulationTimeSeconds, LeftSensors->MaxAge) || !LeftSensors->Gripped.bDetected))
+		{ Fail(TEXT("Left robot: grip lost, both arms stopped.")); return; }
+		if (!Lane.bHeld && (Lane.Stage == EWheelStage::ApproachPickup || Lane.Stage == EWheelStage::Grip)
+			&& !LeftSensors->PickupPose.Pose.Equals(Lane.Pickup, 1.e-5))
+		{
+			const FTransform Measured = LeftSensors->PickupPose.Pose;
+			const FTransform Expected = GetPickupWorld(Lane.WheelIndex);
+			const double OffsetMm = FVector::Distance(Measured.GetLocation(), Expected.GetLocation()) * 10;
+			const double AngleDeg = FMath::RadiansToDegrees(Measured.GetRotation().AngularDistance(Expected.GetRotation()));
+			if (OffsetMm > MaxPickupDisplacementMm || AngleDeg > MaxPickupRotationDeg)
+			{ Fail(TEXT("Left robot: measured wheel outside pickup recovery window.")); return; }
+			Lane.Pickup = Measured; Lane.bGripCommanded = false; LeftSensors->CommandGrip(false); ++LeftPickupReplans;
+			MoveTo(Side, EWheelStage::ApproachPickup, OffsetOutward(Measured, Side, 25));
+			return;
+		}
+	}
 	Lane.StageTime += Dt;
 	if (Lane.StageTime > StageTimeoutSeconds)
 	{
@@ -258,7 +415,7 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
 	}
 	if (Lane.bHeld && !Lane.bFastened && !GetWheelWorld(Lane.WheelIndex).Equals(Lane.LastCarried, 1.e-5))
 	{ Fail(TEXT("Held wheel moved externally.")); return; }
-	if (!Lane.bHeld && (Lane.Stage == EWheelStage::ApproachPickup || Lane.Stage == EWheelStage::Grip)
+	if (!SensorDriven && !Lane.bHeld && (Lane.Stage == EWheelStage::ApproachPickup || Lane.Stage == EWheelStage::Grip)
 		&& !GetWheelWorld(Lane.WheelIndex).Equals(Lane.Pickup, 1.e-5))
 	{ Fail(TEXT("Wheel moved during pickup.")); return; }
 	if (!Robot->StepControl(Dt)) { Fail(TEXT("Robot servo failed.")); return; }
@@ -279,12 +436,14 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
 		if (Lane.StageTime >= FasteningSeconds)
 		{
 			Lane.bFastened = true; FastenedWheels[Lane.WheelIndex] = true; ++MountedCount;
+			FastenedInBody[Lane.WheelIndex] = GetWheelWorld(Lane.WheelIndex).GetRelativeTransform(Assembly->GetBodyFrame()->GetComponentTransform());
 			SetStage(Side, EWheelStage::Release, TEXT("virtual fastening complete"));
 		}
 		return;
 	}
 	if (Lane.Stage == EWheelStage::Release)
 	{
+		if (SensorDriven) LeftSensors->CommandGrip(false);
 		Lane.bHeld = false;
 		MoveTo(Side, EWheelStage::Retract, OffsetOutward(GetWheelWorld(Lane.WheelIndex), Side, 25));
 		return;
@@ -296,6 +455,28 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
 		MoveTo(Side, EWheelStage::Grip, Lane.Pickup); break;
 	case EWheelStage::Grip:
 	{
+		if (SensorDriven)
+		{
+			if (!Lane.bGripCommanded)
+			{
+				LeftSensors->CommandGrip(true); Lane.bGripCommanded = true;
+				Lane.GripCommandTime = SimulationTimeSeconds; ++Lane.GripAttempts;
+				Status = TEXT("Left arm: gripper closed; waiting for grip sensor");
+				break;
+			}
+			if (!LeftSensors->Gripped.Fresh(SimulationTimeSeconds, LeftSensors->MaxAge))
+			{ Fail(TEXT("Left robot: grip reading stale.")); break; }
+			if (!LeftSensors->Gripped.bDetected)
+			{
+				if (SimulationTimeSeconds - Lane.GripCommandTime >= .3)
+				{
+					if (Lane.GripAttempts >= (bAutoRecoverLeftRobot ? MaxAutoGripAttempts : 2))
+						Fail(TEXT("Left robot: grip recovery attempts exhausted."));
+					else { LeftSensors->CommandGrip(false); Lane.bGripCommanded = false; ++LeftGripRetries; Status = TEXT("Left arm: grip not confirmed; retrying"); }
+				}
+				break;
+			}
+		}
 		const FTransform Contact = TCPFor(Side) * Lane.Pickup;
 		if (FVector::Distance(Contact.GetLocation(), CurrentTCP.GetLocation()) * 10 > PositionToleranceMm
 			|| FMath::RadiansToDegrees(Contact.GetRotation().AngularDistance(CurrentTCP.GetRotation())) > OrientationToleranceDeg)
@@ -319,7 +500,10 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
 		MoveTo(Side, EWheelStage::Align, GetMountWorld(Lane.WheelIndex)); break;
 	case EWheelStage::Align:
 	{
-		const FVector Measured = GetWheelWorld(Lane.WheelIndex).GetLocation() + BodyAtStart.TransformVectorNoScale(SensorBiasMm / 10.0);
+		if (SensorDriven && !LeftSensors->MountPose.Fresh(SimulationTimeSeconds, LeftSensors->MaxAge))
+		{ Fail(TEXT("Left robot: mount pose reading stale.")); break; }
+		const FVector Measured = (SensorDriven ? LeftSensors->MountPose.Pose : GetWheelWorld(Lane.WheelIndex)).GetLocation()
+			+ BodyAtStart.TransformVectorNoScale(SensorBiasMm / 10.0);
 		const FVector Residual = GetMountWorld(Lane.WheelIndex).GetLocation() - Measured;
 		if (Residual.Length() * 10 > PositionToleranceMm)
 		{
@@ -332,8 +516,11 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
 		{
 			if (!bVerificationSensorValid) { Fail(TEXT("Independent verification sensor invalid; fastening blocked.")); break; }
 			RefreshQuality();
-			if (MountPositionErrorMm[Lane.WheelIndex] > QualityToleranceMm
-				|| MountOrientationErrorDeg[Lane.WheelIndex] > QualityOrientationDeg)
+			const FTransform Verified = SensorDriven ? LeftSensors->MountPose.Pose : GetWheelWorld(Lane.WheelIndex);
+			const FTransform Mount = GetMountWorld(Lane.WheelIndex);
+			const double VerifiedMm = FVector::Distance(Verified.GetLocation(), Mount.GetLocation()) * 10;
+			const double VerifiedDeg = FMath::RadiansToDegrees(Verified.GetRotation().AngularDistance(Mount.GetRotation()));
+			if (VerifiedMm > QualityToleranceMm || VerifiedDeg > QualityOrientationDeg)
 			{ Fail(TEXT("Independent wheel alignment rejected; fastening blocked.")); break; }
 		}
 		SetStage(Side, EWheelStage::Fasten, TEXT("wheel aligned; virtual fastening")); break;
@@ -358,11 +545,14 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
 bool AWheelAssemblyCell::AdvanceSimulation(double DeltaSeconds)
 {
 	if (!FMath::IsFinite(DeltaSeconds) || DeltaSeconds < 0 || DeltaSeconds > 1 || FixedStepSeconds <= 0 || FixedStepSeconds > 0.02) return false;
+	UpdateFastenedWheels();
 	if (!bRunning) return true;
 	Accumulator += DeltaSeconds;
 	while (bRunning && Accumulator + 1.e-10 >= FixedStepSeconds)
 	{
 		Accumulator -= FixedStepSeconds; SimulationTimeSeconds += FixedStepSeconds;
+		if (bSensorDrivenLeftRobot && LeftSensors && !bTransporting && Lanes[0].WheelIndex >= 0)
+			LeftSensors->Sample(SimulationTimeSeconds, this, Lanes[0].WheelIndex);
 		if (bTransporting)
 		{
 			if (!IsValid(Assembly) || !IsValid(TransportCarriage) || !IsValid(LeftRobot) || !IsValid(RightRobot)
@@ -444,10 +634,18 @@ void AWheelAssemblyCell::SetTransportProgress(double Progress)
 	TransportCarriage->SetActorTransform(ExpectedCarriage);
 }
 
-void AWheelAssemblyCell::BeginPlay() { Super::BeginPlay(); ResetCycle(); }
+void AWheelAssemblyCell::UpdateFastenedWheels()
+{
+	if (!Assembly || !Assembly->GetBodyFrame()) return;
+	for (int32 I=0; I<4; ++I)
+		if (FastenedWheels.IsValidIndex(I) && FastenedWheels[I])
+			WheelRoots[I]->SetWorldTransform(FastenedInBody[I] * Assembly->GetBodyFrame()->GetComponentTransform());
+}
+void AWheelAssemblyCell::BeginPlay() { Super::BeginPlay(); if (!bExternallyDriven) ResetCycle(); }
 void AWheelAssemblyCell::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	if (bExternallyDriven) return;
 	if (DeltaSeconds > 1 && bRunning) { StopCycle(); Status = TEXT("Large frame stall; reset required."); return; }
 	AdvanceSimulation(DeltaSeconds);
 }

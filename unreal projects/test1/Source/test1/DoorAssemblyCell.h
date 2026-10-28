@@ -41,6 +41,7 @@ class TEST1_API ADoorAssemblyCell : public AActor
 	GENERATED_BODY()
 public:
 	ADoorAssemblyCell();
+	UPROPERTY(EditAnywhere, Category="Cell|Setup") bool bExternallyDriven = false;
 	UPROPERTY(EditInstanceOnly, Category="Cell|References") TObjectPtr<ACamryAssembly> Assembly;
 	UPROPERTY(EditInstanceOnly, Category="Cell|References") TObjectPtr<ARobotArm> Robot;
 	/** TCP relative to door, including grasp orientation. Unreal centimeters. */

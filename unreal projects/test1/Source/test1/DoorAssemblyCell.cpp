@@ -277,6 +277,7 @@ void ADoorAssemblyCell::FlushRecording()
 void ADoorAssemblyCell::BeginPlay()
 {
 	Super::BeginPlay();
+	if (bExternallyDriven) return;
 	const bool Preserve=bPreservePlacedDoorOnBeginPlay && (Scenario==EDoorCellScenario::Normal || Scenario==EDoorCellScenario::Custom)
 		&& IsValid(Assembly) && Assembly->GetLeftDoor();
 	const FTransform Placed=Preserve ? Assembly->GetLeftDoor()->GetComponentTransform() : FTransform::Identity;
@@ -287,6 +288,7 @@ void ADoorAssemblyCell::BeginPlay()
 void ADoorAssemblyCell::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	if (bExternallyDriven) return;
 	if (DeltaSeconds>1) { if (Robot) StopCycle(); Status=TEXT("Large frame stall: stopped; reset required."); return; }
 	AdvanceSimulation(DeltaSeconds);
 }

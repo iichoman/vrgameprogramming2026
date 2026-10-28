@@ -2,11 +2,48 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "Components/ActorComponent.h"
 #include "WheelAssemblyCell.generated.h"
 
 class ACamryAssembly;
 class ARobotArm;
 class UStaticMeshComponent;
+class AWheelAssemblyCell;
+
+USTRUCT(BlueprintType)
+struct FWheelSensorReading
+{
+	GENERATED_BODY()
+	UPROPERTY(VisibleAnywhere) bool bValid = false;
+	UPROPERTY(VisibleAnywhere) bool bDetected = false;
+	UPROPERTY(VisibleAnywhere) FTransform Pose = FTransform::Identity;
+	UPROPERTY(VisibleAnywhere) double MeasuredAt = -1;
+	bool Fresh(double Now, double MaxAge) const { return bValid && MeasuredAt >= 0 && Now-MeasuredAt <= MaxAge; }
+};
+
+/** Virtual probes read the scene and gripper plant; they never issue arm commands. */
+UCLASS(ClassGroup=(DigitalTwin), meta=(BlueprintSpawnableComponent))
+class TEST1_API UWheelRobotSensorBank : public UActorComponent
+{
+	GENERATED_BODY()
+public:
+	UPROPERTY(EditAnywhere) double SamplePeriod = .05;
+	UPROPERTY(EditAnywhere) double MaxAge = .25;
+	UPROPERTY(VisibleAnywhere) FWheelSensorReading Presence;
+	UPROPERTY(VisibleAnywhere) FWheelSensorReading PickupPose;
+	UPROPERTY(VisibleAnywhere) FWheelSensorReading Gripped;
+	UPROPERTY(VisibleAnywhere) FWheelSensorReading MountPose;
+	bool bPublishPickupPose = true;
+	bool bGripActuatorFault = false;
+	void Reset();
+	void Sample(double Now, const AWheelAssemblyCell* Cell, int32 WheelIndex);
+	void CommandGrip(bool bClose) { bGripClosed = bClose; }
+	bool IsGripCommandedClosed() const { return bGripClosed; }
+private:
+	double LastSample = -1;
+	int32 LastWheelIndex = INDEX_NONE;
+	bool bGripClosed = false;
+};
 
 UENUM(BlueprintType)
 enum class EWheelScenario : uint8 { Normal, SensorBias, DisplacedWheel, UnreachableWheel, ReversedWheel, MissingWheel, Custom };
@@ -15,7 +52,7 @@ enum class EWheelControlMode : uint8 { Basic, IndependentVerification };
 UENUM(BlueprintType)
 enum class EWheelOutcome : uint8 { NotEvaluated, Pass, QualityFail, Blocked, Stopped };
 UENUM(BlueprintType)
-enum class EWheelStage : uint8 { Idle, ApproachPickup, Grip, Lift, Transfer, ApproachMount, Align, Fasten, Release, Retract, Reposition, Complete, Fault, Stopped };
+enum class EWheelStage : uint8 { Idle, ApproachPickup, Grip, Lift, Transfer, ApproachMount, Align, Fasten, Release, Retract, Reposition, WaitSupply, WaitPose, Complete, Fault, Stopped };
 
 struct FWheelLane
 {
@@ -30,6 +67,9 @@ struct FWheelLane
 	double StageTime = 0;
 	double StableTime = 0;
 	int32 Corrections = 0;
+	int32 GripAttempts = 0;
+	double GripCommandTime = 0;
+	bool bGripCommanded = false;
 	bool bHeld = false;
 	bool bFastened = false;
 };
@@ -41,6 +81,19 @@ class TEST1_API AWheelAssemblyCell : public AActor
 	GENERATED_BODY()
 public:
 	AWheelAssemblyCell();
+	UPROPERTY(EditAnywhere, Category="Wheel Cell|Control") bool bExternallyDriven = false;
+	/** Enable measured decisions on the left robot in the sensor assembly map. */
+	UPROPERTY(EditAnywhere, Category="Wheel Cell|Sensors") bool bSensorDrivenLeftRobot = false;
+	UPROPERTY(EditAnywhere, Category="Wheel Cell|Sensors") bool bAutoRecoverLeftRobot = false;
+	UPROPERTY(EditAnywhere, Category="Wheel Cell|Sensors", meta=(Units="s")) double LeftRecoveryTimeoutSeconds = 5;
+	UPROPERTY(EditAnywhere, Category="Wheel Cell|Sensors", meta=(Units="s")) double LeftRecoveryStableSeconds = .15;
+	UPROPERTY(EditAnywhere, Category="Wheel Cell|Sensors") int32 MaxAutoGripAttempts = 8;
+	UPROPERTY(VisibleAnywhere, Category="Wheel Cell|Sensors") TObjectPtr<UWheelRobotSensorBank> LeftSensors;
+	UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Sensors") int32 LeftPickupReplans = 0;
+	UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Sensors") int32 LeftGripRetries = 0;
+	/** Optional measured module centers, LF/LR/RF/RR, in body centimeters. */
+	UPROPERTY(EditAnywhere, Category="Wheel Cell|Geometry") TArray<FVector> MountCentersCm;
+	UFUNCTION() void UpdateFastenedWheels();
 	/** CAD carriage is moved with the vehicle; rails and robots remain fixed. */
 	UPROPERTY(EditAnywhere, Category="Wheel Cell|Transport") bool bEnableTransport = false;
 	UPROPERTY(EditInstanceOnly, Category="Wheel Cell|Transport") TObjectPtr<AActor> TransportCarriage;
@@ -99,6 +152,14 @@ public:
 	UFUNCTION() FTransform GetPickupWorld(int32 Index) const;
 	UFUNCTION() FString GetLaneStage(bool bLeft) const;
 	UFUNCTION() FTransform GetWheelWorld(int32 Index) const;
+	EWheelStage GetLeftStage() const { return Lanes[0].Stage; }
+	int32 GetActiveLeftWheelIndex() const { return Lanes[0].WheelIndex; }
+	UFUNCTION() bool IsWheelVisible(int32 Index) const;
+	UFUNCTION() FString GetLeftSensorSummary() const;
+	UFUNCTION() void InjectLeftWheelMissing();
+	UFUNCTION() void InjectLeftWheelDisplacement(FVector OffsetCm);
+	void SetLeftWheelSupplyVisible(int32 Index, bool bVisible);
+	void DisplaceLeftWheel(int32 Index, FVector OffsetCm);
 	virtual void BeginPlay() override;
 	virtual void Tick(float DeltaSeconds) override;
 private:
@@ -107,6 +168,7 @@ private:
 	UPROPERTY() TArray<TObjectPtr<UStaticMeshComponent>> TireVisuals;
 	UPROPERTY() TArray<TObjectPtr<UStaticMeshComponent>> HubVisuals;
 	FWheelLane Lanes[2];
+	FTransform FastenedInBody[4];
 	FTransform BodyAtStart;
 	FTransform RobotAtStart[2];
 	double Accumulator = 0;
@@ -128,4 +190,5 @@ private:
 	FTransform TCPFor(int32 Side) const;
 	FTransform OffsetOutward(const FTransform& Pose, int32 Side, double Centimeters) const;
 	bool BeginWheel(int32 Side);
+	void WaitForLeftSensor(EWheelStage WaitStage, const FString& Message);
 };
