@@ -1,0 +1,353 @@
+{
+	"version": 2,
+	"units": "cm",
+	"hall":
+	{
+		"length_cm": 7200,
+		"width_cm": 4000,
+		"origin_cm": [
+			0,
+			0
+		]
+	},
+	"process_order": [
+		"P01",
+		"P02",
+		"P03",
+		"P04",
+		"P05",
+		"P06"
+	],
+	"route_bend_cm": 120,
+	"items": [
+		{
+			"id": "P01",
+			"name_ko": "차체 입고·준비",
+			"name_en": "Inbound / Preparation",
+			"kind": "zone",
+			"type_id": "zone",
+			"role": "work",
+			"position_cm": [
+				600,
+				0
+			],
+			"size_cm": [
+				1160,
+				1040
+			],
+			"yaw_deg": 0
+		},
+		{
+			"id": "P02",
+			"name_ko": "내장 조립",
+			"name_en": "Trim Assembly",
+			"kind": "zone",
+			"type_id": "zone",
+			"role": "work",
+			"position_cm": [
+				1800,
+				0
+			],
+			"size_cm": [
+				1160,
+				1040
+			],
+			"yaw_deg": 0
+		},
+		{
+			"id": "P03",
+			"name_ko": "하부 결합",
+			"name_en": "Underbody Marriage",
+			"kind": "zone",
+			"type_id": "zone",
+			"role": "work",
+			"position_cm": [
+				3000,
+				0
+			],
+			"size_cm": [
+				1160,
+				1040
+			],
+			"yaw_deg": 0
+		},
+		{
+			"id": "P04",
+			"name_ko": "휠 작업",
+			"name_en": "Wheel Assembly",
+			"kind": "zone",
+			"type_id": "zone",
+			"role": "work",
+			"position_cm": [
+				4200,
+				0
+			],
+			"size_cm": [
+				1160,
+				1040
+			],
+			"yaw_deg": 0
+		},
+		{
+			"id": "P05",
+			"name_ko": "마무리 조립",
+			"name_en": "Finish Assembly",
+			"kind": "zone",
+			"type_id": "zone",
+			"role": "work",
+			"position_cm": [
+				5400,
+				0
+			],
+			"size_cm": [
+				1160,
+				1040
+			],
+			"yaw_deg": 0
+		},
+		{
+			"id": "P06",
+			"name_ko": "최종 검사·출구",
+			"name_en": "Inspection / Outbound",
+			"kind": "zone",
+			"type_id": "zone",
+			"role": "work",
+			"position_cm": [
+				6600,
+				0
+			],
+			"size_cm": [
+				1160,
+				1040
+			],
+			"yaw_deg": 0
+		},
+		{
+			"id": "S01",
+			"name_ko": "부품 입고·준비",
+			"name_en": "Receiving / Kitting",
+			"kind": "zone",
+			"type_id": "zone",
+			"role": "supply",
+			"position_cm": [
+				600,
+				1300
+			],
+			"size_cm": [
+				1120,
+				800
+			],
+			"yaw_deg": 0
+		},
+		{
+			"id": "S02",
+			"name_ko": "콕핏 사전 조립·공급",
+			"name_en": "Cockpit Preparation / Supply",
+			"kind": "zone",
+			"type_id": "zone",
+			"role": "supply",
+			"position_cm": [
+				1800,
+				1300
+			],
+			"size_cm": [
+				1120,
+				800
+			],
+			"yaw_deg": 0
+		},
+		{
+			"id": "S03",
+			"name_ko": "구동계 모듈 공급",
+			"name_en": "Powertrain Supply",
+			"kind": "zone",
+			"type_id": "zone",
+			"role": "supply",
+			"position_cm": [
+				3000,
+				1300
+			],
+			"size_cm": [
+				1120,
+				800
+			],
+			"yaw_deg": 0
+		},
+		{
+			"id": "S04",
+			"name_ko": "휠 공급",
+			"name_en": "Wheel Supply",
+			"kind": "zone",
+			"type_id": "zone",
+			"role": "supply",
+			"position_cm": [
+				4200,
+				1300
+			],
+			"size_cm": [
+				1120,
+				800
+			],
+			"yaw_deg": 0
+		},
+		{
+			"id": "S05",
+			"name_ko": "마무리 부품 공급",
+			"name_en": "Finish Supply",
+			"kind": "zone",
+			"type_id": "zone",
+			"role": "supply",
+			"position_cm": [
+				5400,
+				1300
+			],
+			"size_cm": [
+				1120,
+				800
+			],
+			"yaw_deg": 0
+		},
+		{
+			"id": "S06",
+			"name_ko": "완성차 대기",
+			"name_en": "Outbound Buffer",
+			"kind": "zone",
+			"type_id": "zone",
+			"role": "buffer",
+			"position_cm": [
+				6600,
+				1300
+			],
+			"size_cm": [
+				1120,
+				800
+			],
+			"yaw_deg": 0
+		},
+		{
+			"id": "R01",
+			"name_ko": "도어·모듈 사전 조립 예정",
+			"name_en": "Door / Module Preparation",
+			"kind": "zone",
+			"type_id": "zone",
+			"role": "reserve",
+			"position_cm": [
+				1200,
+				-1300
+			],
+			"size_cm": [
+				2320,
+				800
+			],
+			"yaw_deg": 0
+		},
+		{
+			"id": "R02",
+			"name_ko": "확장 예정",
+			"name_en": "Expansion Reserve",
+			"kind": "zone",
+			"type_id": "zone",
+			"role": "reserve",
+			"position_cm": [
+				3600,
+				-1300
+			],
+			"size_cm": [
+				2320,
+				800
+			],
+			"yaw_deg": 0
+		},
+		{
+			"id": "R03",
+			"name_ko": "재작업·품질 확인",
+			"name_en": "Rework / Quality",
+			"kind": "zone",
+			"type_id": "zone",
+			"role": "rework",
+			"position_cm": [
+				6000,
+				-1300
+			],
+			"size_cm": [
+				2320,
+				800
+			],
+			"yaw_deg": 0
+		},
+		{
+			"id": "station_1",
+			"name_ko": "차량 작업 위치",
+			"name_en": "Vehicle Station",
+			"kind": "vehicle_station",
+			"type_id": "vehicle_station",
+			"role": "work",
+			"position_cm": [
+				4200,
+				0
+			],
+			"size_cm": [
+				520,
+				220
+			],
+			"yaw_deg": 0
+		},
+		{
+			"id": "supply_1",
+			"name_ko": "휠 공급대",
+			"name_en": "Wheel Supply Rack",
+			"kind": "wheel_supply",
+			"type_id": "wheel_supply",
+			"role": "work",
+			"position_cm": [
+				4575,
+				-300
+			],
+			"size_cm": [
+				150,
+				150
+			],
+			"yaw_deg": 0
+		},
+		{
+			"id": "handler_1",
+			"name_ko": "KUKA 휠 이송 로봇",
+			"name_en": "KUKA Wheel Robot",
+			"kind": "kuka_robot",
+			"type_id": "kuka_robot",
+			"role": "work",
+			"position_cm": [
+				4350,
+				-330
+			],
+			"size_cm": [
+				90,
+				90
+			],
+			"yaw_deg": 0
+		},
+		{
+			"id": "conveyor_1",
+			"name_ko": "컨베이어 배치 모형",
+			"name_en": "Conveyor Placeholder",
+			"kind": "conveyor",
+			"type_id": "conveyor",
+			"role": "work",
+			"position_cm": [
+				3550,
+				0
+			],
+			"size_cm": [
+				600,
+				240
+			],
+			"yaw_deg": 0
+		}
+	],
+	"job":
+	{
+		"station_id": "station_1",
+		"supply_id": "supply_1",
+		"handler_id": "handler_1"
+	}
+}
