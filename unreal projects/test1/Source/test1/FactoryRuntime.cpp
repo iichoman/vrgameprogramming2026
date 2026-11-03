@@ -1,6 +1,9 @@
 #include "FactoryRuntime.h"
 #include "AutonomousAssemblyLine.h"
 #include "FactoryEquipment.h"
+#include "FactoryAssemblyEquipment.h"
+#include "WheelAssemblyCell.h"
+#include "DoorAssemblyCell.h"
 #include "FactoryEquipmentRegistry.h"
 #include "FactoryViewport.h"
 #include "FactoryProcessRunner.h"
@@ -102,7 +105,10 @@ void AFactoryRuntime::BuildVehicle()
 }
 void AFactoryRuntime::Rebuild(bool bRefreshPanel)
 {
-    EnsureRegistry();ClearGenerated();BuildShell();
+    EnsureRegistry();
+    if(bUseAssemblyIntegration&&TestAssemblyLine)
+    {if(TestAssemblyLine->WheelCell){TestAssemblyLine->WheelCell->LeftRobot=nullptr;TestAssemblyLine->WheelCell->RightRobot=nullptr;}if(TestAssemblyLine->DoorCell)TestAssemblyLine->DoorCell->Robot=nullptr;}
+    ClearGenerated();BuildShell();
     for(const auto& Item:Layout.Items)
     {
         FActorSpawnParameters P;P.Owner=this;
@@ -114,7 +120,7 @@ void AFactoryRuntime::Rebuild(bool bRefreshPanel)
         for(const auto& V:VisualOverrides)if(V.EquipmentKind.ToString()==FFactoryLayout::KindName(Item.Kind))Override=V.Mesh;
         A->Configure(Item,Override);A->SetLabelVisible(Item.Kind==EFactoryItemKind::Zone?bZoneLabels:bEquipmentLabels);Equipment.Add(Item.Id,A);
     }
-    if(!bUseAssemblyIntegration)BuildVehicle();ResetCycle();RefreshHighlights();UpdateCamera();bNeedsPanel|=bRefreshPanel;
+    if(bUseAssemblyIntegration)BindAssemblyRobots();else BuildVehicle();ResetCycle();RefreshHighlights();UpdateCamera();bNeedsPanel|=bRefreshPanel;
 }
 void AFactoryRuntime::BuildPreview()
 {
@@ -123,6 +129,7 @@ void AFactoryRuntime::BuildPreview()
     if(InitialLayoutJson.IsEmpty())Layout=FFactoryLayout::Default();
     else if(!FFactoryLayout::FromJson(InitialLayoutJson,Layout,Error)){Status=Error;return;}
     EnsureRegistry();if(!Registry->Validate(Layout,Error)){Status=Error;return;}
+    if(bUseAssemblyIntegration)InitializeAssemblyCatalog();
     InitialLayoutJson=Layout.ToJson();Rebuild();
 }
 bool AFactoryRuntime::VerifySetup() const
@@ -139,6 +146,8 @@ void AFactoryRuntime::BeginPlay()
     if(FParse::Param(FCommandLine::Get(),TEXT("FactoryRuntimeAutoTest")))
     { bUseAssemblyIntegration=false; InitialLayoutJson=FFactoryLayout::Default().ToJson(); }
     LoadViewSettings();BuildPreview();
+    if(FParse::Param(FCommandLine::Get(),TEXT("FactoryModularAutoTest")))
+    {const bool Ok=RunModularEditorChecks();FPlatformMisc::RequestExitWithStatus(false,Ok?0:1);return;}
     if(FParse::Param(FCommandLine::Get(),TEXT("FactoryAssemblyAutoTest")))
     { const bool Ok=RunAssemblyIntegrationChecks(); FPlatformMisc::RequestExitWithStatus(false,Ok?0:1); return; }
     const bool bTest=FParse::Param(FCommandLine::Get(),TEXT("FactoryRuntimeAutoTest"));
@@ -197,7 +206,7 @@ void AFactoryRuntime::RefreshHighlights()
 void AFactoryRuntime::ApplyEditedItem()
 {
     if(auto* Item=Selected())if(auto* A=Equipment.FindRef(Item->Id).Get())A->UpdatePlacement(*Item);
-    RefreshPreviewWheel();RefreshHighlights();UpdateCamera();
+    if(bUseAssemblyIntegration){if(!bDragging){BindAssemblyRobots();ResetCycle();}}else RefreshPreviewWheel();RefreshHighlights();UpdateCamera();
 }
 void AFactoryRuntime::SetHallSize(double L,double W)
 {
@@ -221,7 +230,7 @@ void AFactoryRuntime::SetSelectedYaw(double Degrees)
 void AFactoryRuntime::SetSelectedSize(double X,double Y)
 {
     if(!CanEdit()||!Selected()||Selected()->Kind!=EFactoryItemKind::Zone||!Finite(X)||!Finite(Y)||X<.2||Y<.2||X>200||Y>200)return;
-    BeginEdit();Selected()->Size=FVector2D(X*100,Y*100);Rebuild(false);FinishDiscreteEdit();
+    BeginEdit();auto Desired=*Selected();Desired.Size=FVector2D(X*100,Y*100);*Selected()=ClampZoneChange(*Selected(),Desired);Rebuild(false);FinishDiscreteEdit();
 }
 void AFactoryRuntime::SetSelectedRole(const FString& NewRole)
 {
@@ -245,11 +254,18 @@ void AFactoryRuntime::DeleteSelected()
     if(!CanEdit()||SelectedId.IsEmpty())return;
     BeginEdit();Layout.ProcessOrder.Remove(SelectedId);
     if(Layout.StationId==SelectedId)Layout.StationId.Empty();if(Layout.SupplyId==SelectedId)Layout.SupplyId.Empty();if(Layout.HandlerId==SelectedId)Layout.HandlerId.Empty();
+    for(auto It=Layout.AssemblyBindings.CreateIterator();It;++It)if(It.Value()==SelectedId)It.RemoveCurrent();
     Layout.Items.RemoveAll([&](const auto& I){return I.Id==SelectedId;});SelectedId.Empty();Rebuild();FinishDiscreteEdit();
 }
 void AFactoryRuntime::BindSelected()
 {
     if(!CanEdit()||!Selected())return;
+    if(bUseAssemblyIntegration)
+    {
+        if(!AFactoryAssemblyEquipment::IsAssemblyType(Selected()->EffectiveTypeId()))return;
+        BeginEdit();Layout.AssemblyBindings.Add(Selected()->EffectiveTypeId(),SelectedId);Rebuild();EndEdit();
+        Status=TEXT("선택한 로봇을 해당 조립 작업에 연결했습니다. 같은 작업의 이전 로봇은 대기합니다.");return;
+    }
     BeginEdit();switch(Selected()->Kind)
     {
     case EFactoryItemKind::VehicleStation:Layout.StationId=SelectedId;break;
@@ -297,7 +313,7 @@ bool AFactoryRuntime::LoadLayout(const FString& Slot)
     if(!FFileHelper::LoadFileToString(Json,*(FromBackup?Path+TEXT(".bak"):Path))){Status=TEXT("저장된 배치 파일을 읽을 수 없습니다.");return false;}
     if(!FFactoryLayout::FromJson(Json,Candidate,Error)){Status=TEXT("불러오기 거부: ")+Error;return false;}
     EnsureRegistry();if(!Registry->Validate(Candidate,Error)){Status=Error;return false;}
-    if(bUseAssemblyIntegration){for(const auto& I:Candidate.Items)if(I.Kind!=EFactoryItemKind::Zone){Status=TEXT("통합 시험용 구역 배치만 불러올 수 있습니다.");return false;}}
+    if(bUseAssemblyIntegration){for(const auto& I:Candidate.Items)if(!IsPaletteTypeAllowed(I.EffectiveTypeId())){Status=TEXT("조립 모드에서 지원하지 않는 설비입니다.");return false;}}
     BeginEdit();Layout=MoveTemp(Candidate);SelectedId.Empty();Rebuild();EndEdit();SavedSnapshot=FromBackup?FString():Layout.ToJson();RefreshDirty();FitView();Status=TEXT("배치 ")+Slot+(FromBackup?TEXT(" 백업 복구 완료 · 다시 저장하세요."):TEXT(" 불러오기 완료"));return true;
 }
 void AFactoryRuntime::RestoreDefault()
@@ -375,13 +391,15 @@ FString AFactoryRuntime::StateText() const
 }
 FString AFactoryRuntime::BindingText() const
 {
-    if(bUseAssemblyIntegration)return TEXT("고정 통합 셀: 반입 → 도킹 → 휠 4개 → 이송 → 왼쪽 앞문\n설비 개별 이동·복제 연결은 후속 범위");
+    if(bUseAssemblyIntegration){FString Text=TEXT("반입 → 휠 좌/우 → 이송 → 왼쪽 앞문\n");
+        for(const FString Type:{TEXT("assembly_wheel_left"),TEXT("assembly_wheel_right"),TEXT("assembly_door")})
+        {const auto* D=Registry?Registry->Find(Type):nullptr;const auto* I=Layout.Find(Layout.AssemblyBindings.FindRef(Type));Text+=(D?D->NameKo:Type)+TEXT(": ")+(I?I->NameKo:TEXT("미연결"))+TEXT("\n");}return Text;}
     auto Name=[&](const FString& Id){auto* I=Layout.Find(Id);return I?I->NameKo:TEXT("미지정");};
     return TEXT("차량: ")+Name(Layout.StationId)+TEXT("\n공급: ")+Name(Layout.SupplyId)+TEXT("\n이송: ")+Name(Layout.HandlerId);
 }
 FString AFactoryRuntime::ValidationText() const
 {
-    if(bUseAssemblyIntegration){FString Error;return ValidateRun(Error)?TEXT("통합 셀 연결 정상 · 고정 배치 기능 시험"):Error;}
+    if(bUseAssemblyIntegration){FString Error;return ValidateRun(Error)?TEXT("조립 로봇 연결 정상 · 실행 시 목표 도달 여부 검사"):Error;}
     const FString Key=Layout.ToJson();if(Key==ValidationKey&&!ValidationMessage.IsEmpty())return ValidationMessage;
     ValidationKey=Key;FString Error;
     if(!ValidateRun(Error))ValidationMessage=TEXT("실행 조건: ")+Error;

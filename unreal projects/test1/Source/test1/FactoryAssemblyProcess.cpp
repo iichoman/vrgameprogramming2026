@@ -24,11 +24,12 @@ bool UFactoryAssemblyProcessRunner::Validate(FString& Error) const
         ||!IsValid(L->WheelCell->LeftRobot)||!IsValid(L->WheelCell->RightRobot)||!IsValid(L->DoorCell->Robot)
         ||!IsValid(L->WheelCell->TransportCarriage))
     {Error=TEXT("통합 셀 참조 누락: 로봇·차체·운반대·센서 연결을 확인하세요.");return false;}
+    if(!R->ValidateAssemblyBindings(Error))return false;
     // Conservative reserved envelope for this fixed-layout test, not a safety certificate.
     FFactoryLayoutItem Envelope;Envelope.Position=FVector2D(350,0);Envelope.Size=FVector2D(3000,1800);
     if(!R->Layout.Contains(Envelope)){Error=TEXT("공장 경계가 고정 통합 셀의 예약 영역을 벗어났습니다.");return false;}
-    for(const auto& I:R->Layout.Items)if(I.Kind!=EFactoryItemKind::Zone)
-    {Error=TEXT("통합 시험 배치는 구역만 편집합니다. 기본 배치로 복원하세요.");return false;}
+    for(const auto& I:R->Layout.Items)if(!R->IsPaletteTypeAllowed(I.EffectiveTypeId()))
+    {Error=TEXT("조립 모드에서 지원하지 않는 설비입니다.");return false;}
     return true;
 }
 bool UFactoryAssemblyProcessRunner::Start()
@@ -37,6 +38,8 @@ bool UFactoryAssemblyProcessRunner::Start()
     R->CancelEdit();FString Error;
     if(!Validate(Error)){R->Status=Error;return false;}
     auto* L=R->TestAssemblyLine.Get();
+    if(L->WheelCell->LeftRearApproachAnglesDegrees.Num()!=6||L->WheelCell->RightRearApproachAnglesDegrees.Num()!=6)
+    {R->Status=TEXT("휠 로봇이 후방 작업 자세에 도달할 수 없습니다. 배치를 조정하세요.");return false;}
     L->SetActorTickEnabled(false);
     if(!L->StartLine()){R->Status=L->Status;return false;}
     R->SimulationSeconds=R->TravelCm=R->AlignmentMm=R->SimRemainder=0;
@@ -53,14 +56,16 @@ void UFactoryAssemblyProcessRunner::Reset()
     R->SimulationSeconds=R->TravelCm=R->AlignmentMm=R->SimRemainder=0;
     auto* L=R->TestAssemblyLine.Get();
     if(!IsValid(L)){R->RunState=EFactoryRunState::Fault;R->Status=TEXT("통합 테스트 라인이 연결되지 않았습니다.");return;}
-    L->SetActorTickEnabled(false);
-    if(!L->ResetLine()){R->RunState=EFactoryRunState::Fault;R->Status=L->Status;return;}
-    R->RunState=EFactoryRunState::Editing;R->Status=TEXT("통합 셀 준비 · 센서 갱신 후 작업 실행 / 구역 편집은 설비 위치와 별개");
+    L->SetActorTickEnabled(false);R->RunState=EFactoryRunState::Editing;
+    FString BindingError;
+    if(!R->ValidateAssemblyBindings(BindingError)){R->Status=BindingError;return;}
+    if(!L->ResetLine()){R->Status=TEXT("배치 확인 필요: ")+L->Status;return;}
+    R->RunState=EFactoryRunState::Editing;R->Status=TEXT("조립 준비 · 로봇 선택/이동/삭제 가능 · 센서 갱신 후 작업 실행");
 }
 void UFactoryAssemblyProcessRunner::Step(double Dt)
 {
     auto* R=Runtime(this);auto* L=R?R->TestAssemblyLine.Get():nullptr;
-    if(!IsValid(L))return;
+    if(!IsValid(L)||!IsValid(L->WheelCell)||!IsValid(L->WheelCell->LeftRobot)||!IsValid(L->WheelCell->RightRobot)||!IsValid(L->DoorCell)||!IsValid(L->DoorCell->Robot))return;
     // All phases, including sensor warm-up and braking, use the one factory clock.
     if(Running(R))R->SimulationSeconds+=Dt;
     const bool Ok=L->AdvanceLine(Dt);
@@ -91,7 +96,7 @@ bool AFactoryRuntime::RunAssemblyIntegrationChecks()
     if(!Pass)return false;
     auto* L=TestAssemblyLine.Get();const int32 Seed=L->BaseSeed;
     int32 OldRobots=0;for(TActorIterator<AFactoryEquipment> It(GetWorld());It;++It)
-        if(It->GetOwner()==this&&It->GetDefinition().Kind!=EFactoryItemKind::Zone)++OldRobots;
+        if(It->GetOwner()==this&&It->GetDefinition().Kind!=EFactoryItemKind::Zone&&!It->GetDefinition().EffectiveTypeId().StartsWith(TEXT("assembly_")))++OldRobots;
     Check(TEXT("old_factory_equipment_replaced"),OldRobots==0&&VehicleRoot==nullptr&&WheelRoot==nullptr);
     ResetCycle();Check(TEXT("only_factory_drives_line"),!L->IsActorTickEnabled()&&L->WheelCell->bExternallyDriven&&L->DoorCell->bExternallyDriven);
     Check(TEXT("start_waits_for_fresh_speed_sample"),!StartCycle()&&CanEdit());

@@ -37,10 +37,20 @@ bool AFactoryRuntime::RunUIChecks()
     Check(TEXT("middle_mouse_drag_pans_camera"),!CameraCentre.Equals(Centre,.001));
     Mouse(Canvas,Canvas+FVector2D(40,20),EKeys::RightMouseButton);
     Check(TEXT("right_mouse_drag_orbits_camera"),!FMath::IsNearlyEqual(CameraYaw,OldYaw)||!FMath::IsNearlyEqual(CameraPitch,OldPitch));
+    Check(TEXT("right_drag_down_looks_down"),CameraPitch<OldPitch);
+    const auto BeforeW=CameraCentre;
+    App.SetKeyboardFocus(ViewportSurface.ToSharedRef(),EFocusCause::SetDirectly);
+    App.ProcessKeyDownEvent(FKeyEvent(EKeys::W,FModifierKeysState(),0,false,0,0));
+    ViewportSurface->Tick(Geometry,0,.02f);
+    App.ProcessKeyUpEvent(FKeyEvent(EKeys::W,FModifierKeysState(),0,false,0,0));
+    const FVector Forward=FRotator(0,CameraYaw,0).Vector();
+    Check(TEXT("W_moves_forward_in_camera_heading"),FVector2D::DotProduct(CameraCentre-BeforeW,FVector2D(Forward))>0);
     CameraCentre=Centre;CameraYaw=OldYaw;CameraPitch=OldPitch;UpdateCamera();
     const FString Initial=Layout.ToJson();SelectedId=bUseAssemblyIntegration?Layout.Items[0].Id:Layout.SupplyId;bSnap=false;
-    SetSelectedPosition(Selected()->Position.X/100+.5,Selected()->Position.Y/100);
     App.SetKeyboardFocus(ViewportSurface.ToSharedRef(),EFocusCause::SetDirectly);
+    SetSelectedPosition(Selected()->Position.X/100+.5,Selected()->Position.Y/100);
+    CreatePanel(); // Real inspector reconstruction must not silently lose shortcut focus.
+    Check(TEXT("panel_rebuild_preserves_viewport_keyboard_focus"),ViewportSurface->HasKeyboardFocus());
     const FModifierKeysState Ctrl(false,false,true,false,false,false,false,false,false);
     App.ProcessKeyDownEvent(FKeyEvent(EKeys::Z,Ctrl,0,false,0,0));
     Check(TEXT("ctrl_z_routes_to_canvas_history"),Layout.ToJson()==Initial);

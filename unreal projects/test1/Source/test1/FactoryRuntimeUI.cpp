@@ -1,6 +1,9 @@
 #include "FactoryRuntime.h"
 #include "FactoryEquipmentRegistry.h"
 #include "FactoryViewport.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Application/IInputProcessor.h"
+#include "Engine/World.h"
 #include "Widgets/Layout/SWrapBox.h"
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
@@ -22,6 +25,48 @@
 
 namespace
 {
+// Scoped to this live factory UI, before the editor's Ctrl+Z command routing.
+// No UObject layout changes: safe to install through Live Coding and restart Play.
+class FFactoryShortcutInput final : public IInputProcessor, public TSharedFromThis<FFactoryShortcutInput>
+{
+public:
+    FFactoryShortcutInput(AFactoryRuntime* R,TSharedRef<SWidget> P,TSharedRef<SFactoryViewport> V,bool Restore)
+        : Runtime(R),Root(P),Surface(V),bRestoreFocus(Restore) {}
+    static bool Contains(const TSharedPtr<SWidget>& Parent,const TSharedPtr<SWidget>& Child)
+    {
+        if(!Parent||!Child)return false;if(Parent==Child)return true;
+        if(auto* Children=Parent->GetChildren())for(int32 I=0;I<Children->Num();++I)
+            if(Contains(Children->GetChildAt(I),Child))return true;
+        return false;
+    }
+    virtual void Tick(float,FSlateApplication& App,TSharedRef<ICursor>) override
+    {
+        if(!Runtime.IsValid()||!Root.IsValid()||!Runtime->GetWorld()||!Runtime->GetWorld()->IsGameWorld())
+        {App.UnregisterInputPreProcessor(AsShared());return;}
+        // Restore after Slate has attached the rebuilt tree, not just during removal/addition.
+        if(bRestoreFocus)
+        {
+            bRestoreFocus=false;
+            if(auto V=Surface.Pin())App.SetKeyboardFocus(V,EFocusCause::SetDirectly);
+        }
+    }
+    virtual bool HandleKeyDownEvent(FSlateApplication& App,const FKeyEvent& E) override
+    {
+        if(!Runtime.IsValid()||!Root.IsValid()||!E.IsControlDown()||(E.GetKey()!=EKeys::Z&&E.GetKey()!=EKeys::Y))return false;
+        const auto Focus=App.GetKeyboardFocusedWidget();
+        if(!Contains(Root.Pin(),Focus))return false;
+        // Text/numeric fields retain their own Undo and IME handling.
+        if(Focus.IsValid()&&Focus->GetTypeAsString().Contains(TEXT("EditableText")))return false;
+        if(!E.IsRepeat())Runtime->ViewportKey(E.GetKey(),true,E.IsShiftDown());
+        return true;
+    }
+private:
+    TWeakObjectPtr<AFactoryRuntime> Runtime;
+    TWeakPtr<SWidget> Root;
+    TWeakPtr<SFactoryViewport> Surface;
+    bool bRestoreFocus;
+};
+
 struct FFactoryPanelChoice
 {
     FString Id;
@@ -53,7 +98,9 @@ void AFactoryRuntime::CreatePanel()
     if (!GEngine || !GEngine->GameViewport) return;
     const uint64 Generation = ++PanelGeneration;
     const float SavedScrollOffset = PanelScroll.IsValid() ? PanelScroll->GetScrollOffset() : 0.0f;
-    if (Panel.IsValid()) GEngine->GameViewport->RemoveViewportWidgetContent(Panel.ToSharedRef());
+    const bool RestoreViewportFocus=ViewportSurface.IsValid()&&(ViewportSurface->HasKeyboardFocus()||ViewportSurface->HasAnyUserFocus());
+    // Keep the root and input surface attached while refreshing inspector controls.
+    // Detaching the root invalidates Slate's focus/capture path during a drag.
 
     const FString FontFile = FPaths::ProjectContentDir() / TEXT("DigitalTwin/Fonts/NanumGothic.ttf");
     const bool bHasKoreanFont = IFileManager::Get().FileExists(*FontFile);
@@ -87,12 +134,12 @@ void AFactoryRuntime::CreatePanel()
         Rows->AddSlot().AutoHeight().Padding(0, 12, 0, 5)[SNew(STextBlock).Font(HeadingFont)
             .ColorAndOpacity(Accent).Text(FText::FromString(Value)).AutoWrapText(true)];
     };
-    auto Button = [Font](const FString& Caption, TFunction<void()> Action,
+    auto Button = [this,Font](const FString& Caption, TFunction<void()> Action,
         const TAttribute<bool>& Enabled) -> TSharedRef<SWidget>
     {
         return SNew(SButton).IsFocusable(false).IsEnabled(Enabled).ContentPadding(FMargin(5, 6))
-            .HAlign(HAlign_Center).OnClicked_Lambda([Action = MoveTemp(Action)]() {
-                Action(); return FReply::Handled();
+            .HAlign(HAlign_Center).OnClicked_Lambda([this,Action = MoveTemp(Action)]() {
+                Action(); if(ViewportSurface.IsValid())FSlateApplication::Get().SetKeyboardFocus(ViewportSurface.ToSharedRef(),EFocusCause::SetDirectly); return FReply::Handled();
             })[SNew(STextBlock).Font(Font).Text(FText::FromString(Caption)).AutoWrapText(true)
                 .Justification(ETextJustify::Center)];
     };
@@ -151,7 +198,7 @@ void AFactoryRuntime::CreatePanel()
         .ColorAndOpacity(FLinearColor(.99f, .83f, .48f, 1)).Text_Lambda([this]() {
             return FText::FromString(Status);
         }).AutoWrapText(true)];
-    Label(bUseAssemblyIntegration?TEXT("고정 셀 기능 시험 · 구역 편집은 설비를 이동시키지 않음\nIK·PID / 하중·마찰·체결 토크 미포함"):TEXT("IK·관절 PID / 체결·접촉 물리 미포함"));
+    Label(bUseAssemblyIntegration?TEXT("개별 로봇 편집 · 추가 후 작업 연결 · 차량/레일은 공통\nIK·PID / 하중·마찰·체결 토크 미포함"):TEXT("IK·관절 PID / 체결·접촉 물리 미포함"));
     Pair(Button(TEXT("실행 취소"),[this](){UndoEdit();},TAttribute<bool>::CreateLambda([this](){return CanUndo();})),
         Button(TEXT("다시 실행"),[this](){RedoEdit();},TAttribute<bool>::CreateLambda([this](){return CanRedo();})));
 
@@ -292,7 +339,7 @@ void AFactoryRuntime::CreatePanel()
                 ? FactoryRoleLabel(Selected()->Role) : TEXT("구역 용도: 구역 선택 시 설정"));
         }).AutoWrapText(true)]];
     Pair(Button(TEXT("선택 항목 삭제"), [this]() { DeleteSelected(); }, HasSelection),
-        Button(TEXT("휠 작업에 연결"), [this]() { BindSelected(); }, TAttribute<bool>::CreateLambda([this]() {
+        Button(TEXT("선택 로봇·설비 작업 연결"), [this]() { BindSelected(); }, TAttribute<bool>::CreateLambda([this]() {
             const FFactoryLayoutItem* Item = Selected();
             return CanEdit() && Item && (Item->Kind == EFactoryItemKind::VehicleStation
                 || Item->Kind == EFactoryItemKind::WheelSupply || Item->Kind == EFactoryItemKind::CartesianHandler || Item->Kind == EFactoryItemKind::ArticulatedRobot);
@@ -335,13 +382,15 @@ void AFactoryRuntime::CreatePanel()
         .IsChecked_Lambda([this](){return bSnap?ECheckBoxState::Checked:ECheckBoxState::Unchecked;})
         .OnCheckStateChanged_Lambda([this](ECheckBoxState V){bSnap=V==ECheckBoxState::Checked;})[
             SNew(STextBlock).Font(Font).ColorAndOpacity(TextColor).Text(FText::FromString(TEXT("0.25m 격자 맞춤")))]];
+    Tabs->AddSlot().AutoWidth().Padding(0,0,6,0)[Button(TEXT("선택 삭제 (Del)"),[this](){DeleteSelected();},TAttribute<bool>::CreateLambda([this](){return CanEdit()&&Selected()!=nullptr;}))];
+    Tabs->AddSlot().AutoWidth().Padding(0,0,6,0)[Button(TEXT("공장 크기 조정"),[this](){SelectHall();FitView();},Editing)];
     Tabs->AddSlot().AutoWidth()[Button(TEXT("배치 취소 (Esc)"),[this](){CancelEdit();},Editing)];
     Palette->AddSlot().AutoHeight()[Tabs];
     TSharedRef<SHorizontalBox> Cards=SNew(SHorizontalBox);
     EnsureRegistry();
     for(const auto& D:Registry->All())
     {
-        if(bUseAssemblyIntegration&&D->Kind!=TEXT("zone"))continue;
+        if(!IsPaletteTypeAllowed(D->TypeId.ToString()))continue;
         if(PaletteCategory!=TEXT("전체")&&D->Category!=PaletteCategory)continue;
         const FString Id=D->TypeId.ToString();
         Cards->AddSlot().AutoWidth().Padding(0,8,8,5)[SNew(SBox).WidthOverride(170).HeightOverride(82)[
@@ -356,17 +405,25 @@ void AFactoryRuntime::CreatePanel()
             (!PendingTypeId.IsEmpty()?TEXT("배치 중 · 바닥 클릭 / 구역은 드래그 · Esc 취소"):TEXT("추가 도구 · 항목 선택 → 바닥 클릭으로 배치")));}).AutoWrapText(true)];
     const auto OldSurface=ViewportSurface;
     if(!ViewportSurface.IsValid())ViewportSurface=SNew(SFactoryViewport).Runtime(this);
-    Panel = SNew(SOverlay).Visibility(EVisibility::SelfHitTestInvisible)
-        + SOverlay::Slot()[ViewportSurface.ToSharedRef()]
-        + SOverlay::Slot().HAlign(HAlign_Left).VAlign(VAlign_Fill).Padding(12)[
+    const bool bNewPanel = !Panel.IsValid();
+    if (bNewPanel)
+        Panel = SNew(SOverlay).Visibility(EVisibility::SelfHitTestInvisible)
+            + SOverlay::Slot()[ViewportSurface.ToSharedRef()];
+    const TSharedRef<SOverlay> Overlay = StaticCastSharedRef<SOverlay>(Panel.ToSharedRef());
+    while (Overlay->GetNumWidgets() > 1)
+        Overlay->RemoveSlot(Overlay->GetChildren()->GetChildAt(1));
+    Overlay->AddSlot().HAlign(HAlign_Left).VAlign(VAlign_Fill).Padding(12)[
             SNew(SBox).WidthOverride(330)[SNew(SBorder).Padding(10)
                 .BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
                 .BorderBackgroundColor(FLinearColor(.025f,.035f,.05f,.96f))[
-                    SAssignNew(PanelScroll,SScrollBox).ScrollBarAlwaysVisible(true)+SScrollBox::Slot()[Rows]]]]
-        + SOverlay::Slot().HAlign(HAlign_Fill).VAlign(VAlign_Bottom).Padding(354,0,12,12)[
+                    SAssignNew(PanelScroll,SScrollBox).ScrollBarAlwaysVisible(true)+SScrollBox::Slot()[Rows]]]];
+    Overlay->AddSlot().HAlign(HAlign_Fill).VAlign(VAlign_Bottom).Padding(354,0,12,12)[
             SNew(SBorder).Padding(10).BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
                 .BorderBackgroundColor(FLinearColor(.025f,.035f,.05f,.96f))[Palette]];
     PanelScroll->SetScrollOffset(SavedScrollOffset);
-    GEngine->GameViewport->AddViewportWidgetContent(Panel.ToSharedRef(),30);
+    if(bNewPanel)GEngine->GameViewport->AddViewportWidgetContent(Panel.ToSharedRef(),30);
+    if(RestoreViewportFocus||!OldSurface.IsValid())FSlateApplication::Get().SetKeyboardFocus(ViewportSurface.ToSharedRef(),EFocusCause::SetDirectly);
+    if(bNewPanel)FSlateApplication::Get().RegisterInputPreProcessor(
+        MakeShared<FFactoryShortcutInput>(this,Panel.ToSharedRef(),ViewportSurface.ToSharedRef(),RestoreViewportFocus||!OldSurface.IsValid()),0);
     bNeedsPanel=false;
 }

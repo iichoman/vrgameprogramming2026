@@ -6,6 +6,7 @@
 #include "FactoryEditHistory.h"
 #include "FactoryRuntime.generated.h"
 class AFactoryEquipment;
+class ARobotArm;
 class AAutonomousAssemblyLine;
 class UFactoryAssemblyProcessRunner;
 class UFactoryWheelProcessRunner;
@@ -41,6 +42,15 @@ public:
     UPROPERTY(EditInstanceOnly, Category="Factory|Integration") TObjectPtr<AAutonomousAssemblyLine> TestAssemblyLine;
     UFUNCTION() bool RunAssemblyIntegrationChecks();
     FString AssemblyMetrics() const;
+    const ARobotArm* AssemblyRobotTemplate(const FString& TypeId) const;
+    void InitializeAssemblyCatalog();
+    void BindAssemblyRobots();
+    bool ValidateAssemblyBindings(FString& Error) const;
+    bool IsPaletteTypeAllowed(const FString& Id) const;
+    UPROPERTY(EditInstanceOnly, Category="Factory|Integration") TArray<TObjectPtr<ARobotArm>> AssemblyTemplates;
+    UPROPERTY() TArray<double> CalibratedLeftRear;
+    UPROPERTY() TArray<double> CalibratedRightRear;
+    UFUNCTION() bool RunModularEditorChecks();
     UPROPERTY(EditAnywhere, Category="Factory|Layout") FString InitialLayoutJson;
     UPROPERTY(EditAnywhere, Category="Factory|Vehicle") TArray<FVehicleModuleMesh> BodyMeshes;
     UPROPERTY(EditAnywhere, Category="Factory|Vehicle") TArray<FVehicleModuleMesh> WheelMeshes;
@@ -145,6 +155,7 @@ private:
     FFactoryLayoutItem ResizeBox() const;
     int32 HitResizeHandle(const FVector2D& Pixel) const;
     void PreviewResize(const FVector& Point);
+    FFactoryLayoutItem ClampZoneChange(const FFactoryLayoutItem& Before,const FFactoryLayoutItem& Desired) const;
     void DrawEditorGuides();
     void AddRegisteredItem(const FString& TypeId, const FVector2D& Point);
     void Rebuild(bool bRefreshPanel = true);
