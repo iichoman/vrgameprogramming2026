@@ -23,6 +23,7 @@ public:
     virtual TArray<double> Home() const;
     virtual void Limits(int32 Axis,double& Min,double& Max,double& Speed,double& Acceleration) const;
     bool RequestMove(FFactoryRequestId Id,const FTransform& WorldGoal,FString& Error);
+    bool RequestMove(FFactoryRequestId Id,const FTransform& WorldGoal,FString& Error,const TArray<double>& Seed);
     void Step(double Dt);
     void Cancel();
     void Reset(uint64 Epoch);

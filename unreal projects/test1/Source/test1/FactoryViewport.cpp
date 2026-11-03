@@ -11,7 +11,7 @@ FVector2D SFactoryViewport::Pixel(const FGeometry& G,const FPointerEvent& E) con
 FReply SFactoryViewport::OnMouseButtonDown(const FGeometry& G,const FPointerEvent& E)
 {if(!Runtime.IsValid())return FReply::Unhandled();Runtime->ViewportPointer(Pixel(G,E),E.GetEffectingButton(),true);return FReply::Handled().SetUserFocus(SharedThis(this)).CaptureMouse(SharedThis(this));}
 FReply SFactoryViewport::OnMouseButtonUp(const FGeometry& G,const FPointerEvent& E)
-{if(Runtime.IsValid())Runtime->ViewportPointer(Pixel(G,E),E.GetEffectingButton(),false);return FReply::Handled().ReleaseMouseCapture();}
+{if(Runtime.IsValid())Runtime->ViewportPointer(Pixel(G,E),E.GetEffectingButton(),false);return FReply::Handled().ReleaseMouseCapture().SetUserFocus(SharedThis(this),EFocusCause::SetDirectly);}
 FReply SFactoryViewport::OnMouseMove(const FGeometry& G,const FPointerEvent& E)
 {if(Runtime.IsValid())Runtime->ViewportMove(Pixel(G,E));return FReply::Handled();}
 FReply SFactoryViewport::OnMouseWheel(const FGeometry&,const FPointerEvent& E)
@@ -32,8 +32,8 @@ void SFactoryViewport::OnMouseCaptureLost(const FCaptureLostEvent&)
 {if(Runtime.IsValid())Runtime->ViewportCaptureLost();}
 void SFactoryViewport::Tick(const FGeometry&,double,float Dt)
 {
-    if(!Runtime.IsValid()||!HasKeyboardFocus())return;FVector2D D=FVector2D::ZeroVector;
-    if(Held.Contains(EKeys::W)||Held.Contains(EKeys::Up))D.Y-=1;if(Held.Contains(EKeys::S)||Held.Contains(EKeys::Down))D.Y+=1;
+    if(!Runtime.IsValid()||(!HasKeyboardFocus()&&!HasAnyUserFocus()))return;FVector2D D=FVector2D::ZeroVector;
+    if(Held.Contains(EKeys::W)||Held.Contains(EKeys::Up))D.Y+=1;if(Held.Contains(EKeys::S)||Held.Contains(EKeys::Down))D.Y-=1;
     if(Held.Contains(EKeys::A)||Held.Contains(EKeys::Left))D.X+=1;if(Held.Contains(EKeys::D)||Held.Contains(EKeys::Right))D.X-=1;
     if(!D.IsNearlyZero())Runtime->PanCamera(D.GetSafeNormal()*700*FMath::Min(Dt,.05f));
 }

@@ -125,6 +125,17 @@ void AFactoryRuntime::RunChecks()
     Check(TEXT("two_robot_instances_have_independent_controller_state"),SecondRobot&&SecondRobot->Controller()!=Equipment.FindRef(Layout.HandlerId)->Controller());
     ResetCycle();Layout=FFactoryLayout::Default();Rebuild();
     const FString FeatureLayout=Layout.ToJson();
+    ResetCycle();WheelProcess->StartFeatureCheck(0);
+    for(int32 I=0;I<120*60&&RunState!=EFactoryRunState::Verify&&RunState!=EFactoryRunState::Fault;++I)StepSimulation(1./120);
+    const bool EnteredHub=RunState==EFactoryRunState::Verify;
+    if(EnteredHub)
+    {
+        const FVector Observed=WheelProcess->MeasuredHub.InverseTransformPosition(WheelProcess->MeasuredWheel.GetLocation());
+        Check(TEXT("insertion_gate_starts_at_outer_staging_point"),FMath::IsNearlyEqual(Observed.Y,-35.,.3));
+    }
+    WheelProcess->InterruptHubSensor();
+    for(int32 I=0;I<60;++I)StepSimulation(1./120);
+    Check(TEXT("stale_hub_observation_blocks_seating"),EnteredHub&&RunState==EFactoryRunState::Fault&&Status.Contains(TEXT("허브 측정")));
     for(int32 Kind=0;Kind<5;++Kind)
     {
         ResetCycle();bool Started=WheelProcess->StartFeatureCheck(Kind);
@@ -132,7 +143,7 @@ void AFactoryRuntime::RunChecks()
         for(int32 I=0;I<120*90&&RunState!=EFactoryRunState::Complete&&RunState!=EFactoryRunState::Fault;++I)
         {
             StepSimulation(1./120);
-            if(!Restored&&((Kind==1||Kind==2)?SimulationSeconds>1:Kind==3&&WheelProcess->GripRetries>=2))
+            if(!Restored&&(Kind==2?SimulationSeconds>1:Kind==3&&WheelProcess->GripRetries>=2))
             {WheelProcess->RestoreFeatureInputs();Restored=true;}
         }
         const FString Name=FString::Printf(TEXT("ported_feature_%d_observed_and_completed"),Kind);
@@ -140,6 +151,7 @@ void AFactoryRuntime::RunChecks()
         Check(*Name,Started&&WheelProcess->FeaturePassed()&&Layout.ToJson()==FeatureLayout);
     }
     ResetCycle();WheelProcess->StartFeatureCheck(1);
+    WheelProcess->bReserveAvailable=false;
     for(int32 I=0;I<120*6;++I)StepSimulation(1./120);
     Check(TEXT("ported_missing_supply_times_out_without_pickup"),RunState==EFactoryRunState::Fault&&TravelCm==0&&!WheelProcess->FeaturePassed());
     ResetCycle();WheelProcess->StartFeatureCheck(3);Finish();
@@ -175,9 +187,9 @@ void AFactoryRuntime::CaptureRuntime(float Dt)
     const FString Dir=FPaths::ProjectSavedDir()/TEXT("FactoryRuntimePreview");
     IFileManager::Get().MakeDirectory(*Dir,true);
     if(!bUIProbeDone&&CaptureClock>2){bUIProbePassed=RunUIChecks();bUIProbeDone=true;}
-    if(CaptureStage==0&&CaptureClock>3){FitView();CaptureStage=1;}
+    if(CaptureStage==0&&CaptureClock>3){if(bUseAssemblyIntegration)FocusWorkcell();else FitView();CaptureStage=1;}
     if(CaptureStage==1&&CaptureClock>6){FScreenshotRequest::RequestScreenshot(Dir/TEXT("Layout_Korean.png"),true,false);CaptureStage=2;}
-    if(CaptureStage==2&&CaptureClock>9){Layout=FFactoryLayout::Default();Rebuild();FocusWorkcell();StartCycle();CaptureStage=3;}
+    if(CaptureStage==2&&CaptureClock>9){if(!bUseAssemblyIntegration){Layout=FFactoryLayout::Default();Rebuild();}FocusWorkcell();if(StartCycle())CaptureStage=3;}
     if(CaptureStage==3&&RunState==EFactoryRunState::Complete){CaptureStage=4;CaptureClock=0;}
     if(CaptureStage==4&&CaptureClock>3){FScreenshotRequest::RequestScreenshot(Dir/TEXT("Wheel_Complete_Korean.png"),true,false);CaptureStage=5;}
     if(CaptureStage==5&&CaptureClock>6)
@@ -187,5 +199,5 @@ void AFactoryRuntime::CaptureRuntime(float Dt)
         FString Json;FJsonSerializer::Serialize(Report,TJsonWriterFactory<>::Create(&Json));FFileHelper::SaveStringToFile(Json,*(Dir/TEXT("report.json")));
         FPlatformMisc::RequestExitWithStatus(false,Report->GetBoolField(TEXT("success"))?0:1);
     }
-    if(CaptureClock>150)FPlatformMisc::RequestExitWithStatus(false,1);
+    if(CaptureClock>(bUseAssemblyIntegration?420:150))FPlatformMisc::RequestExitWithStatus(false,1);
 }

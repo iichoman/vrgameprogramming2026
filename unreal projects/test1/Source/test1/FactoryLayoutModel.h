@@ -31,6 +31,7 @@ struct FFactoryLayout
     FString StationId = TEXT("station_1");
     FString SupplyId = TEXT("supply_1");
     FString HandlerId = TEXT("handler_1");
+    TMap<FString,FString> AssemblyBindings;
     static FFactoryLayout Default();
     static FFactoryLayout LegacyDefault();
     static FString KindName(EFactoryItemKind Kind);

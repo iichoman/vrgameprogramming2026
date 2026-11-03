@@ -224,6 +224,13 @@ bool FFactoryLayout::Validate(FString& Error) const
         { Error=TEXT("공정 흐름에 없는 대상, 중복 대상 또는 작업장이 아닌 항목이 있습니다."); return false; }
         RouteIds.Add(Id);
     }
+    for(const auto& Binding:AssemblyBindings)
+    {
+        const auto* Item=Find(Binding.Value);
+        if((Binding.Key!=TEXT("assembly_wheel_left")&&Binding.Key!=TEXT("assembly_wheel_right")&&Binding.Key!=TEXT("assembly_door"))
+            ||!Item||Item->EffectiveTypeId()!=Binding.Key)
+        {Error=TEXT("조립 작업 연결 대상이 없거나 로봇 종류가 맞지 않습니다.");return false;}
+    }
     return CheckLink(StationId, EFactoryItemKind::VehicleStation, TEXT("차량 작업 위치"))
         && CheckLink(SupplyId, EFactoryItemKind::WheelSupply, TEXT("휠 공급대"))
         && CheckLink(HandlerId, EFactoryItemKind::CartesianHandler, TEXT("이송 장치"));
@@ -234,7 +241,10 @@ FString FFactoryLayout::ToJson() const
     FString Error;
     if (!Validate(Error)) return FString();
     const TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
-    Root->SetNumberField(TEXT("version"), 2);
+    Root->SetNumberField(TEXT("version"), 3);
+    auto Bindings=MakeShared<FJsonObject>();TArray<FString> Keys;AssemblyBindings.GetKeys(Keys);Keys.Sort();
+    for(const auto& Key:Keys)Bindings->SetStringField(Key,AssemblyBindings[Key]);
+    Root->SetObjectField(TEXT("assembly_bindings"),Bindings);
     Root->SetStringField(TEXT("units"), TEXT("cm"));
     const TSharedRef<FJsonObject> Hall = MakeShared<FJsonObject>();
     Hall->SetNumberField(TEXT("length_cm"), LengthCm); Hall->SetNumberField(TEXT("width_cm"), WidthCm);
@@ -273,9 +283,9 @@ bool FFactoryLayout::FromJson(const FString& Json, FFactoryLayout& Out, FString&
     { Error = TEXT("배치 파일을 읽을 수 없습니다. JSON 형식을 확인해 주세요."); return false; }
     double Version = 0;
     FString Units;
-    if (!ReadNumber(Root, TEXT("version"), Version) || (Version != 1.0 && Version != 2.0)
+    if (!ReadNumber(Root, TEXT("version"), Version) || (Version != 1.0 && Version != 2.0 && Version != 3.0)
         || !ReadString(Root, TEXT("units"), Units) || Units != TEXT("cm"))
-    { Error = TEXT("지원하는 배치 형식은 version 1 또는 2, 단위 cm입니다."); return false; }
+    { Error = TEXT("지원하는 배치 형식은 version 1, 2 또는 3, 단위 cm입니다."); return false; }
     const TSharedPtr<FJsonValue>* HallValue = Field(Root, TEXT("hall"), EJson::Object);
     const TSharedPtr<FJsonValue>* ItemValue = Field(Root, TEXT("items"), EJson::Array);
     const TSharedPtr<FJsonValue>* JobValue = Field(Root, TEXT("job"), EJson::Object);
@@ -285,7 +295,7 @@ bool FFactoryLayout::FromJson(const FString& Json, FFactoryLayout& Out, FString&
     if (!ReadNumber((*HallValue)->AsObject(), TEXT("length_cm"), Candidate.LengthCm)
         || !ReadNumber((*HallValue)->AsObject(), TEXT("width_cm"), Candidate.WidthCm))
     { Error = TEXT("공장 크기는 유효한 숫자 두 개로 지정해야 합니다."); return false; }
-    if (Version == 2.0)
+    if (Version >= 2.0)
     {
         const auto* Route=Field(Root,TEXT("process_order"),EJson::Array);
         if (!ReadVector((*HallValue)->AsObject(),TEXT("origin_cm"),Candidate.HallOrigin) || !ReadNumber(Root,TEXT("route_bend_cm"),Candidate.RouteBendCm) || !Route || (*Route)->AsArray().Num()>128)
@@ -308,7 +318,7 @@ bool FFactoryLayout::FromJson(const FString& Json, FFactoryLayout& Out, FString&
             || !ValidRole(Item.Role) || !ReadVector(Object, TEXT("position_cm"), Item.Position)
             || !ReadVector(Object, TEXT("size_cm"), Item.Size) || !ReadNumber(Object, TEXT("yaw_deg"), Item.Yaw))
         { Error = FString::Printf(TEXT("항목 %d의 필수 값, 종류 또는 용도가 올바르지 않습니다."), Index + 1); return false; }
-        if (Version==2 && !ReadString(Object,TEXT("type_id"),Item.TypeId))
+        if (Version>=2 && !ReadString(Object,TEXT("type_id"),Item.TypeId))
         { Error=TEXT("설비 등록 ID(type_id)가 없습니다."); return false; }
         Candidate.Items.Add(MoveTemp(Item));
     }
@@ -319,6 +329,16 @@ bool FFactoryLayout::FromJson(const FString& Json, FFactoryLayout& Out, FString&
     if (Version==1)
         for (const TCHAR* Id:{TEXT("P01"),TEXT("P02"),TEXT("P03"),TEXT("P04"),TEXT("P05"),TEXT("P06")})
             if (Candidate.Find(Id)) Candidate.ProcessOrder.Add(Id);
+    if(Version>=3)
+    {
+        const auto* B=Field(Root,TEXT("assembly_bindings"),EJson::Object);
+        if(!B){Error=TEXT("v3 조립 작업 연결 정보가 없습니다.");return false;}
+        for(const auto& Pair:(*B)->AsObject()->Values)
+        {
+            if(!Pair.Value.IsValid()||Pair.Value->Type!=EJson::String){Error=TEXT("조립 작업 연결은 ID 문자열이어야 합니다.");return false;}
+            Candidate.AssemblyBindings.Add(FString(*Pair.Key),Pair.Value->AsString());
+        }
+    }
     if (!Candidate.Validate(Error)) return false;
     Out = MoveTemp(Candidate); // A rejected file never mutates the currently edited layout.
     return true;

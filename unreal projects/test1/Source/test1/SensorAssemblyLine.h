@@ -90,6 +90,7 @@ public:
     virtual bool AdvanceLine(double Seconds) override;
     virtual FString GetSummary() const override;
     virtual void Tick(float Seconds) override;
+    void DrawSensorVisualization() const;
 protected:
 	virtual void BeforeSensorStep(double Dt) {}
 	void Record(const FString& Kind, const FString& Message);

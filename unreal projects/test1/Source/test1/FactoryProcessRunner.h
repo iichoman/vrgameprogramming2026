@@ -37,6 +37,7 @@ public:
     bool StartFeatureCheck(int32 Kind);
     void RestoreFeatureInputs();
     void InterruptFeaturePose() {if(bSensorFeatures)Sensors.PublishPose=false;}
+    void InterruptHubSensor() {if(bSensorFeatures)bPublishHub=false;}
     FString FeatureSummary() const;
     void DrawFeatureVisualization() const;
     FString VisualizationSummary() const;
@@ -48,6 +49,7 @@ private:
     AFactoryRuntime* Runtime() const;
     UFactoryMotionController* Controller() const;
     bool Move(const FVector& Position,double Yaw);
+    bool Move(const FVector& Position,double Yaw,const TArray<double>& Seed);
     void Change(EFactoryRunState State);
     FFactoryRequestId Pending;
     bool bHolding=false;
@@ -56,9 +58,34 @@ private:
     FVector ObservedPickup=FVector::ZeroVector;
     FVector ActiveGoal=FVector::ZeroVector;
     bool bSensorFeatures=false, bWaiting=false, bObservedFault=false;
+    double SupplyDeliveryAt=-1;
+    bool bReserveAvailable=true;
+    friend class AFactoryRuntime; // Runtime checks can simulate an empty reserve.
     int32 FeatureKind=0, GripAttempts=0;
     double WaitSeconds=0, StableSeconds=0, GripSeconds=0;
     FString FeatureStatus=TEXT("미실행");
     bool CheckObservations(double Dt);
+    bool AssessMount(double Dt);
+    bool PlanApproach();
+    TArray<TArray<double>> ArmPlan;
+    bool bPublishHub=true;
+    double HubSampleAt=-1, SeatSince=-1, LastDepth=0, ProgressAt=-1;
+    FTransform MeasuredHub, MeasuredWheel;
+    int32 Realignments=0;
+    FString MountDecision;
     void FeatureFault(const FString& Reason);
+};
+
+/** Fixed-layout team cell adapter. Owns scheduling, not robot/sensor algorithms. */
+UCLASS(NotBlueprintable)
+class TEST1_API UFactoryAssemblyProcessRunner : public UFactoryProcessRunner
+{
+    GENERATED_BODY()
+public:
+    virtual FName OperationType() const override { return TEXT("assembly_line_test"); }
+    virtual bool Validate(FString& Error) const override;
+    virtual bool Start() override;
+    virtual void Stop() override;
+    virtual void Reset() override;
+    virtual void Step(double Dt) override;
 };

@@ -23,8 +23,19 @@ bool AAutonomousAssemblyLine::ResetLine()
 		TriggerAfter[Index] = Random.FRandRange(.1,.4);
 		bInjected[Index] = bRestored[Index] = false;
 	}
+	if (FactoryCheck != 5)
+	{
+		bInjected[1] = bRestored[1] = true;
+		if (FactoryCheck == 0) bInjected[0] = bRestored[0] = true;
+		else Planned[0] = static_cast<ERandomWheelEvent>(FactoryCheck-1);
+	}
 	Record(TEXT("RANDOM_SEED"),FString::FromInt(CurrentSeed));
 	return true;
+}
+
+void AAutonomousAssemblyLine::SetFactoryCheck(int32 Kind)
+{
+	FactoryCheck = FMath::Clamp(Kind, 0, 5);
 }
 
 void AAutonomousAssemblyLine::InjectEvent(int32 Index)

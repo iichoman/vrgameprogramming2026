@@ -61,7 +61,7 @@ void AFactoryEquipment::Configure(const FFactoryLayoutItem& Item, UStaticMesh* R
 {
     if(MotionController){RemoveInstanceComponent(MotionController);MotionController->DestroyComponent();MotionController=nullptr;}
     if(Item.Kind==EFactoryItemKind::CartesianHandler||Item.Kind==EFactoryItemKind::ArticulatedRobot)
-    {MotionController=CreateController();AddInstanceComponent(MotionController);MotionController->RegisterComponent();MotionController->Reset(0);}
+    {MotionController=CreateController();if(MotionController){AddInstanceComponent(MotionController);MotionController->RegisterComponent();MotionController->Reset(0);}}
     Definition = Item;
     ItemId = Item.Id;
     SetActorTransform(Item.Transform());

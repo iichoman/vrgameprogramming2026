@@ -16,9 +16,13 @@ void UFactoryMotionController::Limits(int32 Axis,double& Min,double& Max,double&
 {Min=Axis<2?-650:(Axis==2?30:-720);Max=Axis<2?650:(Axis==2?350:720);Speed=Axis==3?90:120;Acc=Axis==3?180:240;}
 bool UFactoryMotionController::RequestMove(FFactoryRequestId Id,const FTransform& World,FString& Error)
 {
+    return RequestMove(Id,World,Error,Q);
+}
+bool UFactoryMotionController::RequestMove(FFactoryRequestId Id,const FTransform& World,FString& Error,const TArray<double>& Seed)
+{
     if(CommandStatus==EFactoryCommandStatus::Running){Error=TEXT("설비가 이전 명령을 실행 중입니다.");return false;}
     if(Id.Epoch!=CurrentEpoch||Id.Sequence<=LastSequence){Error=TEXT("오래되거나 중복된 명령입니다.");return false;}
-    TArray<double> Solution;if(!Solve(World,Solution,Q)){Error=TEXT("목표 자세에 도달할 수 없습니다. 로봇·공급대 위치를 조정하세요.");return false;}
+    TArray<double> Solution;if(!Solve(World,Solution,Seed)){Error=TEXT("목표 자세에 도달할 수 없습니다. 로봇·공급대 위치를 조정하세요.");return false;}
     if(Q.Num()!=Solution.Num()){Error=TEXT("관절 구성이 일치하지 않습니다.");return false;}
     ActiveId=Id;LastSequence=Id.Sequence;Target=MoveTemp(Solution);Goal=World;Elapsed=0;Integral.Init(0,Q.Num());CommandStatus=EFactoryCommandStatus::Running;return true;
 }

@@ -23,10 +23,14 @@ public:
 	virtual bool SelectDemo(EArrivalDemo Selection) override;
 	virtual bool ResetLine() override;
 	virtual FString GetSummary() const override;
+	// 0: no injected event, 1..4: first left wheel only, 5: original seeded mode.
+	void SetFactoryCheck(int32 Kind);
+	int32 GetFactoryCheck() const { return FactoryCheck; }
 protected:
 	virtual void BeforeSensorStep(double Dt) override;
 private:
 	FRandomStream Random;
+	int32 FactoryCheck = 5;
 	ERandomWheelEvent Planned[2];
 	double FirstSeenAt[2] = {-1,-1};
 	double TriggerAfter[2] = {0,0};

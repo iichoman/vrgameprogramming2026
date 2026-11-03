@@ -1,5 +1,6 @@
 #include "FactoryRuntime.h"
 #include "FactoryEquipment.h"
+#include "RobotArm.h"
 #include "FactoryEquipmentRegistry.h"
 #include "Components/SceneComponent.h"
 #include "Kismet/GameplayStatics.h"
@@ -46,19 +47,20 @@ void AFactoryRuntime::CancelEdit()
 void AFactoryRuntime::SelectHall(){if(!CanEdit())return;CancelEdit();SelectedId.Empty();bHallSelected=true;RefreshHighlights();bNeedsPanel=true;}
 void AFactoryRuntime::BeginPlacement(const FString& Id)
 {
-    if(!CanEdit())return;CancelEdit();EnsureRegistry();const auto* D=Registry->Find(Id);if(!D)return;
+    if(!CanEdit())return;CancelEdit();EnsureRegistry();const auto* D=Registry->Find(Id);if(!D)return;if(!IsPaletteTypeAllowed(Id)){Status=TEXT("현재 모드에서 지원하지 않는 설비입니다.");return;}
     PendingTypeId=Id;bCreateZone=D->Kind==TEXT("zone");bHallSelected=false;
     Status=bCreateZone?TEXT("바닥에서 드래그하여 구역 만들기 · Esc 취소"):D->NameKo+TEXT(": 바닥을 클릭해 배치 · Esc 취소");
 }
 void AFactoryRuntime::AddRegisteredItem(const FString& Id,const FVector2D& Point)
 {
-    if(!CanEdit()||Layout.Items.Num()>=128)return;EnsureRegistry();const auto* D=Registry->Find(Id);if(!D)return;
+    if(!CanEdit()||Layout.Items.Num()>=128)return;EnsureRegistry();const auto* D=Registry->Find(Id);if(!D)return;if(!IsPaletteTypeAllowed(Id)){Status=TEXT("현재 모드에서 지원하지 않는 설비입니다.");return;}
     BeginEdit();FFactoryLayoutItem Item;Item.Id=TEXT("item_")+FGuid::NewGuid().ToString(EGuidFormats::Digits);
     Item.TypeId=Id;Item.NameKo=D->NameKo;Item.NameEn=D->NameEn;Item.Size=D->FootprintCm;
     FFactoryLayout::ParseKind(D->Kind,Item.Kind);Item.Position=Point;
     if(bSnap){Item.Position.X=FMath::GridSnap(Item.Position.X,SnapCm);Item.Position.Y=FMath::GridSnap(Item.Position.Y,SnapCm);}
+    if(const auto* T=AssemblyRobotTemplate(Id))Item.Yaw=T->GetActorRotation().Yaw;
     Layout.Items.Add(Item);SelectedId=Item.Id;bHallSelected=false;Rebuild();EndEdit();
-    Status=D->NameKo+TEXT(" 추가 완료 · 필요하면 왼쪽 패널에서 휠 작업에 연결하세요.");
+    Status=D->NameKo+TEXT(" 추가 완료 · 왼쪽 패널에서 작업에 연결하세요.");
 }
 void AFactoryRuntime::SetZoneLabels(bool V)
 {bZoneLabels=V;for(const auto& I:Layout.Items)if(I.Kind==EFactoryItemKind::Zone)if(auto* A=Equipment.FindRef(I.Id).Get())A->SetLabelVisible(V);SaveViewSettings();}
@@ -110,6 +112,16 @@ int32 AFactoryRuntime::HitResizeHandle(const FVector2D& Pixel) const
         if(PC->ProjectWorldLocationToScreen(P,Screen)&&FVector2D::Distance(Screen,Pixel)<16)return I;}
     return -1;
 }
+FFactoryLayoutItem AFactoryRuntime::ClampZoneChange(const FFactoryLayoutItem& Before,const FFactoryLayoutItem& Desired) const
+{
+    if(Layout.Contains(Desired))return Desired;
+    if(!Layout.Contains(Before))return Before;
+    double Lo=0,Hi=1;FFactoryLayoutItem Result=Before;
+    for(int32 I=0;I<40;++I)
+    {const double T=(Lo+Hi)*.5;auto C=Before;C.Position=FMath::Lerp(Before.Position,Desired.Position,T);C.Size=FMath::Lerp(Before.Size,Desired.Size,T);
+        if(Layout.Contains(C)){Lo=T;Result=C;}else Hi=T;}
+    return Result;
+}
 void AFactoryRuntime::PreviewResize(const FVector& Point)
 {
     if(ResizeHandle<0)return;const FVector2D H=Handles[ResizeHandle];
@@ -133,8 +145,9 @@ void AFactoryRuntime::PreviewResize(const FVector& Point)
     }
     else if(auto* Item=Selected())
     {
-        Item->Position={Centre.X,Centre.Y};Item->Size=Size;
-        if(auto* A=Equipment.FindRef(Item->Id).Get()){A->UpdatePlacement(*Item);A->VisualRoot->SetRelativeScale3D(FVector(Size.X/ResizeStartBox.Size.X,Size.Y/ResizeStartBox.Size.Y,1));A->SetLabelVisible(false);}
+        auto Desired=*Item;Desired.Position={Centre.X,Centre.Y};Desired.Size=Size;
+        *Item=ClampZoneChange(ResizeStartBox,Desired);
+        if(auto* A=Equipment.FindRef(Item->Id).Get()){A->UpdatePlacement(*Item);A->VisualRoot->SetRelativeScale3D(FVector(Item->Size.X/ResizeStartBox.Size.X,Item->Size.Y/ResizeStartBox.Size.Y,1));A->SetLabelVisible(false);}
     }
     RefreshHighlights();RefreshDirty();
 }
@@ -154,6 +167,12 @@ void AFactoryRuntime::ViewportPointer(FVector2D Pixel,FKey Button,bool Pressed)
     for(const auto& Item:Layout.Items){const FVector Local=Item.Transform().InverseTransformPosition(P);
         if(FMath::Abs(Local.X)<=Item.Size.X*.5&&FMath::Abs(Local.Y)<=Item.Size.Y*.5)
             if(!Hit||Item.Kind!=EFactoryItemKind::Zone)Hit=&Item;}
+    if(!Hit)
+    {
+        const double X=P.X-Layout.HallOrigin.X,Y=P.Y-Layout.HallOrigin.Y;
+        const double Edge=FMath::Min(FMath::Min(FMath::Abs(X),FMath::Abs(X-Layout.LengthCm)),FMath::Abs(FMath::Abs(Y)-Layout.WidthCm*.5));
+        if(X>=-50&&X<=Layout.LengthCm+50&&FMath::Abs(Y)<=Layout.WidthCm*.5+50&&Edge<50){SelectHall();return;}
+    }
     SelectItem(Hit?Hit->Id:FString());
     if(Hit){BeginEdit();bDragging=true;DragOffset=Hit->Position-FVector2D(P.X,P.Y);}
 }
@@ -183,6 +202,7 @@ void AFactoryRuntime::OnPointerUp()
         Layout.Items.Add(I);SelectedId=I.Id;bCreateZone=false;PendingTypeId.Empty();Rebuild();
     }
     else if(WasResize)Rebuild();
+    else if(bUseAssemblyIntegration){BindAssemblyRobots();ResetCycle();}
     EndEdit();bNeedsPanel=true;
 }
 void AFactoryRuntime::PanCamera(FVector2D D)
@@ -193,7 +213,7 @@ void AFactoryRuntime::PanCamera(FVector2D D)
     CameraCentre+=FVector2D(Forward.X,Forward.Y)*D.Y*Scale-FVector2D(Right.X,Right.Y)*D.X*Scale;UpdateCamera();
 }
 void AFactoryRuntime::OrbitCamera(FVector2D D)
-{if(bTopView)return;CameraYaw=FRotator::NormalizeAxis(CameraYaw+D.X*.25);CameraPitch=FMath::Clamp(CameraPitch+D.Y*.2,-85.,-10.);UpdateCamera();}
+{if(bTopView)return;CameraYaw=FRotator::NormalizeAxis(CameraYaw+D.X*.25);CameraPitch=FMath::Clamp(CameraPitch-D.Y*.2,-85.,-10.);UpdateCamera();}
 void AFactoryRuntime::FocusSelected()
 {if(const auto* I=Selected()){CameraCentre=I->Position;CameraWidth=FMath::Clamp(I->Size.GetMax()*2.5,700.,10000.);UpdateCamera();}else if(bHallSelected)FitView();else FocusWorkcell();}
 void AFactoryRuntime::ViewportKey(FKey Key,bool Ctrl,bool Shift)
