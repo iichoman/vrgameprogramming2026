@@ -26,7 +26,7 @@ bool ADoorAssemblyCell::ValidateSetup()
 {
 	if (!IsValid(Assembly) || !IsValid(Robot) || !Assembly->GetBodyFrame())
 	{ Status=TEXT("Assign the vehicle assembly and native robot."); return false; }
-	Pose=Assembly->GetDoorPoseController(ECamryDoorSide::Left);
+	Pose=Assembly->GetDoorPoseController(bRightDoor?ECamryDoorSide::Right:ECamryDoorSide::Left);
 	if (!Pose.IsValid() || !Pose->HasReferencePose() || !Pose->GetControlledDoor())
 	{ Status=TEXT("A serialized normal left-door reference is required."); return false; }
 	const double Values[]={PositionToleranceMm,OrientationToleranceDeg,SettleSeconds,StageTimeoutSeconds,FasteningSeconds,FixedStepSeconds};
@@ -41,7 +41,7 @@ bool ADoorAssemblyCell::ValidateSetup()
 	{ Status=TEXT("Vehicle body requires a finite rigid transform with unit scale."); return false; }
 	MountInBody=Pose->GetReferencePoseInBody();
 	RobotBaseAtStart=Robot->GetActorTransform();
-	Inspection=Assembly->FindComponentByClass<UDoorInspectionComponent>();
+	Inspection=InspectionOverride?InspectionOverride.Get():Assembly->FindComponentByClass<UDoorInspectionComponent>();
 	if (!Inspection.IsValid() || Inspection->Points.Num()!=6)
 	{ Status=TEXT("Six registered inspection stations are required."); return false; }
 	const double Extra[]={GapToleranceMm,FlushToleranceMm,MaxPickupDisplacementMm,MaxPickupRotationDeg};
@@ -56,8 +56,9 @@ bool ADoorAssemblyCell::ValidateSetup()
 
 FTransform ADoorAssemblyCell::GetMountDoorWorld() const
 {
-	return IsValid(Assembly) && Assembly->GetBodyFrame()
-		? MountInBody*Assembly->GetBodyFrame()->GetComponentTransform() : FTransform::Identity;
+    if(!IsValid(Assembly)||!Assembly->GetBodyFrame())return FTransform::Identity;
+    const auto* Reference=Assembly->GetDoorPoseController(bRightDoor?ECamryDoorSide::Right:ECamryDoorSide::Left);
+    return Reference&&Reference->HasReferencePose()?Reference->GetReferencePoseInBody()*Assembly->GetBodyFrame()->GetComponentTransform():FTransform::Identity;
 }
 
 FTransform ADoorAssemblyCell::OffsetDoor(const FTransform& World,const FVector& Offset) const

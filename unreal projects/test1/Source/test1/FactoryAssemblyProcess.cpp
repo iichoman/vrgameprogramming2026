@@ -83,8 +83,8 @@ FString AFactoryRuntime::AssemblyMetrics() const
     auto* L=TestAssemblyLine.Get();if(!IsValid(L))return TEXT("통합 라인 연결 없음");
     const auto* W=L->WheelCell.Get();const auto* D=L->DoorCell.Get();
     FString Sensor=W?W->GetLeftSensorSummary():TEXT("휠 센서 없음");
-    return FString::Printf(TEXT("경과 %.2f초 · 휠 %d/4 · 왼쪽 앞문 %s\n고장 주입 %d / 복구 %d · 시드 %d\n%s\n%s"),
-        SimulationSeconds,W?W->MountedCount:0,D&&D->bDoorFastened?TEXT("완료"):TEXT("대기"),
+    return FString::Printf(TEXT("경과 %.2f초 · 휠 %d/4 · 앞문 %d/%d\n고장 주입 %d / 복구 %d · 시드 %d\n%s\n%s"),
+        SimulationSeconds,W?W->MountedCount:0,(D&&D->bDoorFastened?1:0)+(RightDoorCell&&RightDoorCell->bDoorFastened?1:0),RightDoorCell?2:1,
         L->InjectedEvents,L->RecoveredEvents,L->CurrentSeed,*L->ActiveEvent,*Sensor);
 }
 

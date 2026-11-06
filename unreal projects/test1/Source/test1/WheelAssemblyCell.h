@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "FactoryTaskModel.h"
 #include "GameFramework/Actor.h"
 #include "Components/ActorComponent.h"
 #include "WheelAssemblyCell.generated.h"
@@ -33,10 +34,12 @@ public:
 	UPROPERTY(VisibleAnywhere) FWheelSensorReading PickupPose;
 	UPROPERTY(VisibleAnywhere) FWheelSensorReading Gripped;
 	UPROPERTY(VisibleAnywhere) FWheelSensorReading MountPose;
-	bool bPublishPickupPose = true;
+	// Optional camera/perception adapter; owned per sensor bank, never shared mutable state.
+    TSharedPtr<IFactoryPartObservationProvider> ObservationProvider;
+    bool bPublishPickupPose = true;
 	bool bGripActuatorFault = false;
 	void Reset();
-	void Sample(double Now, const AWheelAssemblyCell* Cell, int32 WheelIndex);
+	virtual void Sample(double Now, const AWheelAssemblyCell* Cell, int32 WheelIndex);
 	void CommandGrip(bool bClose) { bGripClosed = bClose; }
 	bool IsGripCommandedClosed() const { return bGripClosed; }
 private:
@@ -81,6 +84,24 @@ class TEST1_API AWheelAssemblyCell : public AActor
 	GENERATED_BODY()
 public:
 	AWheelAssemblyCell();
+    // Runtime adapter bindings, ordered LF/LR/RF/RR. Empty preserves standalone demos.
+    UPROPERTY(Transient) TArray<TObjectPtr<ARobotArm>> TaskRobots;
+    UPROPERTY(Transient) TArray<TObjectPtr<UWheelRobotSensorBank>> TaskSensors;
+    TArray<double> RearTransit[4];
+    TArray<int32> TaskPartIndices;
+    TMap<int32,FVector> SupplyOffsetsCm;
+    int32 PartIndex(int32 Target) const { return TaskPartIndices.IsValidIndex(Target)?TaskPartIndices[Target]:Target; }
+    FTransform GetPhysicalPartWorld(int32 Index) const;
+    bool SetPhysicalPartWorld(int32 Index,const FTransform& Pose);
+    ARobotArm* RobotForWheel(int32 Index) const;
+    bool UsesTaskBindings() const { return TaskRobots.Num()==4; }
+    bool PrepareTaskLanes();
+    int32 LaneCount() const { return UsesTaskBindings()?4:2; }
+    bool LaneEnabled(int32 Lane) const { return !UsesTaskBindings()||!TaskQueue[Lane].IsEmpty(); }
+    UWheelRobotSensorBank* SensorsFor(int32 Lane) const;
+    bool SensorDrivenLane(int32 Lane) const;
+    int32 GeometricSide(int32 Lane) const { return UsesTaskBindings()?(Lanes[Lane].WheelIndex>=0?Lanes[Lane].WheelIndex/2:(!TaskQueue[Lane].IsEmpty()?TaskQueue[Lane][0]/2:Lane%2)):Lane; }
+    TArray<int32> TaskQueue[4];
 	UPROPERTY(EditAnywhere, Category="Wheel Cell|Control") bool bExternallyDriven = false;
 	/** Enable measured decisions on the left robot in the sensor assembly map. */
 	UPROPERTY(EditAnywhere, Category="Wheel Cell|Sensors") bool bSensorDrivenLeftRobot = false;
@@ -167,10 +188,10 @@ private:
 	UPROPERTY() TArray<TObjectPtr<USceneComponent>> WheelRoots;
 	UPROPERTY() TArray<TObjectPtr<UStaticMeshComponent>> TireVisuals;
 	UPROPERTY() TArray<TObjectPtr<UStaticMeshComponent>> HubVisuals;
-	FWheelLane Lanes[2];
+	FWheelLane Lanes[4];
 	FTransform FastenedInBody[4];
 	FTransform BodyAtStart;
-	FTransform RobotAtStart[2];
+	FTransform RobotAtStart[4];
 	double Accumulator = 0;
 	bool bRunning = false;
 	bool bStationCaptured = false;
@@ -190,5 +211,5 @@ private:
 	FTransform TCPFor(int32 Side) const;
 	FTransform OffsetOutward(const FTransform& Pose, int32 Side, double Centimeters) const;
 	bool BeginWheel(int32 Side);
-	void WaitForLeftSensor(EWheelStage WaitStage, const FString& Message);
+	void WaitForLeftSensor(int32 Side, EWheelStage WaitStage, const FString& Message);
 };

@@ -146,6 +146,8 @@ void AFactoryRuntime::BeginPlay()
     if(FParse::Param(FCommandLine::Get(),TEXT("FactoryRuntimeAutoTest")))
     { bUseAssemblyIntegration=false; InitialLayoutJson=FFactoryLayout::Default().ToJson(); }
     LoadViewSettings();BuildPreview();
+    if(FParse::Param(FCommandLine::Get(),TEXT("FactoryTaskAutoTest")))
+    {const bool Ok=RunTaskAssignmentChecks();FPlatformMisc::RequestExitWithStatus(false,Ok?0:1);return;}
     if(FParse::Param(FCommandLine::Get(),TEXT("FactoryModularAutoTest")))
     {const bool Ok=RunModularEditorChecks();FPlatformMisc::RequestExitWithStatus(false,Ok?0:1);return;}
     if(FParse::Param(FCommandLine::Get(),TEXT("FactoryAssemblyAutoTest")))
@@ -177,6 +179,8 @@ void AFactoryRuntime::EndPlay(const EEndPlayReason::Type Reason)
 void AFactoryRuntime::Tick(float Dt)
 {
     Super::Tick(Dt);
+    if(FParse::Param(FCommandLine::Get(),TEXT("FactoryDirectAutoTest"))&&!bUIProbeDone&&GetWorld()->GetTimeSeconds()>.5)
+    {bUIProbeDone=true;const bool Ok=RunDirectEditChecks();FPlatformMisc::RequestExitWithStatus(false,Ok?0:1);return;}
     EditorTick();
     /* Legacy input replaced by the Slate viewport surface.
     if(bDragging && CanEdit())
@@ -255,6 +259,7 @@ void AFactoryRuntime::DeleteSelected()
     BeginEdit();Layout.ProcessOrder.Remove(SelectedId);
     if(Layout.StationId==SelectedId)Layout.StationId.Empty();if(Layout.SupplyId==SelectedId)Layout.SupplyId.Empty();if(Layout.HandlerId==SelectedId)Layout.HandlerId.Empty();
     for(auto It=Layout.AssemblyBindings.CreateIterator();It;++It)if(It.Value()==SelectedId)It.RemoveCurrent();
+    for(auto& T:Layout.Tasks)if(T.RobotId==SelectedId)T.RobotId.Empty();
     Layout.Items.RemoveAll([&](const auto& I){return I.Id==SelectedId;});SelectedId.Empty();Rebuild();FinishDiscreteEdit();
 }
 void AFactoryRuntime::BindSelected()
@@ -263,7 +268,9 @@ void AFactoryRuntime::BindSelected()
     if(bUseAssemblyIntegration)
     {
         if(!AFactoryAssemblyEquipment::IsAssemblyType(Selected()->EffectiveTypeId()))return;
-        BeginEdit();Layout.AssemblyBindings.Add(Selected()->EffectiveTypeId(),SelectedId);Rebuild();EndEdit();
+        BeginEdit();Layout.AssemblyBindings.Add(Selected()->EffectiveTypeId(),SelectedId);
+        for(auto& T:Layout.Tasks)if(const auto* S=FactoryTasks::Find(T.Id))if(FactoryTasks::Supports(Selected()->EffectiveTypeId(),*S))T.RobotId=SelectedId;
+        Rebuild();EndEdit();
         Status=TEXT("선택한 로봇을 해당 조립 작업에 연결했습니다. 같은 작업의 이전 로봇은 대기합니다.");return;
     }
     BeginEdit();switch(Selected()->Kind)
@@ -314,7 +321,7 @@ bool AFactoryRuntime::LoadLayout(const FString& Slot)
     if(!FFactoryLayout::FromJson(Json,Candidate,Error)){Status=TEXT("불러오기 거부: ")+Error;return false;}
     EnsureRegistry();if(!Registry->Validate(Candidate,Error)){Status=Error;return false;}
     if(bUseAssemblyIntegration){for(const auto& I:Candidate.Items)if(!IsPaletteTypeAllowed(I.EffectiveTypeId())){Status=TEXT("조립 모드에서 지원하지 않는 설비입니다.");return false;}}
-    BeginEdit();Layout=MoveTemp(Candidate);SelectedId.Empty();Rebuild();EndEdit();SavedSnapshot=FromBackup?FString():Layout.ToJson();RefreshDirty();FitView();Status=TEXT("배치 ")+Slot+(FromBackup?TEXT(" 백업 복구 완료 · 다시 저장하세요."):TEXT(" 불러오기 완료"));return true;
+    BeginEdit();Layout=MoveTemp(Candidate);SelectedId.Empty();if(bUseAssemblyIntegration)InitializeAssemblyCatalog();Rebuild();EndEdit();SavedSnapshot=FromBackup?FString():Layout.ToJson();RefreshDirty();FitView();Status=TEXT("배치 ")+Slot+(FromBackup?TEXT(" 백업 복구 완료 · 다시 저장하세요."):TEXT(" 불러오기 완료"));return true;
 }
 void AFactoryRuntime::RestoreDefault()
 {
@@ -391,9 +398,9 @@ FString AFactoryRuntime::StateText() const
 }
 FString AFactoryRuntime::BindingText() const
 {
-    if(bUseAssemblyIntegration){FString Text=TEXT("반입 → 휠 좌/우 → 이송 → 왼쪽 앞문\n");
-        for(const FString Type:{TEXT("assembly_wheel_left"),TEXT("assembly_wheel_right"),TEXT("assembly_door")})
-        {const auto* D=Registry?Registry->Find(Type):nullptr;const auto* I=Layout.Find(Layout.AssemblyBindings.FindRef(Type));Text+=(D?D->NameKo:Type)+TEXT(": ")+(I?I->NameKo:TEXT("미연결"))+TEXT("\n");}return Text;}
+    if(bUseAssemblyIntegration){FString Text=TEXT("반입 → 휠 작업 병렬 실행 → 이송 → 앞문\n");
+        for(const auto& T:Layout.Tasks){const auto* S=FactoryTasks::Find(T.Id);const auto* I=Layout.Find(T.RobotId);
+            Text+=(S?S->Label:T.Id)+TEXT(": ")+(I?I->NameKo:TEXT("미할당"))+TEXT("\n");}return Text;}
     auto Name=[&](const FString& Id){auto* I=Layout.Find(Id);return I?I->NameKo:TEXT("미지정");};
     return TEXT("차량: ")+Name(Layout.StationId)+TEXT("\n공급: ")+Name(Layout.SupplyId)+TEXT("\n이송: ")+Name(Layout.HandlerId);
 }

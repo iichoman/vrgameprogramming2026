@@ -131,6 +131,7 @@ void AIntegratedAssemblyLine::Fail(const FString& Reason)
     const FString Saved = Reason;
     if (WheelCell) WheelCell->StopCycle();
     if (DoorCell) DoorCell->StopCycle();
+    if(SecondDoorCell)SecondDoorCell->StopCycle();
     Stage = EAssemblyLineStage::Fault;
     Status = Saved;
     bReady = false;
@@ -144,17 +145,21 @@ bool AIntegratedAssemblyLine::ResetLine()
         || !FMath::IsFinite(DockSeconds) || DockSeconds < 0 || DoorStationOffsetCm.ContainsNaN())
     { Fail(TEXT("Invalid line references or transport configuration.")); return false; }
     WheelCell->bExternallyDriven = DoorCell->bExternallyDriven = true;
-    WheelCell->StopCycle(); DoorCell->StopCycle();
+    WheelCell->StopCycle(); DoorCell->StopCycle();if(SecondDoorCell)SecondDoorCell->StopCycle();
     auto* Car = WheelCell->Assembly.Get();
     FTransform DoorStation = VehicleAtWheelStation;
     DoorStation.AddToTranslation(DoorStationOffsetCm);
     Car->SetActorTransform(DoorStation);
     if (!DoorCell->ResetCycle()) { Fail(DoorCell->Status); return false; }
     DoorSupplyWorld = Car->GetLeftDoor()->GetComponentTransform();
+    if(SecondDoorCell){SecondDoorCell->bExternallyDriven=true;
+        if(!SecondDoorCell->ResetCycle()){Fail(SecondDoorCell->Status);return false;}
+        SecondDoorSupplyWorld=Car->GetRightDoor()->GetComponentTransform();}
     Car->SetActorTransform(VehicleAtWheelStation);
     WheelCell->TransportCarriage->SetActorTransform(CarriageAtWheelStation);
     if (!WheelCell->ResetCycle()) { Fail(WheelCell->Status); return false; }
     Car->GetLeftDoor()->SetWorldTransform(DoorSupplyWorld);
+    if(SecondDoorCell)Car->GetRightDoor()->SetWorldTransform(SecondDoorSupplyWorld);
     ElapsedSeconds = TransferTime = TransferProgress = 0;
     Stage = EAssemblyLineStage::Idle;
     Status = TEXT("대기 · 차체 반입 → 타이어 4개 → 다음 구역 이송 → 왼쪽 앞문");
@@ -171,7 +176,7 @@ bool AIntegratedAssemblyLine::StartLine()
 void AIntegratedAssemblyLine::StopLine()
 {
     if (Stage == EAssemblyLineStage::Idle || Stage == EAssemblyLineStage::Complete || Stage == EAssemblyLineStage::Fault) return;
-    WheelCell->StopCycle(); DoorCell->StopCycle();
+    WheelCell->StopCycle(); DoorCell->StopCycle();if(SecondDoorCell)SecondDoorCell->StopCycle();
     Stage = EAssemblyLineStage::Stopped;
     Status = TEXT("정지 · 현재 자세 유지, R로 초기화 후 다시 시작");
     bReady = false;
@@ -190,6 +195,7 @@ bool AIntegratedAssemblyLine::AdvanceLine(double Seconds)
     {
         const bool Ok = WheelCell->AdvanceSimulation(Seconds);
         Car->GetLeftDoor()->SetWorldTransform(DoorSupplyWorld);
+    if(SecondDoorCell)Car->GetRightDoor()->SetWorldTransform(SecondDoorSupplyWorld);
         Status = WheelCell->bTransporting ? TEXT("1/4 차체 반입") : TEXT("2/4 타이어 장착 · ") + WheelCell->Status;
         if (!Ok || WheelCell->Outcome == EWheelOutcome::Blocked || WheelCell->Outcome == EWheelOutcome::QualityFail || WheelCell->Outcome == EWheelOutcome::Stopped)
         { Fail(WheelCell->Status); return false; }
@@ -215,10 +221,12 @@ bool AIntegratedAssemblyLine::AdvanceLine(double Seconds)
         Carriage->SetActorTransform(ExpectedCarriage);
         WheelCell->UpdateFastenedWheels();
         Car->GetLeftDoor()->SetWorldTransform(DoorSupplyWorld);
+    if(SecondDoorCell)Car->GetRightDoor()->SetWorldTransform(SecondDoorSupplyWorld);
         Status = T < 1 ? TEXT("3/4 타이어 장착 차체를 문 작업 구역으로 이송") : TEXT("문 작업 구역 도킹 확인");
         if (TransferTime + 1.e-9 >= TransferSeconds + DockSeconds)
         {
             if (!DoorCell->StartCycle()) { Fail(DoorCell->Status); return false; }
+            if(SecondDoorCell&&!SecondDoorCell->StartCycle()){Fail(SecondDoorCell->Status);return false;}
             Stage = EAssemblyLineStage::Door;
         }
     }
@@ -228,12 +236,14 @@ bool AIntegratedAssemblyLine::AdvanceLine(double Seconds)
         { Fail(TEXT("Carriage moved during door assembly.")); return false; }
         if (!DoorCell->AdvanceSimulation(Seconds) || DoorCell->Outcome == EDoorCellOutcome::QualityFail || DoorCell->Outcome == EDoorCellOutcome::Stopped)
         { Fail(DoorCell->Status); return false; }
-        Status = TEXT("4/4 왼쪽 앞문 장착 · ") + DoorCell->GetStateLabel();
-        if (DoorCell->State == EDoorAssemblyState::Complete)
+        if(SecondDoorCell&&(!SecondDoorCell->AdvanceSimulation(Seconds)||SecondDoorCell->Outcome==EDoorCellOutcome::QualityFail||SecondDoorCell->Outcome==EDoorCellOutcome::Stopped))
+        {Fail(SecondDoorCell->Status);return false;}
+        Status = TEXT("4/4 앞문 장착 · ") + DoorCell->GetStateLabel();
+        if (DoorCell->State == EDoorAssemblyState::Complete&&(!SecondDoorCell||SecondDoorCell->State==EDoorAssemblyState::Complete))
         {
-            if (DoorCell->Outcome != EDoorCellOutcome::Pass) { Fail(DoorCell->Status); return false; }
+            if (DoorCell->Outcome != EDoorCellOutcome::Pass||(SecondDoorCell&&SecondDoorCell->Outcome!=EDoorCellOutcome::Pass)) { Fail(DoorCell->Status); return false; }
             Stage = EAssemblyLineStage::Complete;
-            Status = TEXT("완료 · 타이어 4개와 왼쪽 앞문 장착·검사 합격");
+            Status = SecondDoorCell?TEXT("완료 · 휠 4개와 앞문 2개 시험 장착·검사 완료"):TEXT("완료 · 타이어 4개와 왼쪽 앞문 장착·검사 합격");
         }
     }
     return Stage != EAssemblyLineStage::Fault;

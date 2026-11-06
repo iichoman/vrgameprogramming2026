@@ -338,8 +338,9 @@ void AFactoryRuntime::CreatePanel()
             return FText::FromString(Selected() && Selected()->Kind == EFactoryItemKind::Zone
                 ? FactoryRoleLabel(Selected()->Role) : TEXT("구역 용도: 구역 선택 시 설정"));
         }).AutoWrapText(true)]];
+    if(!bUseAssemblyIntegration)
     Pair(Button(TEXT("선택 항목 삭제"), [this]() { DeleteSelected(); }, HasSelection),
-        Button(TEXT("선택 로봇·설비 작업 연결"), [this]() { BindSelected(); }, TAttribute<bool>::CreateLambda([this]() {
+        Button(bUseAssemblyIntegration?TEXT("작업 부여"):TEXT("선택 설비 작업 연결"), [this]() { if(bUseAssemblyIntegration)OpenRobotPopup(SelectedId,FVector2D(600,120));else BindSelected(); }, TAttribute<bool>::CreateLambda([this]() {
             const FFactoryLayoutItem* Item = Selected();
             return CanEdit() && Item && (Item->Kind == EFactoryItemKind::VehicleStation
                 || Item->Kind == EFactoryItemKind::WheelSupply || Item->Kind == EFactoryItemKind::CartesianHandler || Item->Kind == EFactoryItemKind::ArticulatedRobot);
@@ -390,14 +391,14 @@ void AFactoryRuntime::CreatePanel()
     EnsureRegistry();
     for(const auto& D:Registry->All())
     {
-        if(!IsPaletteTypeAllowed(D->TypeId.ToString()))continue;
+        if(!IsPaletteTypeAllowed(D->TypeId.ToString())||D->TypeId==TEXT("assembly_wheel_right"))continue;
         if(PaletteCategory!=TEXT("전체")&&D->Category!=PaletteCategory)continue;
         const FString Id=D->TypeId.ToString();
         Cards->AddSlot().AutoWidth().Padding(0,8,8,5)[SNew(SBox).WidthOverride(170).HeightOverride(82)[
             SNew(SButton).IsFocusable(false).IsEnabled(Editing).ToolTipText(FText::FromString(D->Description))
                 .OnClicked_Lambda([this,Id](){BeginPlacement(Id);return FReply::Handled();})[
                     SNew(STextBlock).Font(Font).Justification(ETextJustify::Center).AutoWrapText(true)
-                    .Text(FText::FromString(D->NameKo+TEXT("\n(")+D->NameEn+TEXT(")")))]]];
+                    .Text(FText::FromString(D->TypeId==TEXT("assembly_wheel_left")?TEXT("휠 작업 로봇\n(Wheel Robot)"):D->NameKo+TEXT("\n(")+D->NameEn+TEXT(")")))]]];
     }
     Palette->AddSlot().AutoHeight()[SNew(SScrollBox).Orientation(Orient_Horizontal).ScrollBarAlwaysVisible(true)+SScrollBox::Slot()[Cards]];
     Palette->AddSlot().AutoHeight().Padding(0,3)[SNew(STextBlock).Font(Font).ColorAndOpacity(Accent)
@@ -420,6 +421,23 @@ void AFactoryRuntime::CreatePanel()
     Overlay->AddSlot().HAlign(HAlign_Fill).VAlign(VAlign_Bottom).Padding(354,0,12,12)[
             SNew(SBorder).Padding(10).BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
                 .BorderBackgroundColor(FLinearColor(.025f,.035f,.05f,.96f))[Palette]];
+    if(bRobotPopup&&CanEdit()&&Selected())
+    {
+        auto Popup=SNew(SVerticalBox);
+        Popup->AddSlot().AutoHeight()[SNew(STextBlock).Font(Font).Text(FText::FromString(Selected()->NameKo+TEXT(" · 작업 연결")))];
+        Popup->AddSlot().AutoHeight().Padding(0,8)[SNew(STextBlock).Font(Font).AutoWrapText(true)
+            .Text_Lambda([this](){return FText::FromString(PendingTaskId.IsEmpty()?TEXT("① 차체의 초록색 작업 지점을 클릭하세요."):TEXT("② 장착할 휠 또는 도어 부품을 클릭하세요."));})];
+        Popup->AddSlot().AutoHeight()[SNew(STextBlock).Font(Font).AutoWrapText(true).Text_Lambda([this](){return FText::FromString(Status);})];
+        for(const auto& Task:Layout.Tasks)if(Task.RobotId==SelectedId)
+        {
+            const auto* S=FactoryTasks::Find(Task.Id);const FString Id=Task.Id;
+            Popup->AddSlot().AutoHeight().Padding(0,4)[Button((S?S->Label:Id)+TEXT(" · 연결 해제"),[this,Id](){UnassignTask(Id);},Editing)];
+        }
+        Popup->AddSlot().AutoHeight().Padding(0,6)[Button(TEXT("닫기 · Esc"),[this](){CloseRobotPopup();},true)];
+        Overlay->AddSlot().HAlign(HAlign_Right).VAlign(VAlign_Top).Padding(12)[SNew(SBox).WidthOverride(320).MaxDesiredHeight(420)
+            [SNew(SBorder).Padding(12).BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush")).BorderBackgroundColor(FLinearColor(.035f,.07f,.10f,.98f))
+                [SNew(SScrollBox)+SScrollBox::Slot()[Popup]]]];
+    }
     PanelScroll->SetScrollOffset(SavedScrollOffset);
     if(bNewPanel)GEngine->GameViewport->AddViewportWidgetContent(Panel.ToSharedRef(),30);
     if(RestoreViewportFocus||!OldSurface.IsValid())FSlateApplication::Get().SetKeyboardFocus(ViewportSurface.ToSharedRef(),EFocusCause::SetDirectly);

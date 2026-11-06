@@ -142,7 +142,7 @@ void ASensorAssemblyLine::FixedStep(double Dt)
     if (ArrivalPhase!=EArrivalPhase::Released)
     {
         Conveyor->Step(Dt);
-        if (WheelCell && WheelCell->Assembly) WheelCell->Assembly->GetLeftDoor()->SetWorldTransform(DoorSupplyWorld);
+        if (WheelCell && WheelCell->Assembly){WheelCell->Assembly->GetLeftDoor()->SetWorldTransform(DoorSupplyWorld);if(SecondDoorCell)WheelCell->Assembly->GetRightDoor()->SetWorldTransform(SecondDoorSupplyWorld);}
     }
     const double PreviousSample=Sensors->Arrival.MeasuredAt;
     Sensors->Sample(SensorTime);
