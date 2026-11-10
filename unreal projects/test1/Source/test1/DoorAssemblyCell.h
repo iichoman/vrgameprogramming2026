@@ -8,6 +8,7 @@ class ACamryAssembly;
 class ARobotArm;
 class UDoorPoseComponent;
 class UDoorInspectionComponent;
+class AVehicleProcessModule;
 
 // BlueprintType is reflection metadata required by Unreal's Python enum wrapper.
 // All gameplay and UI remain native C++; no Blueprint assets or graphs are used.
@@ -46,6 +47,8 @@ public:
 	UPROPERTY(EditAnywhere, Category="Cell|Setup") bool bExternallyDriven = false;
 	UPROPERTY(EditInstanceOnly, Category="Cell|References") TObjectPtr<ACamryAssembly> Assembly;
 	UPROPERTY(EditInstanceOnly, Category="Cell|References") TObjectPtr<ARobotArm> Robot;
+	/** When assigned, operate the selected process-module door using its saved vehicle pose. */
+	UPROPERTY(Transient) TObjectPtr<AVehicleProcessModule> TargetModule;
 	/** TCP relative to door, including grasp orientation. Unreal centimeters. */
 	UPROPERTY(EditAnywhere, Category="Cell|Setup") FTransform TCPInDoorCm = FTransform::Identity;
 	UPROPERTY(EditAnywhere, Category="Cell|Setup", meta=(Units="cm")) FVector PickupOffsetBodyCm = FVector(0,-100,20);
@@ -111,7 +114,8 @@ public:
 	virtual void Tick(float DeltaSeconds) override;
 	virtual void EndPlay(const EEndPlayReason::Type Reason) override;
 private:
-	TWeakObjectPtr<UDoorPoseComponent> Pose;
+	UPROPERTY(Transient) TObjectPtr<UDoorPoseComponent> ModulePose;
+    TWeakObjectPtr<UDoorPoseComponent> Pose;
 	TWeakObjectPtr<UDoorInspectionComponent> Inspection;
 	FTransform MountInBody;
 	FTransform BodyAtStart;

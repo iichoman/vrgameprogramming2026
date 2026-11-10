@@ -182,6 +182,8 @@ void AFactoryRuntime::Tick(float Dt)
     if(FParse::Param(FCommandLine::Get(),TEXT("FactoryDirectAutoTest"))&&!bUIProbeDone&&GetWorld()->GetTimeSeconds()>.5)
     {bUIProbeDone=true;const bool Ok=RunDirectEditChecks();FPlatformMisc::RequestExitWithStatus(false,Ok?0:1);return;}
     EditorTick();
+    if(bUseAssemblyIntegration && IsValid(TestAssemblyLine))TestAssemblyLine->DrawSensorVisualization();
+    else if(WheelProcess)WheelProcess->DrawFeatureVisualization();
     /* Legacy input replaced by the Slate viewport surface.
     if(bDragging && CanEdit())
     {
@@ -398,7 +400,7 @@ FString AFactoryRuntime::StateText() const
 }
 FString AFactoryRuntime::BindingText() const
 {
-    if(bUseAssemblyIntegration){FString Text=TEXT("반입 → 휠 작업 병렬 실행 → 이송 → 앞문\n");
+    if(bUseAssemblyIntegration){FString Text=TEXT("반입 → 휠 작업 병렬 실행 → 이송 → 문 장착\n");
         for(const auto& T:Layout.Tasks){const auto* S=FactoryTasks::Find(T.Id);const auto* I=Layout.Find(T.RobotId);
             Text+=(S?S->Label:T.Id)+TEXT(": ")+(I?I->NameKo:TEXT("미할당"))+TEXT("\n");}return Text;}
     auto Name=[&](const FString& Id){auto* I=Layout.Find(Id);return I?I->NameKo:TEXT("미지정");};

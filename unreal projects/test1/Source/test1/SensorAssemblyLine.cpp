@@ -220,7 +220,11 @@ bool ASensorAssemblyLine::AdvanceLine(double Seconds)
 void ASensorAssemblyLine::Tick(float Seconds)
 {
     Super::Tick(Seconds);
-    if (!bShowSensorVisualization || !Sensors || !GetWorld() || GetWorld()->WorldType!=EWorldType::PIE) return;
+    DrawSensorVisualization();
+}
+void ASensorAssemblyLine::DrawSensorVisualization() const
+{
+    if (!bShowSensorVisualization || !Sensors || !GetWorld() || (GetWorld()->WorldType!=EWorldType::PIE && GetWorld()->WorldType!=EWorldType::Game)) return;
     const FVector Station=Sensors->Station.GetLocation();
     const bool Fresh=Sensors->Healthy(SensorTime);
     const FColor Color=Fresh ? (Sensors->Arrival.Value.X>.5 ? FColor::Green : FColor::Cyan) : FColor::Red;
@@ -243,11 +247,23 @@ void ASensorAssemblyLine::Tick(float Seconds)
 		DrawDebugString(GetWorld(),TCP+FVector(0,0,45),
 			FString::Printf(TEXT("LEFT SENSOR: wheel %s | grip %s"),Present?TEXT("YES"):TEXT("NO"),Gripped?TEXT("YES"):TEXT("NO")),
 			nullptr,ArmColor,.08f,false,1.f);
-		if (ArmSensors->PickupPose.Fresh(Now,ArmSensors->MaxAge))
+		if (ArmSensors->PickupPose.bValid && ArmSensors->PickupPose.MeasuredAt>=0)
 		{
 			const FVector Measured=ArmSensors->PickupPose.Pose.GetLocation();
-			DrawDebugSphere(GetWorld(),Measured,10,10,FColor::Yellow,false,.08f,0,2.f);
-			DrawDebugLine(GetWorld(),TCP,Measured,ArmColor,false,.08f,0,1.f);
+			const FColor MeasurementColor=ArmSensors->PickupPose.Fresh(Now,ArmSensors->MaxAge)?FColor::Yellow:FColor::Red;
+			DrawDebugSphere(GetWorld(),Measured,10,10,MeasurementColor,false,.08f,0,2.f);
+			DrawDebugLine(GetWorld(),TCP,Measured,MeasurementColor,false,.08f,0,1.f);
+		}
+		const int32 WheelIndex=WheelCell->GetActiveLeftWheelIndex();
+		if(WheelIndex>=0 && WheelIndex<2)
+		{
+			const FVector Actual=WheelCell->GetWheelWorld(WheelIndex).GetLocation();
+			const FVector Target=WheelCell->GetMountWorld(WheelIndex).GetLocation();
+			if(WheelCell->IsWheelVisible(WheelIndex))
+				DrawDebugSphere(GetWorld(),Actual,6,12,FColor::White,false,.08f,0,2.f);
+			DrawDebugSphere(GetWorld(),Target,10,12,FColor::Green,false,.08f,0,2.f);
+			if(ArmSensors->PickupPose.bValid && ArmSensors->PickupPose.MeasuredAt>=0)
+				DrawDebugLine(GetWorld(),ArmSensors->PickupPose.Pose.GetLocation(),Target,FColor(80,150,255),false,.08f,0,1.f);
 		}
 	}
 }

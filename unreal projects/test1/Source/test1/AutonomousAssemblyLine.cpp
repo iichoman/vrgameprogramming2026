@@ -26,7 +26,7 @@ bool AAutonomousAssemblyLine::ResetLine()
 	if (FactoryCheck != 5)
 	{
 		bInjected[1] = bRestored[1] = true;
-		if (FactoryCheck == 0) bInjected[0] = bRestored[0] = true;
+		if (FactoryCheck == 0 || FactoryCheck >= 6) bInjected[0] = bRestored[0] = true;
 		else Planned[0] = static_cast<ERandomWheelEvent>(FactoryCheck-1);
 	}
 	Record(TEXT("RANDOM_SEED"),FString::FromInt(CurrentSeed));
@@ -35,7 +35,12 @@ bool AAutonomousAssemblyLine::ResetLine()
 
 void AAutonomousAssemblyLine::SetFactoryCheck(int32 Kind)
 {
-	FactoryCheck = FMath::Clamp(Kind, 0, 5);
+	FactoryCheck = FMath::Clamp(Kind, 0, 7);
+    if (WheelCell)
+    {
+        WheelCell->bPhysicalLeftGrip = FactoryCheck >= 6;
+        WheelCell->bLowFrictionGrip = FactoryCheck == 7;
+    }
 }
 
 void AAutonomousAssemblyLine::InjectEvent(int32 Index)

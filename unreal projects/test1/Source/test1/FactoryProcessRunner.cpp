@@ -1,4 +1,5 @@
 #include "FactoryProcessRunner.h"
+#include "WheelGripPhysics.h"
 #include "FactoryEquipment.h"
 #include "Components/SceneComponent.h"
 #include "DrawDebugHelpers.h"
@@ -51,6 +52,7 @@ bool UFactoryWheelProcessRunner::Start()
     bSensorFeatures=false;bWaiting=false;Sensors.Reset();Replans=GripRetries=Recoveries=0;
     SupplyDeliveryAt=-1;bReserveAvailable=true;
     HubSampleAt=SeatSince=ProgressAt=-1;bPublishHub=true;Realignments=0;MountDecision.Empty();
+    WheelVelocityMps = FVector::ZeroVector; GripDemandN = GripCapacityN = SlipMm = 0;
     GripAttempts=0;WaitSeconds=StableSeconds=GripSeconds=0;bObservedFault=false;
     ObservedPickup=R->SupplyWorld();FeatureStatus=TEXT("미실행");
     ++R->RunEpoch;Controller()->Reset(R->RunEpoch);Change(EFactoryRunState::Approach);
@@ -98,7 +100,17 @@ void UFactoryWheelProcessRunner::Step(double Dt)
         }
         FString Obstacle;if(R->Obstructed(Old.GetLocation(),Pose.GetLocation(),Obstacle))
         {C->Cancel();R->RunState=EFactoryRunState::Fault;R->Status=TEXT("운반 중 간섭 감지: ")+Obstacle;return;}
-        R->TravelCm+=FVector::Distance(Old.GetLocation(),Pose.GetLocation());R->WheelRoot->SetWorldTransform(Pose);
+        FTransform WheelPose = Pose;
+        const FVector Previous = R->WheelRoot->GetComponentLocation();
+        const bool Physical = bSensorFeatures && FeatureKind >= 5;
+        const bool GripStable = !Physical || UpdatePhysicalGrip(WheelPose, Dt);
+        R->TravelCm += FVector::Distance(Previous, WheelPose.GetLocation());
+        R->WheelRoot->SetWorldTransform(WheelPose);
+        if (!GripStable)
+        {
+            FeatureFault(TEXT("휠 미끄러짐 감지 · 운반 정지"));
+            return;
+        }
     }
     if(C->Status()==EFactoryCommandStatus::Failed||StateSeconds>40)
     {C->Cancel();R->RunState=EFactoryRunState::Fault;R->Status=TEXT("목표 도달 시간 초과");return;}
@@ -142,9 +154,20 @@ void UFactoryWheelProcessRunner::Step(double Dt)
     }
 }
 
+// Translational point-mass approximation with an isotropic friction limit.
+// Pad preload, mass and friction are demonstration parameters.
+bool UFactoryWheelProcessRunner::UpdatePhysicalGrip(FTransform& WheelPose, double Dt)
+{
+    const FVector Previous = Runtime()->WheelRoot->GetComponentLocation();
+    const FVector Target = WheelPose.GetLocation();
+    const FVector Actual = StepWheelGrip(Previous, Target, Dt, FeatureKind == 6, WheelVelocityMps, GripDemandN, GripCapacityN, SlipMm);
+    WheelPose.SetLocation(Actual);
+    return SlipMm < 3.0;
+}
+
 bool UFactoryWheelProcessRunner::StartFeatureCheck(int32 Kind)
 {
-    if(Kind<0||Kind>4)return false;
+    if(Kind<0||Kind>6)return false;
     if(!Start()){FeatureStatus=TEXT("시작 불가 · 배치/작업 연결을 확인하세요.");return false;}
     auto* R=Runtime();FeatureKind=Kind;bSensorFeatures=true;
     Controller()->Cancel();
@@ -282,7 +305,8 @@ FString UFactoryWheelProcessRunner::FeatureSummary() const
     const auto& S=Sensors.Reading;auto* R=Runtime();
     return FString::Printf(TEXT("%s\n부품 %s · 위치 %s · 파지 %s\n재계산 %d · 재시도 %d · 대기 복구 %d"),
         *FeatureStatus,S.Present?TEXT("있음"):TEXT("없음"),S.Fresh(R->SimulationSeconds)?TEXT("유효"):TEXT("지연/무효"),
-        S.Gripped?TEXT("확인"):TEXT("미확인"),Replans,GripRetries,Recoveries)+TEXT("\n")+MountDecision;
+        S.Gripped?TEXT("확인"):TEXT("미확인"),Replans,GripRetries,Recoveries)+TEXT("\n")+MountDecision
+        + (FeatureKind >= 5 ? FString::Printf(TEXT("\n필요 힘 %.0f N · 마찰 한계 %.0f N · 미끄러짐 %.1f mm"), GripDemandN, GripCapacityN, SlipMm) : FString());
 }
 
 bool UFactoryWheelProcessRunner::AssessMount(double Dt)

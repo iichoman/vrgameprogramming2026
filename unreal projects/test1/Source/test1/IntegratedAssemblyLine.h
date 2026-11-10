@@ -9,6 +9,7 @@ class AWheelAssemblyCell;
 class ADoorAssemblyCell;
 class ACameraActor;
 class ARobotArm;
+class AVehicleProcessModule;
 class SWidget;
 
 UENUM(BlueprintType)
@@ -23,6 +24,9 @@ public:
     AIntegratedAssemblyLine();
     UPROPERTY(EditInstanceOnly) TObjectPtr<AWheelAssemblyCell> WheelCell;
     UPROPERTY(EditInstanceOnly) TObjectPtr<ADoorAssemblyCell> DoorCell;
+    UPROPERTY(EditInstanceOnly) TObjectPtr<ARobotArm> RightDoorRobot;
+    UPROPERTY(VisibleAnywhere, Transient) int32 MountedDoorCount = 0;
+    UPROPERTY(VisibleAnywhere, Transient) bool bFourDoorMode = false;
     UPROPERTY(Transient) TObjectPtr<ADoorAssemblyCell> SecondDoorCell;
     UPROPERTY(EditAnywhere) FTransform VehicleAtWheelStation;
     UPROPERTY(EditAnywhere) FTransform CarriageAtWheelStation;
@@ -42,11 +46,15 @@ public:
     virtual void Tick(float Seconds) override;
 protected:
     FTransform DoorSupplyWorld;
+    UPROPERTY(Transient) TArray<TObjectPtr<AVehicleProcessModule>> DoorModules;
+    UPROPERTY(Transient) TObjectPtr<ARobotArm> LeftDoorRobot;
+    FTransform BaselineTCPInLeftDoor;
     FTransform SecondDoorSupplyWorld;
     FTransform ExpectedVehicle, ExpectedCarriage;
     double TransferTime = 0;
     bool bReady = false;
     void Fail(const FString& Reason);
+    bool PrepareDoor(int32 Index);
 };
 
 UCLASS(NotBlueprintable)

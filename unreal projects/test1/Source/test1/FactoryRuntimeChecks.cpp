@@ -136,7 +136,7 @@ void AFactoryRuntime::RunChecks()
     WheelProcess->InterruptHubSensor();
     for(int32 I=0;I<60;++I)StepSimulation(1./120);
     Check(TEXT("stale_hub_observation_blocks_seating"),EnteredHub&&RunState==EFactoryRunState::Fault&&Status.Contains(TEXT("허브 측정")));
-    for(int32 Kind=0;Kind<5;++Kind)
+    for(int32 Kind=0;Kind<6;++Kind)
     {
         ResetCycle();bool Started=WheelProcess->StartFeatureCheck(Kind);
         bool Restored=false;
@@ -154,6 +154,8 @@ void AFactoryRuntime::RunChecks()
     WheelProcess->bReserveAvailable=false;
     for(int32 I=0;I<120*6;++I)StepSimulation(1./120);
     Check(TEXT("ported_missing_supply_times_out_without_pickup"),RunState==EFactoryRunState::Fault&&TravelCm==0&&!WheelProcess->FeaturePassed());
+    ResetCycle();WheelProcess->StartFeatureCheck(6);Finish();
+    Check(TEXT("friction_loss_stops_transport"),RunState==EFactoryRunState::Fault && Status.Contains(TEXT("미끄러짐")));
     ResetCycle();WheelProcess->StartFeatureCheck(3);Finish();
     Check(TEXT("ported_grip_failure_retry_limit_blocks_lift"),RunState==EFactoryRunState::Fault&&WheelProcess->GripRetries==7&&TravelCm==0);
     ResetCycle();WheelProcess->StartFeatureCheck(0);

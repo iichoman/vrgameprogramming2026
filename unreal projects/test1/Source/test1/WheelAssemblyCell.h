@@ -67,6 +67,8 @@ struct FWheelLane
 	FTransform TargetWheel;
 	FTransform TargetTCP;
 	FTransform LastCarried;
+    FVector GripVelocity = FVector::ZeroVector;
+    double DemandN = 0, CapacityN = 0, SlipMm = 0;
 	double StageTime = 0;
 	double StableTime = 0;
 	int32 Corrections = 0;
@@ -84,6 +86,8 @@ class TEST1_API AWheelAssemblyCell : public AActor
 	GENERATED_BODY()
 public:
 	AWheelAssemblyCell();
+    bool bPhysicalLeftGrip = false;
+    bool bLowFrictionGrip = false;
     // Runtime adapter bindings, ordered LF/LR/RF/RR. Empty preserves standalone demos.
     UPROPERTY(Transient) TArray<TObjectPtr<ARobotArm>> TaskRobots;
     UPROPERTY(Transient) TArray<TObjectPtr<UWheelRobotSensorBank>> TaskSensors;

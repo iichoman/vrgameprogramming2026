@@ -5,6 +5,9 @@
 #include "WheelAssemblyCell.h"
 #include "DoorAssemblyCell.h"
 #include "RobotArm.h"
+#include "VehicleProcessTest.h"
+#include "CamryAssembly.h"
+#include "EngineUtils.h"
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonSerializer.h"
 #include "Misc/FileHelper.h"
@@ -62,8 +65,18 @@ bool AFactoryRuntime::RunModularEditorChecks()
     Layout=Original;Rebuild();History.Clear();bSnap=true;SelectedId.Empty();
     for(int32 I=0;I<24;++I)StepSimulation(1./120);
     bool Started=StartCycle();for(int32 I=0;I<120*300&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)StepSimulation(1./120);
-    Check(TEXT("recreated_robots_execute_full_team_cycle"),Started&&RunState==EFactoryRunState::Complete&&TestAssemblyLine->WheelCell->MountedCount==4&&TestAssemblyLine->DoorCell->bDoorFastened);
-    for(int32 Kind=0;Kind<5;++Kind)
+    Check(TEXT("recreated_robots_execute_full_team_cycle"),Started&&RunState==EFactoryRunState::Complete&&TestAssemblyLine->WheelCell->MountedCount==4&&TestAssemblyLine->DoorCell->bDoorFastened&&TestAssemblyLine->bFourDoorMode&&TestAssemblyLine->MountedDoorCount==4);
+    bool FourMounted=true;int32 FoundDoors=0;
+    for(TActorIterator<AVehicleProcessModule> It(GetWorld());It;++It)
+    {
+        const FString Id=It->ModuleId.ToString();
+        if(Id!=TEXT("Door_FL")&&Id!=TEXT("Door_FR")&&Id!=TEXT("Door_RL")&&Id!=TEXT("Door_RR"))continue;
+        ++FoundDoors;
+        const FTransform Mount=It->ReferencePoseInVehicle*TestAssemblyLine->WheelCell->Assembly->GetActorTransform();
+        FourMounted &= It->GetActorTransform().Equals(Mount,0.2);
+    }
+    Check(TEXT("all_four_distinct_door_meshes_at_authored_mounts"),FoundDoors==4&&FourMounted);
+    for(int32 Kind : {0,1,2,3,4,6,7})
     {
         TestAssemblyLine->SetFactoryCheck(Kind);
         ResetCycle();
@@ -78,7 +91,12 @@ bool AFactoryRuntime::RunModularEditorChecks()
         }
         const auto* Line=TestAssemblyLine.Get();
         const auto* Cell=Line->WheelCell.Get();
-        const bool EventObserved=Kind==0 ? Line->InjectedEvents==0 :
+        if(Kind==7)
+        {
+            Check(TEXT("integrated_low_friction_stops_left_wheel"), Began && Cell->Outcome==EWheelOutcome::Blocked && Cell->Status.Contains(TEXT("미끄러짐")));
+            continue;
+        }
+        const bool EventObserved=Kind==0 || Kind==6 ? Line->InjectedEvents==0 :
             Line->InjectedEvents==1 && Line->RecoveredEvents==1;
         const bool DecisionObserved=Kind==1||Kind==2 ? WaitObserved :
             Kind==3 ? Cell->LeftGripRetries>0 : Kind==4 ? Cell->LeftPickupReplans>0 : true;

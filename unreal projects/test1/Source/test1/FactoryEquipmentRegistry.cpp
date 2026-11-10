@@ -15,7 +15,7 @@ void UFactoryEquipmentRegistry::Initialize()
     };
     Add(TEXT("assembly_wheel_left"),TEXT("휠 로봇 · 좌측"),TEXT("Left Wheel Robot"),TEXT("로봇"),EFactoryItemKind::ArticulatedRobot,{120,120},AFactoryAssemblyEquipment::StaticClass(),TEXT("팀원 IK/PID · 좌측 앞/뒤 휠 작업. 배치 후 작업에 연결하세요."));
     Add(TEXT("assembly_wheel_right"),TEXT("휠 로봇 · 우측"),TEXT("Right Wheel Robot"),TEXT("로봇"),EFactoryItemKind::ArticulatedRobot,{120,120},AFactoryAssemblyEquipment::StaticClass(),TEXT("팀원 IK/PID · 우측 앞/뒤 휠 작업. 배치 후 작업에 연결하세요."));
-    Add(TEXT("assembly_door"),TEXT("도어 작업 로봇"),TEXT("Door Robot"),TEXT("로봇"),EFactoryItemKind::ArticulatedRobot,{120,120},AFactoryAssemblyEquipment::StaticClass(),TEXT("팀원 IK/PID · 왼쪽 앞문 작업. 배치 후 작업에 연결하세요."));
+    Add(TEXT("assembly_door"),TEXT("도어 작업 로봇"),TEXT("Door Robot"),TEXT("로봇"),EFactoryItemKind::ArticulatedRobot,{120,120},AFactoryAssemblyEquipment::StaticClass(),TEXT("팀원 IK/PID · 왼쪽 앞·뒷문 작업. 배치 후 작업에 연결하세요."));
     Add(TEXT("zone"),TEXT("작업 구역"),TEXT("Work Zone"),TEXT("구역"),EFactoryItemKind::Zone,{600,400},AFactoryEquipment::StaticClass(),TEXT("바닥을 드래그해 구역을 그립니다."));
     Add(TEXT("vehicle_station"),TEXT("차량 정지대"),TEXT("Vehicle Station"),TEXT("설비"),EFactoryItemKind::VehicleStation,{520,220},AFactoryEquipment::StaticClass(),TEXT("차량과 허브 기준 위치. 휠 작업에 연결해서 사용합니다."));
     Add(TEXT("wheel_supply"),TEXT("휠 공급대"),TEXT("Wheel Supply"),TEXT("설비"),EFactoryItemKind::WheelSupply,{150,150},AFactoryEquipment::StaticClass(),TEXT("휠 인수 기준점이 있는 공급대."));

@@ -59,6 +59,7 @@ void UFactoryAssemblyProcessRunner::Reset()
     L->SetActorTickEnabled(false);R->RunState=EFactoryRunState::Editing;
     FString BindingError;
     if(!R->ValidateAssemblyBindings(BindingError)){R->Status=BindingError;return;}
+    R->ConfigurePartPlacement();
     if(!L->ResetLine()){R->Status=TEXT("배치 확인 필요: ")+L->Status;return;}
     R->RunState=EFactoryRunState::Editing;R->Status=TEXT("조립 준비 · 로봇 선택/이동/삭제 가능 · 센서 갱신 후 작업 실행");
 }
@@ -83,8 +84,8 @@ FString AFactoryRuntime::AssemblyMetrics() const
     auto* L=TestAssemblyLine.Get();if(!IsValid(L))return TEXT("통합 라인 연결 없음");
     const auto* W=L->WheelCell.Get();const auto* D=L->DoorCell.Get();
     FString Sensor=W?W->GetLeftSensorSummary():TEXT("휠 센서 없음");
-    return FString::Printf(TEXT("경과 %.2f초 · 휠 %d/4 · 앞문 %d/%d\n고장 주입 %d / 복구 %d · 시드 %d\n%s\n%s"),
-        SimulationSeconds,W?W->MountedCount:0,(D&&D->bDoorFastened?1:0)+(RightDoorCell&&RightDoorCell->bDoorFastened?1:0),RightDoorCell?2:1,
+    return FString::Printf(TEXT("경과 %.2f초 · 휠 %d/4 · 문 %d/%d\n고장 주입 %d / 복구 %d · 시드 %d\n%s\n%s"),
+        SimulationSeconds,W?W->MountedCount:0,L->bFourDoorMode?L->MountedDoorCount:(D&&D->bDoorFastened?1:0)+(RightDoorCell&&RightDoorCell->bDoorFastened?1:0),L->bFourDoorMode?4:(RightDoorCell?2:1),
         L->InjectedEvents,L->RecoveredEvents,L->CurrentSeed,*L->ActiveEvent,*Sensor);
 }
 
@@ -109,7 +110,7 @@ bool AFactoryRuntime::RunAssemblyIntegrationChecks()
         L->BaseSeed=9300+Run*37;L->RunNumber=0;ResetCycle();Advance(24);
         bool Ok=StartCycle();
         for(int32 I=0;I<120*300&&Running(this);++I)StepSimulation(1./120);
-        Check(*FString::Printf(TEXT("seed_%d_full_wheels_and_door_cycle"),L->CurrentSeed),Ok&&RunState==EFactoryRunState::Complete&&L->WheelCell->MountedCount==4&&L->DoorCell->bDoorFastened&&L->InjectedEvents==2&&L->RecoveredEvents==2);
+        Check(*FString::Printf(TEXT("seed_%d_full_wheels_and_door_cycle"),L->CurrentSeed),Ok&&RunState==EFactoryRunState::Complete&&L->WheelCell->MountedCount==4&&L->DoorCell->bDoorFastened&&(!L->bFourDoorMode||L->MountedDoorCount==4)&&L->InjectedEvents==2&&L->RecoveredEvents==2);
     }
     ResetCycle();Advance(24);StartCycle();Advance(240);L->Sensors->bPublishPosition=false;Advance(120);
     Check(TEXT("sensor_dropout_stops_run"),RunState==EFactoryRunState::Fault);

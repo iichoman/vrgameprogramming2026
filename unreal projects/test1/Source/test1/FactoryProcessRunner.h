@@ -62,6 +62,11 @@ private:
     bool bReserveAvailable=true;
     friend class AFactoryRuntime; // Runtime checks can simulate an empty reserve.
     int32 FeatureKind=0, GripAttempts=0;
+    FVector WheelVelocityMps = FVector::ZeroVector;
+    double GripDemandN = 0;
+    double GripCapacityN = 0;
+    double SlipMm = 0;
+    bool UpdatePhysicalGrip(FTransform& WheelPose, double Dt);
     double WaitSeconds=0, StableSeconds=0, GripSeconds=0;
     FString FeatureStatus=TEXT("미실행");
     bool CheckObservations(double Dt);

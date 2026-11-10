@@ -131,7 +131,9 @@ bool AFactoryRuntime::ValidateAssemblyBindings(FString& Error) const
         if(!I||!IsValid(A)||!IsValid(A->GetArm())){Error=TEXT("작업 로봇 인스턴스가 없습니다.");return false;}
         if(!Layout.Contains(*I)){Error=I->NameKo+TEXT("이 공장 경계 밖에 있습니다.");return false;}
     }
-    if(RightDoorCell&&TestAssemblyLine&&TestAssemblyLine->DoorCell&&RightDoorCell->Robot==TestAssemblyLine->DoorCell->Robot)
+    const auto* LeftFront=Layout.Tasks.FindByPredicate([](const auto& T){return T.Id==TEXT("door_fl");});
+    const auto* RightFront=Layout.Tasks.FindByPredicate([](const auto& T){return T.Id==TEXT("door_fr");});
+    if(LeftFront && RightFront && LeftFront->RobotId==RightFront->RobotId)
     {Error=TEXT("현재 두 도어는 병렬 작업이므로 서로 다른 로봇에 할당하세요.");return false;}
     return true;
 }

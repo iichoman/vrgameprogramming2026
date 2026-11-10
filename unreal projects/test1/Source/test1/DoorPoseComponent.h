@@ -19,6 +19,8 @@ class TEST1_API UDoorPoseComponent : public UActorComponent
 public:
 	UDoorPoseComponent();
 	void Configure(USceneComponent* InTarget, USceneComponent* InReferenceFrame);
+	/** Supply an authored module's immutable body-frame mounting pose. */
+	bool SetReferencePoseInBody(const FTransform& InReference);
 
 	// Reflection is used for editor automation; these are not Blueprint functions.
 	UFUNCTION()

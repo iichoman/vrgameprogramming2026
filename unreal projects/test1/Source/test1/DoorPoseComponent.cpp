@@ -30,6 +30,14 @@ void UDoorPoseComponent::Configure(USceneComponent* InTarget, USceneComponent* I
 	ReferenceFrame = InReferenceFrame;
 }
 
+bool UDoorPoseComponent::SetReferencePoseInBody(const FTransform& InReference)
+{
+	if (!ValidateFrames() || !IsRigidPose(InReference)) return false;
+	ReferencePoseInBody = InReference;
+	bHasReferencePose = true;
+	return true;
+}
+
 bool UDoorPoseComponent::ValidateFrames() const
 {
 	if (!IsValid(Target) || !IsValid(ReferenceFrame) || Target == ReferenceFrame)

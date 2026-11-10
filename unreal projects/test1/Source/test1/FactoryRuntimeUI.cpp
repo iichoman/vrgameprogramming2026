@@ -1,6 +1,8 @@
 #include "FactoryRuntime.h"
 #include "FactoryEquipmentRegistry.h"
 #include "FactoryViewport.h"
+#include "FactoryProcessRunner.h"
+#include "AutonomousAssemblyLine.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Application/IInputProcessor.h"
 #include "Engine/World.h"
@@ -198,7 +200,67 @@ void AFactoryRuntime::CreatePanel()
         .ColorAndOpacity(FLinearColor(.99f, .83f, .48f, 1)).Text_Lambda([this]() {
             return FText::FromString(Status);
         }).AutoWrapText(true)];
-    Label(bUseAssemblyIntegration?TEXT("개별 로봇 편집 · 추가 후 작업 연결 · 차량/레일은 공통\nIK·PID / 하중·마찰·체결 토크 미포함"):TEXT("IK·관절 PID / 체결·접촉 물리 미포함"));
+
+    Label(bUseAssemblyIntegration?TEXT("개별 로봇 편집 · 추가 후 작업 연결 · 차량/레일은 공통\nIK·PID / 물리 파지 검사는 왼쪽 앞 휠에 적용"):TEXT("IK·관절 PID / 체결·접촉 물리 미포함"));
+
+    if(bUseAssemblyIntegration)
+    {
+        Heading(TEXT("이식된 센서 기능 확인"));
+        Rows->AddSlot().AutoHeight().Padding(0,3)[SNew(SCheckBox)
+            .IsChecked_Lambda([this](){return IsValid(TestAssemblyLine)&&TestAssemblyLine->bShowSensorVisualization?ECheckBoxState::Checked:ECheckBoxState::Unchecked;})
+            .OnCheckStateChanged_Lambda([this](ECheckBoxState V){if(IsValid(TestAssemblyLine))TestAssemblyLine->bShowSensorVisualization=V==ECheckBoxState::Checked;})
+            [SNew(STextBlock).Font(Font).Text(FText::FromString(TEXT("센서·휠 중심·장착점 표시"))) ]];
+        Label(TEXT("흰색: 실제 휠 중심 / 노랑: 측정 위치\n빨강: 오래된 측정 / 초록: 장착 목표\n파랑 선: 위치 연결 표시"));
+        Label(TEXT("검사 선택 → 센서 준비 후 상단 작업 실행\n왼쪽 앞 휠에서 선택한 사건을 재현합니다."));
+        const TCHAR* Names[]={TEXT("센서 정상"),TEXT("부품 누락·보충"),TEXT("위치 센서 끊김"),TEXT("파지 실패·재시도"),TEXT("휠 위치 변화"),TEXT("기존 난수 사건"),TEXT("물리 파지 · 정상 운반"),TEXT("물리 파지 · 저마찰")};
+        for(int32 Kind=0;Kind<UE_ARRAY_COUNT(Names);++Kind)
+            Rows->AddSlot().AutoHeight().Padding(0,2)[Button(Names[Kind],[this,Kind](){
+                if(IsValid(TestAssemblyLine)){TestAssemblyLine->SetFactoryCheck(Kind);ResetCycle();}
+            },Editing)];
+        Rows->AddSlot().AutoHeight().Padding(0,3)[SNew(STextBlock).Font(Font).ColorAndOpacity(Accent)
+            .Text_Lambda([this](){
+                const TCHAR* Names[]={TEXT("센서 정상"),TEXT("부품 누락·보충"),TEXT("위치 센서 끊김"),TEXT("파지 실패·재시도"),TEXT("휠 위치 변화"),TEXT("기존 난수 사건"),TEXT("물리 파지 · 정상 운반"),TEXT("물리 파지 · 저마찰")};
+                return FText::FromString(IsValid(TestAssemblyLine)?FString(TEXT("선택: "))+Names[TestAssemblyLine->GetFactoryCheck()]:TEXT("조립 라인 연결 없음"));
+            }).AutoWrapText(true)];
+    }
+    if(!bUseAssemblyIntegration)
+    {
+    Label(TEXT("IK·관절 PID / 체결·접촉 물리 미포함"));
+    Heading(TEXT("이식된 기능 검증"));
+    for(int32 Toggle=0;Toggle<2;++Toggle)
+        Rows->AddSlot().AutoHeight().Padding(0,2)[SNew(SCheckBox)
+            .IsChecked_Lambda([this,Toggle](){return WheelProcess&&(Toggle==0?WheelProcess->bShowSensors:WheelProcess->bShowRoute)?ECheckBoxState::Checked:ECheckBoxState::Unchecked;})
+            .OnCheckStateChanged_Lambda([this,Toggle](ECheckBoxState V){if(WheelProcess)(Toggle==0?WheelProcess->bShowSensors:WheelProcess->bShowRoute)=V==ECheckBoxState::Checked;})
+            [SNew(STextBlock).Font(Font).Text(FText::FromString(Toggle==0?TEXT("센서·휠 중심·장착점 표시"):TEXT("작업 경로·현재 목표 표시")))]];
+    Label(TEXT("청록 상자: 가상 센서 기준점\n흰색: 실제 휠 중심 / 노랑: 측정 위치\n빨강: 측정 지연·부품 없음\n초록: 장착점 / 툴 초록: 파지 확인\n파랑: 작업 경유점 / 자홍: 현재 목표\n경로 선은 관절 운동의 실제 궤적이 아닙니다."));
+    Rows->AddSlot().AutoHeight().Padding(0,3)[Button(TEXT("센서·휠 작업 확대"),[this](){FocusWorkcell();},true)];
+    Rows->AddSlot().AutoHeight().Padding(0,3)[SNew(STextBlock).Font(Font).ColorAndOpacity(Accent)
+        .Text_Lambda([this](){return FText::FromString(WheelProcess?WheelProcess->VisualizationSummary():TEXT(""));}).AutoWrapText(true)];
+    Label(TEXT("연결된 로봇·공급대의 휠 작업으로 개별 기능을 확인합니다.\n전체 조립 시나리오·랜덤 사건은 실행하지 않습니다."));
+    const TCHAR* FeatureNames[]={TEXT("센서 정상 확인"),TEXT("부품 없음 → 보충 요청"),TEXT("통신 끊김 → 대기"),TEXT("파지 실패 → 재시도"),TEXT("위치 변화 → 재계산"),TEXT("물리 파지 · 정상 운반"),TEXT("물리 파지 · 저마찰")};
+    for(int32 Kind=0;Kind<UE_ARRAY_COUNT(FeatureNames);++Kind)
+        Rows->AddSlot().AutoHeight().Padding(0,2)[Button(FeatureNames[Kind],[this,Kind](){
+            if(WheelProcess)WheelProcess->StartFeatureCheck(Kind);
+        },Editing)];
+    Rows->AddSlot().AutoHeight().Padding(0,3)[Button(TEXT("공급·통신·그리퍼 복원"),[this](){
+        if(WheelProcess)WheelProcess->RestoreFeatureInputs();
+    },TAttribute<bool>::CreateLambda([this](){return WheelProcess&&WheelProcess->FeaturesEnabled()
+        &&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;}))];
+    Label(TEXT("누락된 휠은 예비 공급을 요청합니다.\n위치 센서 통신은 5초 안에 복원하세요.\n파지 실패는 재시도 표시 후 복원하세요.\n중단/완료 후 상단 ‘편집 복귀’로 다시 검사합니다."));
+    Rows->AddSlot().AutoHeight().Padding(0,3)[Button(TEXT("운반 중 위치 센서 차단"),[this](){
+        if(WheelProcess)WheelProcess->InterruptFeaturePose();
+    },TAttribute<bool>::CreateLambda([this](){return WheelProcess&&WheelProcess->FeaturesEnabled()
+        &&RunState>=EFactoryRunState::Lift&&RunState<=EFactoryRunState::Verify;}))];
+    Label(TEXT("허브 판정: 중심 편차 3mm·축 오차 1° 이내에서 진입합니다. 안착은 중심 거리 0.5mm·축 오차 0.25° 이내로 0.15초 유지해야 합니다."));
+    Rows->AddSlot().AutoHeight().Padding(0,3)[Button(TEXT("장착 중 허브 센서 차단"),[this](){
+        if(WheelProcess)WheelProcess->InterruptHubSensor();
+    },TAttribute<bool>::CreateLambda([this](){return WheelProcess&&WheelProcess->FeaturesEnabled()
+        &&(RunState==EFactoryRunState::Align||RunState==EFactoryRunState::Verify);}))];
+    Rows->AddSlot().AutoHeight().Padding(0,4)[SNew(STextBlock).Font(Font).ColorAndOpacity(Accent)
+        .Text_Lambda([this](){return FText::FromString(WheelProcess?WheelProcess->FeatureSummary():TEXT("연결 없음"));}).AutoWrapText(true)];
+
+    }
+
     Pair(Button(TEXT("실행 취소"),[this](){UndoEdit();},TAttribute<bool>::CreateLambda([this](){return CanUndo();})),
         Button(TEXT("다시 실행"),[this](){RedoEdit();},TAttribute<bool>::CreateLambda([this](){return CanRedo();})));
 

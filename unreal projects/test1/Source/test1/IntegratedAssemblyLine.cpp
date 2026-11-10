@@ -5,6 +5,7 @@
 #include "DoorAssemblyCell.h"
 #include "CamryAssembly.h"
 #include "RobotArm.h"
+#include "VehicleProcessTest.h"
 #include "Components/SceneComponent.h"
 #include "Components/InputComponent.h"
 #include "Camera/CameraActor.h"
@@ -29,7 +30,7 @@ namespace
         case EAssemblyLineStage::Idle: return TEXT("대기");
         case EAssemblyLineStage::Wheels: return TEXT("차체 반입 · 타이어 조립");
         case EAssemblyLineStage::Transfer: return TEXT("문 조립 구역 이송");
-        case EAssemblyLineStage::Door: return TEXT("앞문 정렬 · 체결");
+        case EAssemblyLineStage::Door: return TEXT("문 4개 정렬 · 체결");
         case EAssemblyLineStage::Complete: return TEXT("완료 · 품질 합격");
         case EAssemblyLineStage::Stopped: return TEXT("운전자 정지");
         case EAssemblyLineStage::Fault: return TEXT("이상 감지 · 안전 정지");
@@ -39,14 +40,14 @@ namespace
 
     FString ProcessRail(const AIntegratedAssemblyLine* Line)
     {
-        if (!IsValid(Line)) return TEXT("○ 1 차체 반입  ─  ○ 2 타이어 조립  ─  ○ 3 구역 이송  ─  ○ 4 앞문 조립  ─  ○ 품질 판정");
+        if (!IsValid(Line)) return TEXT("○ 1 차체 반입  ─  ○ 2 타이어 조립  ─  ○ 3 구역 이송  ─  ○ 4 문 4개 조립  ─  ○ 품질 판정");
         int32 Current = 0;
         if (Line->Stage == EAssemblyLineStage::Wheels)
             Current = Line->WheelCell && Line->WheelCell->bTransporting ? 0 : 1;
         else if (Line->Stage == EAssemblyLineStage::Transfer) Current = 2;
         else if (Line->Stage == EAssemblyLineStage::Door) Current = 3;
         else if (Line->Stage == EAssemblyLineStage::Complete) Current = 4;
-        const TCHAR* Names[] = {TEXT("차체 반입"), TEXT("타이어 조립"), TEXT("구역 이송"), TEXT("앞문 조립"), TEXT("품질 판정")};
+        const TCHAR* Names[] = {TEXT("차체 반입"), TEXT("타이어 조립"), TEXT("구역 이송"), TEXT("문 4개 조립"), TEXT("품질 판정")};
         FString Result;
         for (int32 Index=0; Index<5; ++Index)
         {
@@ -68,9 +69,9 @@ namespace
             return FString::Printf(TEXT("좌·우 로봇이 타이어를 파지해 허브에 정렬·체결합니다. 현재 %d/4개 완료."), Line->WheelCell ? Line->WheelCell->MountedCount : 0);
         case EAssemblyLineStage::Transfer: return FString::Printf(TEXT("타이어 조립이 끝난 차체를 문 조립 구역으로 이송합니다. 진행률 %.0f%%."),Line->TransferProgress*100.0);
         case EAssemblyLineStage::Door:
-            return FString::Printf(TEXT("문 로봇이 왼쪽 앞문을 파지·운반한 뒤 센서 오차를 보정하고 체결합니다. 현재: %s"),
-                Line->DoorCell ? *Line->DoorCell->GetStateLabel() : TEXT("연결 확인 중"));
-        case EAssemblyLineStage::Complete: return TEXT("타이어 4개와 왼쪽 앞문 체결을 마치고 최종 품질 판정을 통과했습니다.");
+            return FString::Printf(TEXT("문 로봇이 각 문을 파지·운반하고 센서 자세를 검증해 체결합니다. %d/4개 완료 · 현재: %s"),
+                Line->MountedDoorCount, Line->DoorCell ? *Line->DoorCell->GetStateLabel() : TEXT("연결 확인 중"));
+        case EAssemblyLineStage::Complete: return TEXT("타이어 4개와 문 4개 체결을 마치고 최종 자세 검증을 통과했습니다.");
         case EAssemblyLineStage::Stopped: return TEXT("운전자 정지 명령으로 모든 구동 목표를 유지합니다. 원인 확인 후 초기화가 필요합니다.");
         case EAssemblyLineStage::Fault: return TEXT("이상을 감지하여 후속 공정을 차단하고 로봇과 이송 장치를 안전 정지했습니다.");
         default: return Line->Status;
@@ -136,6 +137,39 @@ void AIntegratedAssemblyLine::Fail(const FString& Reason)
     Status = Saved;
     bReady = false;
 }
+bool AIntegratedAssemblyLine::PrepareDoor(int32 Index)
+{
+    if (!bFourDoorMode || !DoorModules.IsValidIndex(Index) || !IsValid(DoorModules[Index])) return false;
+    const bool bRight = Index >= 2;
+    DoorCell->TargetModule=DoorModules[Index];
+    DoorCell->Robot=bRight ? RightDoorRobot.Get() : LeftDoorRobot.Get();
+    const FTransform OldMount=WheelCell->Assembly->GetLeftDoor()->GetComponentTransform();
+    const FTransform NewMount=DoorModules[Index]->ReferencePoseInVehicle*WheelCell->Assembly->GetActorTransform();
+    FTransform GraspWorld=BaselineTCPInLeftDoor*OldMount;
+    GraspWorld.AddToTranslation(NewMount.GetLocation()-OldMount.GetLocation());
+    if (bRight && SecondDoorCell && SecondDoorCell->Robot)
+    {
+        // Door module pivots can be at the vehicle origin. Transfer the calibrated
+        // front grip using the mounted panel centers, in the same vehicle frame.
+        auto MountedCenter=[&](int32 DoorIndex)
+        {
+            auto* Module=DoorModules[DoorIndex].Get();
+            FVector Center,Extent;
+            Module->GetActorBounds(false,Center,Extent);
+            const auto LocalCenter=Module->GetActorTransform().InverseTransformPosition(Center);
+            return (Module->ReferencePoseInVehicle*WheelCell->Assembly->GetActorTransform()).TransformPosition(LocalCenter);
+        };
+        GraspWorld=SecondDoorCell->TCPInDoorCm*WheelCell->Assembly->GetRightDoor()->GetComponentTransform();
+        GraspWorld.AddToTranslation(MountedCenter(Index)-MountedCenter(2));
+        DoorCell->Robot=SecondDoorCell->Robot;
+    }
+    else if (bRight) GraspWorld.SetRotation((FQuat(FVector::UpVector,PI)*GraspWorld.GetRotation()).GetNormalized());
+    DoorCell->TCPInDoorCm=GraspWorld.GetRelativeTransform(NewMount);
+    DoorCell->PickupOffsetBodyCm=FVector(0,bRight ? 100 : -100,20);
+    DoorCell->ApproachOffsetBodyCm=FVector(0,bRight ? 25 : -25,0);
+    DoorCell->TransferOffsetBodyCm=FVector(0,bRight ? 50 : -50,25);
+    return DoorCell->ResetCycle();
+}
 bool AIntegratedAssemblyLine::ResetLine()
 {
     bReady = false;
@@ -145,11 +179,41 @@ bool AIntegratedAssemblyLine::ResetLine()
         || !FMath::IsFinite(DockSeconds) || DockSeconds < 0 || DoorStationOffsetCm.ContainsNaN())
     { Fail(TEXT("Invalid line references or transport configuration.")); return false; }
     WheelCell->bExternallyDriven = DoorCell->bExternallyDriven = true;
-    WheelCell->StopCycle(); DoorCell->StopCycle();if(SecondDoorCell)SecondDoorCell->StopCycle();
+    WheelCell->StopCycle(); DoorCell->StopCycle(); if(SecondDoorCell)SecondDoorCell->StopCycle();
+    MountedDoorCount=0;
+    if (!DoorCell->TargetModule || !IsValid(LeftDoorRobot)) LeftDoorRobot=DoorCell->Robot;
+    if (!bFourDoorMode || DoorCell->TargetModule==nullptr) BaselineTCPInLeftDoor=DoorCell->TCPInDoorCm;
+    DoorModules.Reset();
+    const FName DoorIds[]={TEXT("Door_FL"),TEXT("Door_RL"),TEXT("Door_FR"),TEXT("Door_RR")};
+    for (const FName Id:DoorIds)
+    {
+        AVehicleProcessModule* Found=nullptr;
+        for (TActorIterator<AVehicleProcessModule> It(GetWorld());It;++It)
+            if (It->ModuleId==Id && It->VehicleFrame==WheelCell->Assembly) { Found=*It; break; }
+        DoorModules.Add(Found);
+    }
+    bFourDoorMode=IsValid(RightDoorRobot) && IsValid(LeftDoorRobot);
+    for (const auto& Module:DoorModules) bFourDoorMode &= IsValid(Module) && Module->bHasReferencePose;
     auto* Car = WheelCell->Assembly.Get();
     FTransform DoorStation = VehicleAtWheelStation;
     DoorStation.AddToTranslation(DoorStationOffsetCm);
     Car->SetActorTransform(DoorStation);
+    if (bFourDoorMode)
+    {
+        if(DoorCell->TargetModule) DoorCell->TCPInDoorCm=BaselineTCPInLeftDoor;
+        DoorCell->TargetModule=nullptr;
+        DoorCell->Robot=LeftDoorRobot;
+        DoorCell->ApproachOffsetBodyCm=FVector(0,-25,0);
+        DoorCell->TransferOffsetBodyCm=FVector(0,-50,25);
+        for(int32 Index : {1,3})
+        {
+            auto* Module=DoorModules[Index].Get();
+            Module->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+            auto Supply=Module->ReferencePoseInVehicle*Car->GetActorTransform();
+            Supply.AddToTranslation(Car->GetBodyFrame()->GetComponentTransform().TransformVectorNoScale(FVector(0,Index==3?100:-100,20)));
+            Module->SetActorTransform(Supply);
+        }
+    }
     if (!DoorCell->ResetCycle()) { Fail(DoorCell->Status); return false; }
     DoorSupplyWorld = Car->GetLeftDoor()->GetComponentTransform();
     if(SecondDoorCell){SecondDoorCell->bExternallyDriven=true;
@@ -162,7 +226,7 @@ bool AIntegratedAssemblyLine::ResetLine()
     if(SecondDoorCell)Car->GetRightDoor()->SetWorldTransform(SecondDoorSupplyWorld);
     ElapsedSeconds = TransferTime = TransferProgress = 0;
     Stage = EAssemblyLineStage::Idle;
-    Status = TEXT("대기 · 차체 반입 → 타이어 4개 → 다음 구역 이송 → 왼쪽 앞문");
+    Status = bFourDoorMode ? TEXT("대기 · 차체 반입 → 타이어 4개 → 구역 이송 → 문 4개") : TEXT("대기 · 차체 반입 → 타이어 4개 → 다음 구역 이송 → 왼쪽 앞문");
     bReady = true;
     return true;
 }
@@ -236,23 +300,32 @@ bool AIntegratedAssemblyLine::AdvanceLine(double Seconds)
         { Fail(TEXT("Carriage moved during door assembly.")); return false; }
         if (!DoorCell->AdvanceSimulation(Seconds) || DoorCell->Outcome == EDoorCellOutcome::QualityFail || DoorCell->Outcome == EDoorCellOutcome::Stopped)
         { Fail(DoorCell->Status); return false; }
-        if(SecondDoorCell&&(!SecondDoorCell->AdvanceSimulation(Seconds)||SecondDoorCell->Outcome==EDoorCellOutcome::QualityFail||SecondDoorCell->Outcome==EDoorCellOutcome::Stopped))
+        if(SecondDoorCell&&MountedDoorCount==0&&(!SecondDoorCell->AdvanceSimulation(Seconds)||SecondDoorCell->Outcome==EDoorCellOutcome::QualityFail||SecondDoorCell->Outcome==EDoorCellOutcome::Stopped))
         {Fail(SecondDoorCell->Status);return false;}
         Status = TEXT("4/4 앞문 장착 · ") + DoorCell->GetStateLabel();
         if (DoorCell->State == EDoorAssemblyState::Complete&&(!SecondDoorCell||SecondDoorCell->State==EDoorAssemblyState::Complete))
         {
             if (DoorCell->Outcome != EDoorCellOutcome::Pass||(SecondDoorCell&&SecondDoorCell->Outcome!=EDoorCellOutcome::Pass)) { Fail(DoorCell->Status); return false; }
+            if(bFourDoorMode)
+            {
+                MountedDoorCount=MountedDoorCount==0?2:MountedDoorCount+1;
+                if(MountedDoorCount<4)
+                {
+                    if(!PrepareDoor(MountedDoorCount==2?1:3)||!DoorCell->StartCycle()){Fail(DoorCell->Status);return false;}
+                    return true;
+                }
+            }
             Stage = EAssemblyLineStage::Complete;
-            Status = SecondDoorCell?TEXT("완료 · 휠 4개와 앞문 2개 시험 장착·검사 완료"):TEXT("완료 · 타이어 4개와 왼쪽 앞문 장착·검사 합격");
+            Status = bFourDoorMode?TEXT("완료 · 휠 4개와 문 4개 장착"):SecondDoorCell?TEXT("완료 · 휠 4개와 앞문 2개 시험 장착·검사 완료"):TEXT("완료 · 타이어 4개와 왼쪽 앞문 장착·검사 합격");
         }
     }
     return Stage != EAssemblyLineStage::Fault;
 }
 FString AIntegratedAssemblyLine::GetSummary() const
 {
-    return FString::Printf(TEXT("통합 자동차 조립\n%s\n경과 %.1f초 | 타이어 %d/4 | 앞문 %s\n\nEnter 시작 / Space 정지 / R 초기화\n우클릭 회전 / 휠 확대·축소 / Home 전체 보기"),
+    return FString::Printf(TEXT("통합 자동차 조립\n%s\n경과 %.1f초 | 타이어 %d/4 | 문 %d/%d\n\nEnter 시작 / Space 정지 / R 초기화\n우클릭 회전 / 휠 확대·축소 / Home 전체 보기"),
         *Status, ElapsedSeconds, WheelCell ? WheelCell->MountedCount : 0,
-        DoorCell && DoorCell->bDoorFastened ? TEXT("체결") : TEXT("대기"));
+        MountedDoorCount+(MountedDoorCount==0 && DoorCell && DoorCell->bDoorFastened ? 1 : 0), bFourDoorMode ? 4 : 1);
 }
 void AIntegratedAssemblyLine::BeginPlay() { Super::BeginPlay(); ResetLine(); }
 void AIntegratedAssemblyLine::Tick(float Seconds) { Super::Tick(Seconds); AdvanceLine(Seconds); }

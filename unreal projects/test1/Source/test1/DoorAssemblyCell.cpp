@@ -3,6 +3,7 @@
 #include "CamryAssembly.h"
 #include "DoorPoseComponent.h"
 #include "DoorInspectionComponent.h"
+#include "VehicleProcessTest.h"
 #include "Components/PrimitiveComponent.h"
 #include "Components/SceneComponent.h"
 #include "HAL/FileManager.h"
@@ -27,6 +28,18 @@ bool ADoorAssemblyCell::ValidateSetup()
 	if (!IsValid(Assembly) || !IsValid(Robot) || !Assembly->GetBodyFrame())
 	{ Status=TEXT("Assign the vehicle assembly and native robot."); return false; }
 	Pose=Assembly->GetDoorPoseController(bRightDoor?ECamryDoorSide::Right:ECamryDoorSide::Left);
+	if (IsValid(TargetModule))
+	{
+		if (!TargetModule->bHasReferencePose || TargetModule->VehicleFrame != Assembly || !TargetModule->GetRootComponent())
+		{ Status=TEXT("Door module has no saved vehicle-frame mounting pose."); return false; }
+		if (!ModulePose) ModulePose=NewObject<UDoorPoseComponent>(this);
+        Pose=ModulePose.Get();
+        Pose->Configure(TargetModule->GetRootComponent(), Assembly->GetBodyFrame());
+		const FTransform MountWorld=TargetModule->ReferencePoseInVehicle*Assembly->GetActorTransform();
+		if (!Pose->SetReferencePoseInBody(MountWorld.GetRelativeTransform(Assembly->GetBodyFrame()->GetComponentTransform())))
+		{ Status=TEXT("Door module mounting pose is invalid."); return false; }
+	}
+	else Pose->Configure(bRightDoor?Assembly->GetRightDoor():Assembly->GetLeftDoor(), Assembly->GetBodyFrame());
 	if (!Pose.IsValid() || !Pose->HasReferencePose() || !Pose->GetControlledDoor())
 	{ Status=TEXT("A serialized normal left-door reference is required."); return false; }
 	const double Values[]={PositionToleranceMm,OrientationToleranceDeg,SettleSeconds,StageTimeoutSeconds,FasteningSeconds,FixedStepSeconds};
@@ -42,7 +55,7 @@ bool ADoorAssemblyCell::ValidateSetup()
 	MountInBody=Pose->GetReferencePoseInBody();
 	RobotBaseAtStart=Robot->GetActorTransform();
 	Inspection=InspectionOverride?InspectionOverride.Get():Assembly->FindComponentByClass<UDoorInspectionComponent>();
-	if (!Inspection.IsValid() || Inspection->Points.Num()!=6)
+	if (!IsValid(TargetModule) && (!Inspection.IsValid() || Inspection->Points.Num()!=6))
 	{ Status=TEXT("Six registered inspection stations are required."); return false; }
 	const double Extra[]={GapToleranceMm,FlushToleranceMm,MaxPickupDisplacementMm,MaxPickupRotationDeg};
 	for (double V:Extra) if (!FMath::IsFinite(V) || V<=0)
@@ -57,6 +70,8 @@ bool ADoorAssemblyCell::ValidateSetup()
 FTransform ADoorAssemblyCell::GetMountDoorWorld() const
 {
     if(!IsValid(Assembly)||!Assembly->GetBodyFrame())return FTransform::Identity;
+    if (IsValid(TargetModule) && TargetModule->bHasReferencePose)
+        return TargetModule->ReferencePoseInVehicle*Assembly->GetActorTransform();
     const auto* Reference=Assembly->GetDoorPoseController(bRightDoor?ECamryDoorSide::Right:ECamryDoorSide::Left);
     return Reference&&Reference->HasReferencePose()?Reference->GetReferencePoseInBody()*Assembly->GetBodyFrame()->GetComponentTransform():FTransform::Identity;
 }
@@ -136,7 +151,14 @@ bool ADoorAssemblyCell::EnterMove(EDoorAssemblyState Next,const FTransform& Door
 {
 	TargetDoorWorld=DoorTarget;
 	TargetTCPWorld=(bDoorHeld && !bDoorFastened ? DoorInTCP.Inverse() : TCPInDoorCm)*DoorTarget;
-	if (!Robot->CommandTCPWorld(TargetTCPWorld)) { Fail(Robot->LastStatus); return false; }
+	if (!Robot->CommandTCPWorld(TargetTCPWorld))
+    {
+        Fail(FString::Printf(TEXT("%s %s · 목표 %s / 로봇 %s · %s"),
+            TargetModule ? *TargetModule->ModuleId.ToString() : (bRightDoor ? TEXT("Door_FR") : TEXT("Door_FL")),
+            *StaticEnum<EDoorAssemblyState>()->GetNameStringByValue(int64(Next)), *TargetTCPWorld.GetLocation().ToString(),
+            *Robot->GetActorLocation().ToString(), *Robot->LastStatus));
+        return false;
+    }
 	EnterState(Next,TEXT("Tracking IK joint target with PID.")); MeasureTCP(); RecordSample(); return true;
 }
 
@@ -242,7 +264,9 @@ void ADoorAssemblyCell::FixedUpdate(double Dt)
 	}
 	case EDoorAssemblyState::Retract:
 		RefreshQuality(); Outcome=bQualityPassed ? EDoorCellOutcome::Pass : EDoorCellOutcome::QualityFail;
-		EnterState(EDoorAssemblyState::Complete,bQualityPassed ? TEXT("Complete: six-station quality PASS; door retained and robot retracted.") : TEXT("Complete: assembly QUALITY FAIL; review station gap/flush results."));
+		EnterState(EDoorAssemblyState::Complete,bQualityPassed
+			? (IsValid(TargetModule) ? TEXT("Complete: independent pose check PASS; module door retained and robot retracted.") : TEXT("Complete: six-station quality PASS; door retained and robot retracted."))
+			: TEXT("Complete: assembly QUALITY FAIL; inspect measured door pose."));
 		Assembly->RefreshDoorInspection(); RecordSample(); FlushRecording(); break;
 	default: break;
 	}
@@ -372,7 +396,7 @@ bool ADoorAssemblyCell::VerifyBeforeFasten()
 	if (ControlMode==EDoorCellControlMode::Basic) return true;
 	if (!bVerificationSensorValid) { Fail(TEXT("Independent verification sensor is invalid; fastening blocked.")); return false; }
 	TArray<FDoorInspectionResult> Measured;
-	if (!Inspection.IsValid() || !Inspection->EvaluateDoorPose(VerificationMeasuredDoorWorld,Measured) || Measured.Num()!=6)
+	if (!IsValid(TargetModule) && (!Inspection.IsValid() || !Inspection->EvaluateDoorPose(VerificationMeasuredDoorWorld,Measured) || Measured.Num()!=6))
 	{ Fail(TEXT("Independent six-station verification unavailable; fastening blocked.")); return false; }
 	for (const auto& Q:Measured)
 		if (FMath::Abs(Q.GapChangeMm)>GapToleranceMm || FMath::Abs(Q.FlushChangeMm)>FlushToleranceMm)
@@ -386,6 +410,16 @@ bool ADoorAssemblyCell::VerifyBeforeFasten()
 bool ADoorAssemblyCell::RefreshQuality()
 {
 	StationQuality.Reset(); bQualityPassed=false; bQualityValid=false;
+	if (IsValid(TargetModule))
+	{
+		if (!Pose.IsValid() || !Pose->GetControlledDoor() || !bDoorPresent) return false;
+		const FTransform Actual=Pose->GetControlledDoor()->GetComponentTransform();
+		const FTransform Mount=GetMountDoorWorld();
+		bQualityValid=Actual.IsValid() && Mount.IsValid();
+		bQualityPassed=bQualityValid && FVector::Distance(Actual.GetLocation(),Mount.GetLocation())*10<=PositionToleranceMm
+			&& FMath::RadiansToDegrees(Actual.GetRotation().AngularDistance(Mount.GetRotation()))<=OrientationToleranceDeg;
+		return bQualityValid;
+	}
 	if (!Inspection.IsValid() || !Inspection->RefreshMeasurements() || Inspection->Measurements.Num()!=6 || !bDoorPresent) return false;
 	bQualityValid=true; bQualityPassed=true;
 	for (const auto& R:Inspection->Measurements)
@@ -399,6 +433,13 @@ bool ADoorAssemblyCell::RefreshQuality()
 
 FString ADoorAssemblyCell::GetQualitySummary() const
 {
+	if (IsValid(TargetModule))
+		return FString::Printf(TEXT("Module %s / %s\nOutcome: %s\nAlignment sensor %s: %.2f mm / %.2f deg\nIndependent pose sensor %s: %.2f mm\nMount pose check: %s (limits %.2f mm / %.2f deg)"),
+			*TargetModule->ModuleId.ToString(),*StaticEnum<EDoorCellControlMode>()->GetNameStringByValue(int64(ControlMode)),
+			*StaticEnum<EDoorCellOutcome>()->GetNameStringByValue(int64(Outcome)),bAlignmentSensorValid?TEXT("valid"):TEXT("INVALID"),
+			AlignmentPositionErrorMm,AlignmentOrientationErrorDeg,bVerificationSensorValid?TEXT("valid"):TEXT("INVALID"),
+			VerificationPositionErrorMm,bQualityValid?(bQualityPassed?TEXT("PASS"):TEXT("FAIL")):TEXT("INVALID"),
+			PositionToleranceMm,OrientationToleranceDeg);
 	FString Text=FString::Printf(TEXT("Mode: %s / %s\nOutcome: %s\nAlignment sensor %s: %.2f mm / %.2f deg\nIndependent sensor %s: %.2f mm\nSix-station gauge: %s (limits %.2f / %.2f mm)"),
 		*StaticEnum<EDoorCellControlMode>()->GetNameStringByValue(int64(ControlMode)),
 		*StaticEnum<EDoorCellScenario>()->GetNameStringByValue(int64(Scenario)),
@@ -418,7 +459,9 @@ void ADoorAssemblyCell::WriteRunMetadata()
 	J->SetStringField(TEXT("mode"),StaticEnum<EDoorCellControlMode>()->GetNameStringByValue(int64(ControlMode)));
 	J->SetStringField(TEXT("state"),GetStateLabel()); J->SetStringField(TEXT("status"),Status);
 	J->SetStringField(TEXT("outcome"),StaticEnum<EDoorCellOutcome>()->GetNameStringByValue(int64(Outcome)));
-	J->SetStringField(TEXT("model"),TEXT("Perfect virtual pickup detection; pose sensors with body-frame constant biases; signed virtual gap/flush gauges; ideal rigid grasp/fastening. No collision, load or hinge mechanics."));
+	J->SetStringField(TEXT("model"),IsValid(TargetModule)
+		? TEXT("Process-module door; virtual pose sensors with body-frame biases; mount-pose verification; ideal rigid grasp/fastening. No collision, load or hinge mechanics or physical gap gauges.")
+		: TEXT("Perfect virtual pickup detection; pose sensors with body-frame constant biases; signed virtual gap/flush gauges; ideal rigid grasp/fastening. No collision, load or hinge mechanics."));
 	J->SetStringField(TEXT("robot_calibration"),Robot->CalibrationSource);
 	const auto VectorField=[&](const TCHAR* Name,const FVector& V)
 	{ TArray<TSharedPtr<FJsonValue>> A; A.Add(MakeShared<FJsonValueNumber>(V.X)); A.Add(MakeShared<FJsonValueNumber>(V.Y)); A.Add(MakeShared<FJsonValueNumber>(V.Z)); J->SetArrayField(Name,A); };

@@ -1,4 +1,5 @@
 #include "WheelAssemblyCell.h"
+#include "WheelGripPhysics.h"
 #include "CamryAssembly.h"
 #include "RobotArm.h"
 #include "Components/SceneComponent.h"
@@ -177,7 +178,8 @@ FString AWheelAssemblyCell::GetLeftSensorSummary() const
 		LeftSensors->Presence.Fresh(Now, LeftSensors->MaxAge) ? (LeftSensors->Presence.bDetected ? TEXT("있음") : TEXT("없음")) : TEXT("신호 지연"),
 		PoseFresh ? TEXT("유효") : TEXT("무효/지연"), GripFresh ? (LeftSensors->Gripped.bDetected ? TEXT("확인") : TEXT("미확인")) : TEXT("지연"),
 		LeftSensors->MountPose.Fresh(Now, LeftSensors->MaxAge) ? TEXT("유효") : TEXT("무효/지연"), Lanes[0].GripAttempts)
-		+ FString::Printf(TEXT(" · 경로 재계산 %d · 파지 재시도 %d"), LeftPickupReplans, LeftGripRetries);
+		+ FString::Printf(TEXT(" · 경로 재계산 %d · 파지 재시도 %d"), LeftPickupReplans, LeftGripRetries)
+        + (bPhysicalLeftGrip ? FString::Printf(TEXT("\n앞 휠 필요 힘 %.0f N · 마찰 한계 %.0f N · 미끄러짐 %.1f mm"), Lanes[0].DemandN, Lanes[0].CapacityN, Lanes[0].SlipMm) : FString());
 }
 
 FTransform AWheelAssemblyCell::OffsetOutward(const FTransform& Pose, int32 Side, double Centimeters) const
@@ -477,7 +479,16 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
 		&& !GetWheelWorld(Lane.WheelIndex).Equals(Lane.Pickup, 1.e-5))
 	{ Fail(TEXT("Wheel moved during pickup.")); return; }
 	if (!Robot->StepControl(Dt)) { Fail(TEXT("Robot servo failed.")); return; }
-	if (Lane.bHeld && !Lane.bFastened) WheelRoots[PartIndex(Lane.WheelIndex)]->SetWorldTransform(Lane.WheelInTCP * Robot->GetTCPWorld());
+	if (Lane.bHeld && !Lane.bFastened)
+    {
+        FTransform Target = Lane.WheelInTCP * Robot->GetTCPWorld();
+        const bool Physical = bPhysicalLeftGrip && Lane.WheelIndex == 0;
+        if (Physical)
+            Target.SetLocation(StepWheelGrip(Lane.LastCarried.GetLocation(), Target.GetLocation(), Dt, bLowFrictionGrip,
+                Lane.GripVelocity, Lane.DemandN, Lane.CapacityN, Lane.SlipMm));
+        WheelRoots[PartIndex(Lane.WheelIndex)]->SetWorldTransform(Target);
+        if (Physical && Lane.SlipMm >= 3.0) { Fail(TEXT("휠 미끄러짐 감지 · 운반 정지")); return; }
+    }
 	Lane.LastCarried = GetWheelWorld(Lane.WheelIndex);
 	const FTransform CurrentTCP = Robot->GetTCPWorld();
 	const double TCPErrorMm = FVector::Distance(CurrentTCP.GetLocation(), Lane.TargetTCP.GetLocation()) * 10;
