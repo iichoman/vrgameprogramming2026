@@ -231,6 +231,9 @@ bool FFactoryLayout::Validate(FString& Error) const
             ||!Item||Item->EffectiveTypeId()!=Binding.Key)
         {Error=TEXT("조립 작업 연결 대상이 없거나 로봇 종류가 맞지 않습니다.");return false;}
     }
+    for(const auto& P:PartOffsetsCm)if(!P.Key.StartsWith(TEXT("part_"))||!FactoryTasks::Find(P.Key.Mid(5))||P.Value.ContainsNaN()||P.Value.GetAbsMax()>100000)
+    {Error=TEXT("잘못된 부품 ID 또는 위치입니다.");return false;}
+    if(!FactoryTasks::Validate(*this,Error))return false;
     return CheckLink(StationId, EFactoryItemKind::VehicleStation, TEXT("차량 작업 위치"))
         && CheckLink(SupplyId, EFactoryItemKind::WheelSupply, TEXT("휠 공급대"))
         && CheckLink(HandlerId, EFactoryItemKind::CartesianHandler, TEXT("이송 장치"));
@@ -241,10 +244,22 @@ FString FFactoryLayout::ToJson() const
     FString Error;
     if (!Validate(Error)) return FString();
     const TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
-    Root->SetNumberField(TEXT("version"), 3);
+    Root->SetNumberField(TEXT("version"), 5);
     auto Bindings=MakeShared<FJsonObject>();TArray<FString> Keys;AssemblyBindings.GetKeys(Keys);Keys.Sort();
     for(const auto& Key:Keys)Bindings->SetStringField(Key,AssemblyBindings[Key]);
     Root->SetObjectField(TEXT("assembly_bindings"),Bindings);
+    auto Offsets=MakeShared<FJsonObject>();TArray<FString> PartKeys;PartOffsetsCm.GetKeys(PartKeys);PartKeys.Sort();
+    for(const auto& K:PartKeys){const auto P=PartOffsetsCm[K];Offsets->SetArrayField(K,{MakeShared<FJsonValueNumber>(P.X),MakeShared<FJsonValueNumber>(P.Y),MakeShared<FJsonValueNumber>(P.Z)});}
+    Root->SetObjectField(TEXT("part_offsets_cm"),Offsets);
+    Root->SetBoolField(TEXT("tasks_initialized"),bTasksInitialized);
+    TArray<TSharedPtr<FJsonValue>> TaskValues;
+    for(const auto& T:Tasks){auto O=MakeShared<FJsonObject>();
+        O->SetStringField(TEXT("id"),T.Id);O->SetStringField(TEXT("operation"),T.Operation);
+        O->SetStringField(TEXT("product_id"),T.ProductId);O->SetStringField(TEXT("target_port"),T.TargetPort);
+        O->SetStringField(TEXT("part_type"),T.PartType);O->SetStringField(TEXT("source_port"),T.SourcePort);
+        O->SetStringField(TEXT("part_id"),T.PartId);O->SetStringField(TEXT("robot_id"),T.RobotId);
+        TaskValues.Add(MakeShared<FJsonValueObject>(O));}
+    Root->SetArrayField(TEXT("tasks"),TaskValues);
     Root->SetStringField(TEXT("units"), TEXT("cm"));
     const TSharedRef<FJsonObject> Hall = MakeShared<FJsonObject>();
     Hall->SetNumberField(TEXT("length_cm"), LengthCm); Hall->SetNumberField(TEXT("width_cm"), WidthCm);
@@ -283,15 +298,15 @@ bool FFactoryLayout::FromJson(const FString& Json, FFactoryLayout& Out, FString&
     { Error = TEXT("배치 파일을 읽을 수 없습니다. JSON 형식을 확인해 주세요."); return false; }
     double Version = 0;
     FString Units;
-    if (!ReadNumber(Root, TEXT("version"), Version) || (Version != 1.0 && Version != 2.0 && Version != 3.0)
+    if (!ReadNumber(Root, TEXT("version"), Version) || (Version != 1.0 && Version != 2.0 && Version != 3.0 && Version != 4.0 && Version != 5.0)
         || !ReadString(Root, TEXT("units"), Units) || Units != TEXT("cm"))
-    { Error = TEXT("지원하는 배치 형식은 version 1, 2 또는 3, 단위 cm입니다."); return false; }
+    { Error = TEXT("지원하는 배치 형식은 version 1~5, 단위 cm입니다."); return false; }
     const TSharedPtr<FJsonValue>* HallValue = Field(Root, TEXT("hall"), EJson::Object);
     const TSharedPtr<FJsonValue>* ItemValue = Field(Root, TEXT("items"), EJson::Array);
     const TSharedPtr<FJsonValue>* JobValue = Field(Root, TEXT("job"), EJson::Object);
     if (!HallValue || !ItemValue || !JobValue)
     { Error = TEXT("배치 파일에 공장 크기, 항목 목록 또는 작업 연결 정보가 없습니다."); return false; }
-    FFactoryLayout Candidate;
+    FFactoryLayout Candidate;Candidate.LayoutVersion=int32(Version);
     if (!ReadNumber((*HallValue)->AsObject(), TEXT("length_cm"), Candidate.LengthCm)
         || !ReadNumber((*HallValue)->AsObject(), TEXT("width_cm"), Candidate.WidthCm))
     { Error = TEXT("공장 크기는 유효한 숫자 두 개로 지정해야 합니다."); return false; }
@@ -338,6 +353,34 @@ bool FFactoryLayout::FromJson(const FString& Json, FFactoryLayout& Out, FString&
             if(!Pair.Value.IsValid()||Pair.Value->Type!=EJson::String){Error=TEXT("조립 작업 연결은 ID 문자열이어야 합니다.");return false;}
             Candidate.AssemblyBindings.Add(FString(*Pair.Key),Pair.Value->AsString());
         }
+    }
+    if(Version>=4)
+    {
+        const auto* Values=Field(Root,TEXT("tasks"),EJson::Array);
+        if(!Values||!Root->TryGetBoolField(TEXT("tasks_initialized"),Candidate.bTasksInitialized)||(*Values)->AsArray().Num()>128)
+        {Error=TEXT("v4 작업 목록 형식이 올바르지 않습니다.");return false;}
+        for(const auto& V:(*Values)->AsArray())
+        {
+            if(!V||V->Type!=EJson::Object){Error=TEXT("작업은 객체여야 합니다.");return false;}
+            auto O=V->AsObject();FFactoryTask T;
+            if(!ReadString(O,TEXT("id"),T.Id)||!ReadString(O,TEXT("operation"),T.Operation)
+                ||!ReadString(O,TEXT("product_id"),T.ProductId)||!ReadString(O,TEXT("target_port"),T.TargetPort)
+                ||!ReadString(O,TEXT("part_type"),T.PartType)||!ReadString(O,TEXT("source_port"),T.SourcePort)
+                ||!ReadString(O,TEXT("part_id"),T.PartId)||!ReadString(O,TEXT("robot_id"),T.RobotId))
+            {Error=TEXT("작업 필수 필드가 누락되었습니다.");return false;}
+            Candidate.Tasks.Add(T);
+        }
+        if(!Candidate.bTasksInitialized&&!Candidate.Tasks.IsEmpty()){Error=TEXT("작업 초기화 상태가 잘못되었습니다.");return false;}
+    }
+    else FactoryTasks::MigrateLegacy(Candidate);
+    if(Version>=5)
+    {
+        const auto* O=Field(Root,TEXT("part_offsets_cm"),EJson::Object);
+        if(!O){Error=TEXT("부품 배치 정보가 없습니다.");return false;}
+        for(const auto& P:(*O)->AsObject()->Values){const FString K(*P.Key);
+            if(!P.Value||P.Value->Type!=EJson::Array||P.Value->AsArray().Num()!=3){Error=TEXT("부품 위치는 cm 좌표 3개여야 합니다.");return false;}
+            const auto& A=P.Value->AsArray();for(const auto& V:A)if(!V||V->Type!=EJson::Number){Error=TEXT("부품 위치 형식 오류");return false;}
+            Candidate.PartOffsetsCm.Add(K,FVector(A[0]->AsNumber(),A[1]->AsNumber(),A[2]->AsNumber()));}
     }
     if (!Candidate.Validate(Error)) return false;
     Out = MoveTemp(Candidate); // A rejected file never mutates the currently edited layout.

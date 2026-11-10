@@ -41,6 +41,7 @@ void AFactoryRuntime::RedoEdit()
 }
 void AFactoryRuntime::CancelEdit()
 {
+    bAssigningTask=bRobotPopup=bDraggingPart=false;PendingTaskId.Empty();SelectedPartId.Empty();bNeedsPanel=true;
     bDragging=bCreateZone=bPanning=bOrbiting=false;ResizeHandle=-1;PendingTypeId.Empty();
     if(History.Cancel(Layout,SelectedId)){Rebuild();RefreshDirty();}
 }
@@ -60,7 +61,7 @@ void AFactoryRuntime::AddRegisteredItem(const FString& Id,const FVector2D& Point
     if(bSnap){Item.Position.X=FMath::GridSnap(Item.Position.X,SnapCm);Item.Position.Y=FMath::GridSnap(Item.Position.Y,SnapCm);}
     if(const auto* T=AssemblyRobotTemplate(Id))Item.Yaw=T->GetActorRotation().Yaw;
     Layout.Items.Add(Item);SelectedId=Item.Id;bHallSelected=false;Rebuild();EndEdit();
-    Status=D->NameKo+TEXT(" 추가 완료 · 왼쪽 패널에서 작업에 연결하세요.");
+    Status=D->NameKo+TEXT(" 추가 완료 · 로봇을 클릭하고 장착 지점 → 부품 순서로 연결하세요.");
 }
 void AFactoryRuntime::SetZoneLabels(bool V)
 {bZoneLabels=V;for(const auto& I:Layout.Items)if(I.Kind==EFactoryItemKind::Zone)if(auto* A=Equipment.FindRef(I.Id).Get())A->SetLabelVisible(V);SaveViewSettings();}
@@ -158,6 +159,22 @@ void AFactoryRuntime::ViewportPointer(FVector2D Pixel,FKey Button,bool Pressed)
     if(Button==EKeys::RightMouseButton){bOrbiting=Pressed;return;}
     if(Button!=EKeys::LeftMouseButton||!CanEdit())return;
     if(!Pressed){OnPointerUp();return;}
+    const FString Part=HitPart(Pixel);
+    if(bRobotPopup&&!PendingTaskId.IsEmpty())
+    {if(!Part.IsEmpty())ChoosePart(Part);else{Status=TEXT("운반할 실제 부품을 클릭하세요. Esc로 취소합니다.");bNeedsPanel=true;}return;}
+    if(bRobotPopup&&HitTaskTarget(Pixel))return;
+    if(!Part.IsEmpty())
+    {
+        CloseRobotPopup();SelectedPartId=Part;SelectedId.Empty();RefreshHighlights();FTransform P;PartWorld(Part,P);
+        if(DragPlane(Pixel,P.GetLocation().Z,PartDragStart))
+        {PartOffsetStart=Layout.PartOffsetsCm.FindRef(Part);BeginEdit();bDraggingPart=true;}return;
+    }
+    const FString Robot=HitRobot(Pixel);
+    if(!Robot.IsEmpty())
+    {
+        OpenRobotPopup(Robot,Pixel);FVector P;if(PointerOnFloor(P)){DragStart=P;DragOffset=Selected()->Position-FVector2D(P);BeginEdit();bDragging=true;}return;
+    }
+    CloseRobotPopup();
     FVector P;if(!PointerOnFloor(P))return;DragStart=P;
     if(!PendingTypeId.IsEmpty()&&!bCreateZone){const FString Id=PendingTypeId;PendingTypeId.Empty();AddRegisteredItem(Id,{P.X,P.Y});return;}
     ResizeHandle=PendingTypeId.IsEmpty()?HitResizeHandle(Pixel):-1;
@@ -173,13 +190,25 @@ void AFactoryRuntime::ViewportPointer(FVector2D Pixel,FKey Button,bool Pressed)
         const double Edge=FMath::Min(FMath::Min(FMath::Abs(X),FMath::Abs(X-Layout.LengthCm)),FMath::Abs(FMath::Abs(Y)-Layout.WidthCm*.5));
         if(X>=-50&&X<=Layout.LengthCm+50&&FMath::Abs(Y)<=Layout.WidthCm*.5+50&&Edge<50){SelectHall();return;}
     }
-    SelectItem(Hit?Hit->Id:FString());
+    if(Hit&&Hit->EffectiveTypeId().StartsWith(TEXT("assembly_")))OpenRobotPopup(Hit->Id,Pixel);
+    else SelectItem(Hit?Hit->Id:FString());
     if(Hit){BeginEdit();bDragging=true;DragOffset=Hit->Position-FVector2D(P.X,P.Y);}
 }
 void AFactoryRuntime::ViewportMove(FVector2D Pixel)
 {
     const FVector2D Delta=Pixel-LastPointerPixel;PointerPixel=LastPointerPixel=Pixel;bHasViewportPointer=true;
     if(bPanning)PanCamera(Delta);else if(bOrbiting)OrbitCamera(Delta);
+    if(bDraggingPart&&CanEdit())
+    {
+        FVector P;if(DragPlane(Pixel,PartDragStart.Z,P))
+        {
+            FVector PartDelta=P-PartDragStart;if(bSnap){PartDelta.X=FMath::GridSnap(PartDelta.X,SnapCm);PartDelta.Y=FMath::GridSnap(PartDelta.Y,SnapCm);}
+            const FVector NewOffset=PartOffsetStart+PartDelta,OldOffset=Layout.PartOffsetsCm.FindRef(SelectedPartId);
+            FTransform Pose;if(PartWorld(SelectedPartId,Pose)){Pose.AddToTranslation(NewOffset-OldOffset);
+                Layout.PartOffsetsCm.Add(SelectedPartId,NewOffset);SetPartWorld(SelectedPartId,Pose);RefreshDirty();}
+        }
+        return;
+    }
     if(bDragging&&CanEdit())
     {
         FVector P;if(!PointerOnFloor(P))return;
@@ -189,6 +218,7 @@ void AFactoryRuntime::ViewportMove(FVector2D Pixel)
 }
 void AFactoryRuntime::OnPointerUp()
 {
+    if(bDraggingPart){bDraggingPart=false;ConfigurePartPlacement();BindAssemblyRobots();ResetCycle();EndEdit();bNeedsPanel=true;return;}
     if(!bDragging)return;const bool WasResize=ResizeHandle>=0;bDragging=false;ResizeHandle=-1;
     if(bCreateZone&&CanEdit())
     {
@@ -227,6 +257,7 @@ void AFactoryRuntime::ViewportKey(FKey Key,bool Ctrl,bool Shift)
 void AFactoryRuntime::EditorTick(){DrawEditorGuides();}
 void AFactoryRuntime::DrawEditorGuides()
 {
+    DrawTaskTargets();
     if(bRouteVisible)
     {
         for(int32 I=1;I<Layout.ProcessOrder.Num();++I)

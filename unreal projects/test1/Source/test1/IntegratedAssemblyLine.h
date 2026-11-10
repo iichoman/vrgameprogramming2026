@@ -23,6 +23,7 @@ public:
     AIntegratedAssemblyLine();
     UPROPERTY(EditInstanceOnly) TObjectPtr<AWheelAssemblyCell> WheelCell;
     UPROPERTY(EditInstanceOnly) TObjectPtr<ADoorAssemblyCell> DoorCell;
+    UPROPERTY(Transient) TObjectPtr<ADoorAssemblyCell> SecondDoorCell;
     UPROPERTY(EditAnywhere) FTransform VehicleAtWheelStation;
     UPROPERTY(EditAnywhere) FTransform CarriageAtWheelStation;
     UPROPERTY(EditAnywhere) FVector DoorStationOffsetCm = FVector(1000,0,0);
@@ -41,6 +42,7 @@ public:
     virtual void Tick(float Seconds) override;
 protected:
     FTransform DoorSupplyWorld;
+    FTransform SecondDoorSupplyWorld;
     FTransform ExpectedVehicle, ExpectedCarriage;
     double TransferTime = 0;
     bool bReady = false;

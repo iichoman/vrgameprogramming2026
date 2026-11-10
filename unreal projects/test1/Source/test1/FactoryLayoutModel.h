@@ -1,5 +1,6 @@
 #pragma once
 #include "CoreMinimal.h"
+#include "FactoryTaskModel.h"
 
 // Plain layout data, independent of rendered meshes and actors. All lengths are cm.
 enum class EFactoryItemKind : uint8 { Zone, VehicleStation, WheelSupply, CartesianHandler, Conveyor, ArticulatedRobot };
@@ -31,7 +32,11 @@ struct FFactoryLayout
     FString StationId = TEXT("station_1");
     FString SupplyId = TEXT("supply_1");
     FString HandlerId = TEXT("handler_1");
-    TMap<FString,FString> AssemblyBindings;
+    TMap<FString,FString> AssemblyBindings; // Legacy migration only
+    bool bTasksInitialized=false;
+    int32 LayoutVersion=5;
+    TMap<FString,FVector> PartOffsetsCm; // Supply offsets in world axes; editable only while stopped.
+    TArray<FFactoryTask> Tasks;
     static FFactoryLayout Default();
     static FFactoryLayout LegacyDefault();
     static FString KindName(EFactoryItemKind Kind);

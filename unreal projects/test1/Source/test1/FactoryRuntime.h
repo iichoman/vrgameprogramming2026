@@ -7,6 +7,7 @@
 #include "FactoryRuntime.generated.h"
 class AFactoryEquipment;
 class ARobotArm;
+class ADoorAssemblyCell;
 class AAutonomousAssemblyLine;
 class UFactoryAssemblyProcessRunner;
 class UFactoryWheelProcessRunner;
@@ -75,6 +76,34 @@ public:
     void AddItem(EFactoryItemKind Kind);
     void DeleteSelected();
     void BindSelected();
+    void BeginTaskAssignment();
+    bool AssignTask(const FString& TaskId);
+    void UnassignTask(const FString& TaskId);
+    void SetTaskPartMode(const FString& TaskId,bool Explicit);
+    bool TaskTargetWorld(const FString& TaskId,FVector& Out) const;
+    bool HitTaskTarget(FVector2D Pixel);
+    void DrawTaskTargets();
+    bool bAssigningTask=false;
+    bool bRobotPopup=false, bDraggingPart=false;
+    FString PendingTaskId, SelectedPartId;
+    FVector2D RobotPopupPixel=FVector2D(500,140);
+    FVector PartDragStart, PartOffsetStart;
+    UPROPERTY(Transient) TObjectPtr<ADoorAssemblyCell> RightDoorCell;
+    FVector DefaultDoorPickup;
+    bool bDoorPickupCaptured=false;
+    void EnsureRightDoor();
+    void ConfigurePartPlacement();
+    bool PartWorld(const FString& Id,FTransform& Pose) const;
+    FBox PartBounds(const FString& Id) const;
+    bool SetPartWorld(const FString& Id,const FTransform& Pose);
+    FString HitPart(FVector2D Pixel) const;
+    FString HitRobot(FVector2D Pixel) const;
+    bool DragPlane(FVector2D Pixel,double Z,FVector& Out) const;
+    bool ChoosePart(const FString& Id);
+    void OpenRobotPopup(const FString& RobotId,FVector2D Pixel);
+    void CloseRobotPopup();
+    UFUNCTION() bool RunDirectEditChecks();
+    UFUNCTION() bool RunTaskAssignmentChecks();
     bool SaveLayout(const FString& Slot = TEXT("A"));
     bool LoadLayout(const FString& Slot = TEXT("A"));
     void RestoreDefault();
@@ -125,7 +154,7 @@ public:
     FString RouteText() const;
     void ViewportPointer(FVector2D Pixel, FKey Button, bool Pressed);
     void ViewportMove(FVector2D Pixel);
-    void ViewportCaptureLost(){bPanning=bOrbiting=false;if(bDragging)CancelEdit();}
+    void ViewportCaptureLost(){bPanning=bOrbiting=false;if(bDragging||bDraggingPart)CancelEdit();}
     void ViewportKey(FKey Key, bool Control, bool Shift);
     void PanCamera(FVector2D Delta);
     void OrbitCamera(FVector2D Delta);
