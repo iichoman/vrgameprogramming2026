@@ -76,6 +76,51 @@ bool AFactoryRuntime::RunModularEditorChecks()
         FourMounted &= It->GetActorTransform().Equals(Mount,0.2);
     }
     Check(TEXT("all_four_distinct_door_meshes_at_authored_mounts"),FoundDoors==4&&FourMounted);
+    TestAssemblyLine->WheelCell->bLaserScanFrontLeftHub=true;
+    ResetCycle();
+    for(int32 I=0;I<24;++I)StepSimulation(1./120);
+    const bool ScanStarted=StartCycle();
+    for(int32 I=0;I<120*300&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)StepSimulation(1./120);
+    const auto& Scan=TestAssemblyLine->WheelCell->FrontLeftHubScan;
+    Check(TEXT("laser_hub_hits_drive_complete_cycle"),ScanStarted&&RunState==EFactoryRunState::Complete
+        &&Scan.bValid&&Scan.HitCount>=3&&Scan.MeasuredAt>=0&&Scan.ResidualMm<=1);
+    const auto* LaserCell=TestAssemblyLine->WheelCell.Get();
+    Check(TEXT("laser_three_measurement_stages"),LaserCell->FrontLeftDockScan.bValid
+        &&LaserCell->FrontLeftPreMountScan.bValid&&LaserCell->FrontLeftFinalWheelScan.bValid
+        &&LaserCell->FrontLeftDockScan.MeasuredAt<LaserCell->FrontLeftPreMountScan.MeasuredAt
+        &&LaserCell->FrontLeftPreMountScan.MeasuredAt<LaserCell->FrontLeftFinalWheelScan.MeasuredAt
+        &&FVector::Distance(LaserCell->FrontLeftPreMountScan.MeasuredWorld.GetLocation(),
+            LaserCell->FrontLeftFinalWheelScan.MeasuredWorld.GetLocation())*10<=LaserCell->QualityToleranceMm);
+    const FVector BaselineHubMeasurement=Scan.MeasuredWorld.GetLocation();
+    TestAssemblyLine->WheelCell->FrontLeftHubOffsetCm=FVector(2,0,0);
+    ResetCycle();
+    for(int32 I=0;I<24;++I)StepSimulation(1./120);
+    StartCycle();
+    for(int32 I=0;I<120*300&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)StepSimulation(1./120);
+    const auto& ShiftedScan=TestAssemblyLine->WheelCell->FrontLeftHubScan;
+    Check(TEXT("laser_measured_hub_shift_changes_mount_target"),RunState==EFactoryRunState::Complete
+        &&ShiftedScan.bValid&&FMath::IsNearlyEqual(
+            ShiftedScan.MeasuredWorld.GetLocation().X-BaselineHubMeasurement.X,2.0,.1));
+    TestAssemblyLine->WheelCell->FrontLeftHubOffsetCm=FVector::ZeroVector;
+    TestAssemblyLine->WheelCell->LaserOutlierMm=10;
+    ResetCycle();
+    for(int32 I=0;I<24;++I)StepSimulation(1./120);
+    StartCycle();
+    for(int32 I=0;I<120*20&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)StepSimulation(1./120);
+    Check(TEXT("laser_outlier_residual_blocks_pickup"),RunState==EFactoryRunState::Fault
+        &&!TestAssemblyLine->WheelCell->FrontLeftHubScan.bValid
+        &&TestAssemblyLine->WheelCell->FrontLeftHubScan.ResidualMm>1);
+    TestAssemblyLine->WheelCell->LaserOutlierMm=0;
+    TestAssemblyLine->WheelCell->bBlockFrontLeftLaser=true;
+    ResetCycle();
+    for(int32 I=0;I<24;++I)StepSimulation(1./120);
+    StartCycle();
+    for(int32 I=0;I<120*20&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)StepSimulation(1./120);
+    Check(TEXT("blocked_laser_prevents_wheel_pickup"),RunState==EFactoryRunState::Fault
+        &&!TestAssemblyLine->WheelCell->FrontLeftHubScan.bValid
+        &&TestAssemblyLine->WheelCell->MountedCount==0);
+    TestAssemblyLine->WheelCell->bBlockFrontLeftLaser=false;
+    TestAssemblyLine->WheelCell->bLaserScanFrontLeftHub=false;
     for(int32 Kind : {0,1,2,3,4,6,7})
     {
         TestAssemblyLine->SetFactoryCheck(Kind);

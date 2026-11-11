@@ -2,7 +2,8 @@
 #include "CoreMinimal.h"
 
 inline FVector StepWheelGrip(const FVector& Previous, const FVector& Target, double Dt, bool LowFriction,
-    FVector& WheelVelocityMps, double& GripDemandN, double& GripCapacityN, double& SlipMm)
+    FVector& WheelVelocityMps, double& GripDemandN, double& GripCapacityN, double& SlipMm,
+    double& AppliedGripForceN)
 {
     constexpr double MassKg = 18.0;
     constexpr double TotalPadForceN = 1200.0;
@@ -12,7 +13,9 @@ inline FVector StepWheelGrip(const FVector& Previous, const FVector& Target, dou
     const FVector TargetVelocity = (Target - Previous) / (100.0 * Dt);
     const FVector Required = MassKg * ((TargetVelocity - WheelVelocityMps) / Dt - Gravity);
     GripDemandN = Required.Size();
-    WheelVelocityMps += (Gravity + Required.GetClampedToMaxSize(GripCapacityN) / MassKg) * Dt;
+    const FVector AppliedForce = Required.GetClampedToMaxSize(GripCapacityN);
+    AppliedGripForceN = AppliedForce.Size();
+    WheelVelocityMps += (Gravity + AppliedForce / MassKg) * Dt;
     const FVector Actual = Previous + WheelVelocityMps * (100.0 * Dt);
     SlipMm = FVector::Distance(Target, Actual) * 10.0;
     return Actual;

@@ -225,6 +225,28 @@ void ASensorAssemblyLine::Tick(float Seconds)
 void ASensorAssemblyLine::DrawSensorVisualization() const
 {
     if (!bShowSensorVisualization || !Sensors || !GetWorld() || (GetWorld()->WorldType!=EWorldType::PIE && GetWorld()->WorldType!=EWorldType::Game)) return;
+	if (WheelCell && WheelCell->bLaserScanFrontLeftHub)
+	{
+		const FWheelHubScanReading* Stages[]={&WheelCell->FrontLeftDockScan,&WheelCell->FrontLeftPreMountScan,&WheelCell->FrontLeftFinalWheelScan};
+		const TCHAR* Labels[]={TEXT("1 ARRIVAL HUB"),TEXT("2 PRE-MOUNT HUB"),TEXT("3 POST-MOUNT WHEEL")};
+		for (int32 I=0;I<3;++I)
+		{
+			const auto& R=*Stages[I];
+			if (R.MeasuredAt<0) continue;
+			const FColor Color=R.bValid?FColor::Green:FColor::Red;
+			const FVector Center=R.bValid?R.MeasuredWorld.GetLocation():WheelCell->GetMountWorld(0).GetLocation();
+			DrawDebugSphere(GetWorld(),Center,10+I*4,12,Color,false,.08f,0,2.f);
+			DrawDebugString(GetWorld(),Center+FVector(0,0,35+I*25),FString::Printf(TEXT("%s: %s %d/5 RMS %.2fmm t=%.2fs"),Labels[I],R.bValid?TEXT("PASS"):TEXT("FAIL"),R.HitCount,R.ResidualMm,R.MeasuredAt),nullptr,Color,.08f,false,1.f);
+		}
+		const FWheelHubScanReading* Latest=Stages[2]->MeasuredAt>=0?Stages[2]:(Stages[1]->MeasuredAt>=0?Stages[1]:Stages[0]);
+		if (Latest->MeasuredAt>=0)
+			for (const FVector& End:Latest->RayEndsWorld)
+			{
+				const bool Hit=FVector::Distance(Latest->ScanOriginWorld,End)<1499;
+				const FVector DrawEnd=Hit?End:Latest->ScanOriginWorld+(End-Latest->ScanOriginWorld).GetSafeNormal()*80;
+				DrawDebugLine(GetWorld(),Latest->ScanOriginWorld,DrawEnd,Hit?FColor::Cyan:FColor::Red,false,.08f,0,1.5f);
+			}
+	}
     const FVector Station=Sensors->Station.GetLocation();
     const bool Fresh=Sensors->Healthy(SensorTime);
     const FColor Color=Fresh ? (Sensors->Arrival.Value.X>.5 ? FColor::Green : FColor::Cyan) : FColor::Red;

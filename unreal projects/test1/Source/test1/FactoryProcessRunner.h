@@ -63,6 +63,7 @@ private:
     friend class AFactoryRuntime; // Runtime checks can simulate an empty reserve.
     int32 FeatureKind=0, GripAttempts=0;
     FVector WheelVelocityMps = FVector::ZeroVector;
+    double AppliedGripForceN = 0;
     double GripDemandN = 0;
     double GripCapacityN = 0;
     double SlipMm = 0;

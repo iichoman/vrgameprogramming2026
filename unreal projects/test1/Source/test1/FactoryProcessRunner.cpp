@@ -52,7 +52,7 @@ bool UFactoryWheelProcessRunner::Start()
     bSensorFeatures=false;bWaiting=false;Sensors.Reset();Replans=GripRetries=Recoveries=0;
     SupplyDeliveryAt=-1;bReserveAvailable=true;
     HubSampleAt=SeatSince=ProgressAt=-1;bPublishHub=true;Realignments=0;MountDecision.Empty();
-    WheelVelocityMps = FVector::ZeroVector; GripDemandN = GripCapacityN = SlipMm = 0;
+    WheelVelocityMps = FVector::ZeroVector; AppliedGripForceN = GripDemandN = GripCapacityN = SlipMm = 0;
     GripAttempts=0;WaitSeconds=StableSeconds=GripSeconds=0;bObservedFault=false;
     ObservedPickup=R->SupplyWorld();FeatureStatus=TEXT("미실행");
     ++R->RunEpoch;Controller()->Reset(R->RunEpoch);Change(EFactoryRunState::Approach);
@@ -160,7 +160,7 @@ bool UFactoryWheelProcessRunner::UpdatePhysicalGrip(FTransform& WheelPose, doubl
 {
     const FVector Previous = Runtime()->WheelRoot->GetComponentLocation();
     const FVector Target = WheelPose.GetLocation();
-    const FVector Actual = StepWheelGrip(Previous, Target, Dt, FeatureKind == 6, WheelVelocityMps, GripDemandN, GripCapacityN, SlipMm);
+    const FVector Actual = StepWheelGrip(Previous, Target, Dt, FeatureKind == 6, WheelVelocityMps, GripDemandN, GripCapacityN, SlipMm, AppliedGripForceN);
     WheelPose.SetLocation(Actual);
     return SlipMm < 3.0;
 }
@@ -306,7 +306,7 @@ FString UFactoryWheelProcessRunner::FeatureSummary() const
     return FString::Printf(TEXT("%s\n부품 %s · 위치 %s · 파지 %s\n재계산 %d · 재시도 %d · 대기 복구 %d"),
         *FeatureStatus,S.Present?TEXT("있음"):TEXT("없음"),S.Fresh(R->SimulationSeconds)?TEXT("유효"):TEXT("지연/무효"),
         S.Gripped?TEXT("확인"):TEXT("미확인"),Replans,GripRetries,Recoveries)+TEXT("\n")+MountDecision
-        + (FeatureKind >= 5 ? FString::Printf(TEXT("\n필요 힘 %.0f N · 마찰 한계 %.0f N · 미끄러짐 %.1f mm"), GripDemandN, GripCapacityN, SlipMm) : FString());
+        + (FeatureKind >= 5 ? FString::Printf(TEXT("\n필요 힘 %.0f N · 전달 힘 %.0f N · 마찰 한계 %.0f N · 미끄러짐 %.1f mm"), GripDemandN, AppliedGripForceN, GripCapacityN, SlipMm) : FString());
 }
 
 bool UFactoryWheelProcessRunner::AssessMount(double Dt)

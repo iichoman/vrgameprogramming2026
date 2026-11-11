@@ -4,6 +4,7 @@
 #include "RobotArm.h"
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Components/SphereComponent.h"
 #include "UObject/ConstructorHelpers.h"
 
 void UWheelRobotSensorBank::Reset()
@@ -51,6 +52,15 @@ AWheelAssemblyCell::AWheelAssemblyCell()
 	PrimaryActorTick.bCanEverTick = true;
 	CellRoot = CreateDefaultSubobject<USceneComponent>(TEXT("WheelCellRoot"));
 	SetRootComponent(CellRoot);
+	FrontLeftHubProxy = CreateDefaultSubobject<USphereComponent>(TEXT("FrontLeftHubScanProxy"));
+	FrontLeftHubProxy->SetupAttachment(CellRoot);
+	FrontLeftHubProxy->SetMobility(EComponentMobility::Movable);
+	FrontLeftHubProxy->InitSphereRadius(8.0);
+	FrontLeftHubProxy->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+	FrontLeftHubProxy->SetGenerateOverlapEvents(false);
+	FrontLeftHubProxy->SetCollisionResponseToAllChannels(ECR_Ignore);
+	FrontLeftHubProxy->SetCollisionResponseToChannel(ECC_Visibility,ECR_Block);
+	FrontLeftHubProxy->SetHiddenInGame(true);
 	LeftSensors = CreateDefaultSubobject<UWheelRobotSensorBank>(TEXT("LeftRobotSensors"));
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> Cylinder(TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
 	for (int32 Index = 0; Index < 4; ++Index)
@@ -112,7 +122,72 @@ FTransform AWheelAssemblyCell::GetMountWorld(int32 Index) const
 	if (!IsValid(Assembly) || !Assembly->GetBodyFrame() || Index < 0 || Index > 3) return FTransform::Identity;
 	const double X = Index % 2 == 0 ? FrontXcm : RearXcm;
 	const double Y = Index < 2 ? -HubHalfTrackCm : HubHalfTrackCm;
-	return FTransform(FRotator::ZeroRotator, MountCentersCm.Num() == 4 ? MountCentersCm[Index] : FVector(X, Y, HubHeightCm)) * Assembly->GetBodyFrame()->GetComponentTransform();
+	FTransform Mount = FTransform(FRotator::ZeroRotator, MountCentersCm.Num() == 4 ? MountCentersCm[Index] : FVector(X, Y, HubHeightCm)) * Assembly->GetBodyFrame()->GetComponentTransform();
+	if (Index == 0 && bLaserScanFrontLeftHub)
+		Mount.AddToTranslation(Assembly->GetBodyFrame()->GetComponentTransform().TransformVectorNoScale(FrontLeftHubOffsetCm));
+	return Mount;
+}
+
+FTransform AWheelAssemblyCell::GetMountTargetWorld(int32 Index) const
+{
+	return Index == 0 && bLaserScanFrontLeftHub && FrontLeftHubScan.bValid
+		? FrontLeftHubScan.MeasuredWorld : GetMountWorld(Index);
+}
+
+bool AWheelAssemblyCell::ScanFrontLeftHub(bool bScanWheel)
+{
+	FWheelHubScanReading& Reading=bScanWheel?FrontLeftFinalWheelScan:FrontLeftHubScan;
+	Reading = FWheelHubScanReading();
+	Reading.TargetPort=bScanWheel?TEXT("wheel_fl_seated"):TEXT("hub_fl");
+	if (bBlockFrontLeftLaser) { Reading.FailureReason=TEXT("광선 차단"); return false; }
+	if (!IsValid(Assembly) || !IsValid(RobotForWheel(0)) || !IsValid(FrontLeftHubProxy))
+	{ Reading.FailureReason=TEXT("스캐너 또는 허브 연결 누락"); return false; }
+	if (!FMath::IsFinite(LaserOutlierMm) || FrontLeftHubOffsetCm.ContainsNaN())
+	{ Reading.FailureReason=TEXT("스캔 설정값 오류"); return false; }
+	// The proxy follows the plant hub. The scanner aims using the docked nominal
+	// pose and reconstructs the center only from collision hits and normals.
+	constexpr double RadiusCm = 8.0;
+	constexpr double RangeCm = 1500.0;
+	constexpr double MaxResidualMm = 1.0;
+	FrontLeftHubProxy->SetWorldLocation(bScanWheel?GetWheelWorld(0).GetLocation():GetMountWorld(0).GetLocation());
+	const FVector NominalCenter = bScanWheel?FrontLeftHubScan.MeasuredWorld.GetLocation():(FTransform(FQuat::Identity,
+		MountCentersCm.Num() == 4 ? MountCentersCm[0] : FVector(FrontXcm,-HubHalfTrackCm,HubHeightCm)) * BodyAtStart).GetLocation();
+	const FVector Origin = bScanWheel ? NominalCenter+BodyAtStart.TransformVectorNoScale(FVector(0,-60,0))
+		: RobotForWheel(0)->GetTCPWorld().GetLocation();
+	Reading.ScanOriginWorld = Origin;
+	FVector CenterSum = FVector::ZeroVector;
+	TArray<FVector> CenterSamples;
+	const FVector2D Offsets[] = {{0,0},{3,0},{-3,0},{0,3},{0,-3}};
+	for (int32 RayIndex=0; RayIndex<UE_ARRAY_COUNT(Offsets); ++RayIndex)
+	{
+		const FVector2D Offset = Offsets[RayIndex];
+		const FVector Direction = (NominalCenter + FVector(Offset.X,0,Offset.Y) - Origin).GetSafeNormal();
+		const FVector End = Origin + Direction*RangeCm;
+		Reading.RayEndsWorld.Add(End);
+		FHitResult Hit;
+		if (!FrontLeftHubProxy->LineTraceComponent(Hit,Origin,End,FCollisionQueryParams(SCENE_QUERY_STAT(HubLaserScan),false))) continue;
+		const FVector MeasuredHit = Hit.ImpactPoint + Direction*(RayIndex==2 ? LaserOutlierMm/10.0 : 0.0);
+		Reading.RayEndsWorld.Last() = MeasuredHit;
+		Reading.HitPointsWorld.Add(MeasuredHit);
+		const FVector Candidate = MeasuredHit - Hit.ImpactNormal*RadiusCm;
+		CenterSamples.Add(Candidate);
+		CenterSum += Candidate;
+	}
+	Reading.HitCount = Reading.HitPointsWorld.Num();
+	Reading.MeasuredAt = SimulationTimeSeconds;
+	Reading.Confidence = double(Reading.HitCount)/UE_ARRAY_COUNT(Offsets);
+	if (Reading.HitCount < 3)
+	{ Reading.FailureReason=TEXT("광선 명중 3개 미만"); return false; }
+	const FVector Estimated = CenterSum/Reading.HitCount;
+	double SquaredError = 0;
+	for (const FVector& Candidate : CenterSamples)
+		SquaredError += FVector::DistSquared(Candidate,Estimated);
+	Reading.ResidualMm = 10.0*FMath::Sqrt(SquaredError/Reading.HitCount);
+	if (Reading.ResidualMm > MaxResidualMm)
+	{ Reading.FailureReason=TEXT("측정 중심 잔차 1mm 초과"); return false; }
+	Reading.MeasuredWorld = FTransform(BodyAtStart.GetRotation(),Estimated);
+	Reading.bValid = true;
+	return true;
 }
 
 FTransform AWheelAssemblyCell::GetPickupWorld(int32 Index) const
@@ -179,7 +254,33 @@ FString AWheelAssemblyCell::GetLeftSensorSummary() const
 		PoseFresh ? TEXT("유효") : TEXT("무효/지연"), GripFresh ? (LeftSensors->Gripped.bDetected ? TEXT("확인") : TEXT("미확인")) : TEXT("지연"),
 		LeftSensors->MountPose.Fresh(Now, LeftSensors->MaxAge) ? TEXT("유효") : TEXT("무효/지연"), Lanes[0].GripAttempts)
 		+ FString::Printf(TEXT(" · 경로 재계산 %d · 파지 재시도 %d"), LeftPickupReplans, LeftGripRetries)
-        + (bPhysicalLeftGrip ? FString::Printf(TEXT("\n앞 휠 필요 힘 %.0f N · 마찰 한계 %.0f N · 미끄러짐 %.1f mm"), Lanes[0].DemandN, Lanes[0].CapacityN, Lanes[0].SlipMm) : FString());
+		+ (bPhysicalLeftGrip ? FString::Printf(TEXT("\n앞 휠 필요 힘 %.0f N · 전달 힘 %.0f N · 마찰 한계 %.0f N · 미끄러짐 %.1f mm"), Lanes[0].DemandN, Lanes[0].AppliedForceN, Lanes[0].CapacityN, Lanes[0].SlipMm) : FString())
+		+ (bLaserScanFrontLeftHub ? FString::Printf(TEXT("\n레이저 도착 %s · 장착 직전 %s · 장착 후 %s\n광선 %d/5 · 잔차 %.2fmm · 실패 %s"),
+			FrontLeftDockScan.bValid ? TEXT("유효") : TEXT("대기/실패"),
+			FrontLeftPreMountScan.bValid ? TEXT("유효") : TEXT("대기/실패"),
+			FrontLeftFinalWheelScan.bValid ? TEXT("유효") : TEXT("대기/실패"),
+			FrontLeftHubScan.HitCount,FrontLeftHubScan.ResidualMm,*FrontLeftHubScan.FailureReason) : FString());
+}
+
+FString AWheelAssemblyCell::GetLaserInspectionSummary() const
+{
+	if (!bLaserScanFrontLeftHub) return TEXT("레이저 검사 꺼짐 · 왼쪽 앞 휠만 지원");
+	const FWheelHubScanReading* Readings[]={&FrontLeftDockScan,&FrontLeftPreMountScan,&FrontLeftFinalWheelScan};
+	const TCHAR* Names[]={TEXT("① 차량 도착/허브"),TEXT("② 부착 직전/허브"),TEXT("③ 부착 후/휠")};
+	FString Result=TEXT("왼쪽 앞 휠 · 광선 5개 중 3개 이상, 잔차 1mm 이하\n");
+	for (int32 I=0;I<3;++I)
+	{
+		const auto& R=*Readings[I];
+		Result+=FString::Printf(TEXT("%s: %s | %.2fs | %d/5 | 잔차 %.2fmm"),Names[I],
+			R.MeasuredAt<0?TEXT("대기"):(R.bValid?TEXT("통과"):TEXT("실패")),R.MeasuredAt,R.HitCount,R.ResidualMm);
+		if (!R.FailureReason.IsEmpty()) Result+=TEXT(" | ")+R.FailureReason;
+		Result+=TEXT("\n");
+	}
+	if (FrontLeftDockScan.bValid&&FrontLeftPreMountScan.bValid)
+		Result+=FString::Printf(TEXT("허브 이동 %.2f/5.00mm\n"),10*FVector::Distance(FrontLeftDockScan.MeasuredWorld.GetLocation(),FrontLeftPreMountScan.MeasuredWorld.GetLocation()));
+	if (FrontLeftPreMountScan.bValid&&FrontLeftFinalWheelScan.bValid)
+		Result+=FString::Printf(TEXT("최종 휠 중심 오차 %.2f/%.2fmm"),10*FVector::Distance(FrontLeftPreMountScan.MeasuredWorld.GetLocation(),FrontLeftFinalWheelScan.MeasuredWorld.GetLocation()),QualityToleranceMm);
+	return Result;
 }
 
 FTransform AWheelAssemblyCell::OffsetOutward(const FTransform& Pose, int32 Side, double Centimeters) const
@@ -253,6 +354,8 @@ bool AWheelAssemblyCell::ResetCycle()
 		bStationCaptured = true;
 	}
 	MountedCount = 0; SimulationTimeSeconds = 0; Accumulator = 0;
+	FrontLeftHubScan = FWheelHubScanReading();
+	FrontLeftDockScan = FrontLeftPreMountScan = FrontLeftFinalWheelScan = FWheelHubScanReading();
 	LeftPickupReplans = LeftGripRetries = 0;
 	Outcome = EWheelOutcome::NotEvaluated;
 	MountPositionErrorMm.Init(0, 4); MountOrientationErrorDeg.Init(0, 4); FastenedWheels.Init(false, 4);
@@ -315,6 +418,9 @@ bool AWheelAssemblyCell::BeginWheel(int32 Side)
 	FWheelLane& Lane = Lanes[Side];
     if(!LaneEnabled(Side)){Lane.Stage=EWheelStage::Complete;return true;}
     Lane.WheelIndex = UsesTaskBindings()?TaskQueue[Side][Lane.Completed]:Side * 2 + Lane.Completed;
+    if (Lane.WheelIndex == 0 && bLaserScanFrontLeftHub && !ScanFrontLeftHub())
+    { Fail(TEXT("왼쪽 앞 허브 레이저 스캔 실패 · ")+FrontLeftHubScan.FailureReason); return false; }
+    if (Lane.WheelIndex == 0 && bLaserScanFrontLeftHub) FrontLeftDockScan=FrontLeftHubScan;
     auto* Sensors=SensorsFor(Side);
     // Rear-only robots first move through the calibrated, base-adjusted transit pose.
     if(UsesTaskBindings()&&Lane.Completed==0&&Lane.Stage==EWheelStage::Idle&&Lane.WheelIndex%2==1)
@@ -485,7 +591,7 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
         const bool Physical = bPhysicalLeftGrip && Lane.WheelIndex == 0;
         if (Physical)
             Target.SetLocation(StepWheelGrip(Lane.LastCarried.GetLocation(), Target.GetLocation(), Dt, bLowFrictionGrip,
-                Lane.GripVelocity, Lane.DemandN, Lane.CapacityN, Lane.SlipMm));
+                Lane.GripVelocity, Lane.DemandN, Lane.CapacityN, Lane.SlipMm, Lane.AppliedForceN));
         WheelRoots[PartIndex(Lane.WheelIndex)]->SetWorldTransform(Target);
         if (Physical && Lane.SlipMm >= 3.0) { Fail(TEXT("휠 미끄러짐 감지 · 운반 정지")); return; }
     }
@@ -514,6 +620,14 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
 	{
 		if (SensorDriven) Sensors->CommandGrip(false);
 		Lane.bHeld = false;
+		if (Lane.WheelIndex==0 && bLaserScanFrontLeftHub)
+		{
+			if (!ScanFrontLeftHub(true)) { Fail(TEXT("장착 후 휠 레이저 검증 실패 · ")+FrontLeftFinalWheelScan.FailureReason); return; }
+			const double ErrorMm=FVector::Distance(FrontLeftFinalWheelScan.MeasuredWorld.GetLocation(),
+				FrontLeftPreMountScan.MeasuredWorld.GetLocation())*10;
+			if (ErrorMm>QualityToleranceMm)
+			{ Fail(FString::Printf(TEXT("장착 후 휠 중심 오차 %.2fmm · 허용 %.2fmm 초과"),ErrorMm,QualityToleranceMm)); return; }
+		}
 		MoveTo(Side, EWheelStage::Retract, OffsetOutward(GetWheelWorld(Lane.WheelIndex), Side, 25));
 		return;
 	}
@@ -559,14 +673,22 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
 	}
 	case EWheelStage::Lift:
 	{
-		FTransform Transfer = OffsetOutward(GetMountWorld(Lane.WheelIndex), Side, 55);
+		FTransform Transfer = OffsetOutward(GetMountTargetWorld(Lane.WheelIndex), Side, 55);
 		Transfer.AddToTranslation(BodyAtStart.TransformVectorNoScale(FVector(0, 0, 25)));
 		MoveTo(Side, EWheelStage::Transfer, Transfer); break;
 	}
 	case EWheelStage::Transfer:
-		MoveTo(Side, EWheelStage::ApproachMount, OffsetOutward(GetMountWorld(Lane.WheelIndex), Side, 25)); break;
+		if (Lane.WheelIndex==0 && bLaserScanFrontLeftHub)
+		{
+			const FVector DockCenter=FrontLeftDockScan.MeasuredWorld.GetLocation();
+			if (!ScanFrontLeftHub()) { Fail(TEXT("장착 직전 허브 재스캔 실패 · ")+FrontLeftHubScan.FailureReason); break; }
+			FrontLeftPreMountScan=FrontLeftHubScan;
+			const double ShiftMm=FVector::Distance(DockCenter,FrontLeftPreMountScan.MeasuredWorld.GetLocation())*10;
+			if (ShiftMm>5) { Fail(FString::Printf(TEXT("도킹 후 허브 위치 변화 %.2fmm · 재도킹 필요"),ShiftMm)); break; }
+		}
+		MoveTo(Side, EWheelStage::ApproachMount, OffsetOutward(GetMountTargetWorld(Lane.WheelIndex), Side, 25)); break;
 	case EWheelStage::ApproachMount:
-		MoveTo(Side, EWheelStage::Align, GetMountWorld(Lane.WheelIndex)); break;
+		MoveTo(Side, EWheelStage::Align, GetMountTargetWorld(Lane.WheelIndex)); break;
 	case EWheelStage::Align:
 	{
 		if (SensorDriven && !Sensors->MountPose.Fresh(SimulationTimeSeconds, Sensors->MaxAge))

@@ -3,6 +3,7 @@
 #include "FactoryViewport.h"
 #include "FactoryProcessRunner.h"
 #include "AutonomousAssemblyLine.h"
+#include "WheelAssemblyCell.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Application/IInputProcessor.h"
 #include "Engine/World.h"
@@ -206,6 +207,14 @@ void AFactoryRuntime::CreatePanel()
     if(bUseAssemblyIntegration)
     {
         Heading(TEXT("이식된 센서 기능 확인"));
+        Rows->AddSlot().AutoHeight().Padding(0,3)[SNew(SCheckBox)
+            .IsEnabled_Lambda([this](){return CanEdit()&&IsValid(TestAssemblyLine)&&IsValid(TestAssemblyLine->WheelCell);})
+            .IsChecked_Lambda([this](){return IsValid(TestAssemblyLine)&&IsValid(TestAssemblyLine->WheelCell)&&TestAssemblyLine->WheelCell->bLaserScanFrontLeftHub?ECheckBoxState::Checked:ECheckBoxState::Unchecked;})
+            .OnCheckStateChanged_Lambda([this](ECheckBoxState V){if(IsValid(TestAssemblyLine)&&IsValid(TestAssemblyLine->WheelCell))TestAssemblyLine->WheelCell->bLaserScanFrontLeftHub=V==ECheckBoxState::Checked;})
+            [SNew(STextBlock).Font(Font).Text(FText::FromString(TEXT("왼쪽 앞 휠 레이저 3단계 검사 켜기")))]];
+        Rows->AddSlot().AutoHeight().Padding(0,3)[SNew(STextBlock).Font(Font).ColorAndOpacity(Accent)
+            .Text_Lambda([this](){return FText::FromString(IsValid(TestAssemblyLine)&&IsValid(TestAssemblyLine->WheelCell)
+                ?TestAssemblyLine->WheelCell->GetLaserInspectionSummary():TEXT("휠 검사 연결 없음"));}).AutoWrapText(true)];
         Rows->AddSlot().AutoHeight().Padding(0,3)[SNew(SCheckBox)
             .IsChecked_Lambda([this](){return IsValid(TestAssemblyLine)&&TestAssemblyLine->bShowSensorVisualization?ECheckBoxState::Checked:ECheckBoxState::Unchecked;})
             .OnCheckStateChanged_Lambda([this](ECheckBoxState V){if(IsValid(TestAssemblyLine))TestAssemblyLine->bShowSensorVisualization=V==ECheckBoxState::Checked;})

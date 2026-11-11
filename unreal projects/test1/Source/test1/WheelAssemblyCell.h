@@ -9,6 +9,7 @@
 class ACamryAssembly;
 class ARobotArm;
 class UStaticMeshComponent;
+class USphereComponent;
 class AWheelAssemblyCell;
 
 USTRUCT(BlueprintType)
@@ -20,6 +21,23 @@ struct FWheelSensorReading
 	UPROPERTY(VisibleAnywhere) FTransform Pose = FTransform::Identity;
 	UPROPERTY(VisibleAnywhere) double MeasuredAt = -1;
 	bool Fresh(double Now, double MaxAge) const { return bValid && MeasuredAt >= 0 && Now-MeasuredAt <= MaxAge; }
+};
+
+USTRUCT(BlueprintType)
+struct FWheelHubScanReading
+{
+	GENERATED_BODY()
+	UPROPERTY(VisibleAnywhere) bool bValid = false;
+	UPROPERTY(VisibleAnywhere) int32 HitCount = 0;
+	UPROPERTY(VisibleAnywhere) double MeasuredAt = -1;
+	UPROPERTY(VisibleAnywhere) double Confidence = 0;
+	UPROPERTY(VisibleAnywhere) double ResidualMm = 0;
+	UPROPERTY(VisibleAnywhere) FTransform MeasuredWorld = FTransform::Identity;
+	UPROPERTY(VisibleAnywhere) FString TargetPort = TEXT("hub_fl");
+	UPROPERTY(VisibleAnywhere) FString FailureReason;
+	UPROPERTY(VisibleAnywhere) FVector ScanOriginWorld = FVector::ZeroVector;
+	UPROPERTY(VisibleAnywhere) TArray<FVector> RayEndsWorld;
+	UPROPERTY(VisibleAnywhere) TArray<FVector> HitPointsWorld;
 };
 
 /** Virtual probes read the scene and gripper plant; they never issue arm commands. */
@@ -68,7 +86,7 @@ struct FWheelLane
 	FTransform TargetTCP;
 	FTransform LastCarried;
     FVector GripVelocity = FVector::ZeroVector;
-    double DemandN = 0, CapacityN = 0, SlipMm = 0;
+    double DemandN = 0, AppliedForceN = 0, CapacityN = 0, SlipMm = 0;
 	double StageTime = 0;
 	double StableTime = 0;
 	int32 Corrections = 0;
@@ -86,6 +104,14 @@ class TEST1_API AWheelAssemblyCell : public AActor
 	GENERATED_BODY()
 public:
 	AWheelAssemblyCell();
+    UPROPERTY(EditAnywhere, Category="Wheel Cell|Laser") bool bLaserScanFrontLeftHub = false;
+    UPROPERTY(EditAnywhere, Category="Wheel Cell|Laser") bool bBlockFrontLeftLaser = false;
+    UPROPERTY(EditAnywhere, Category="Wheel Cell|Laser", meta=(Units="cm")) FVector FrontLeftHubOffsetCm = FVector::ZeroVector;
+    UPROPERTY(EditAnywhere, Category="Wheel Cell|Laser", meta=(Units="mm")) double LaserOutlierMm = 0;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") FWheelHubScanReading FrontLeftHubScan;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") FWheelHubScanReading FrontLeftDockScan;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") FWheelHubScanReading FrontLeftPreMountScan;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") FWheelHubScanReading FrontLeftFinalWheelScan;
     bool bPhysicalLeftGrip = false;
     bool bLowFrictionGrip = false;
     // Runtime adapter bindings, ordered LF/LR/RF/RR. Empty preserves standalone demos.
@@ -174,6 +200,8 @@ public:
 	UFUNCTION() bool SelectScenario(EWheelScenario Preset, EWheelControlMode Mode);
 	UFUNCTION() bool AdvanceSimulation(double DeltaSeconds);
 	UFUNCTION() FTransform GetMountWorld(int32 Index) const;
+	FTransform GetMountTargetWorld(int32 Index) const;
+	bool ScanFrontLeftHub(bool bScanWheel=false);
 	UFUNCTION() FTransform GetPickupWorld(int32 Index) const;
 	UFUNCTION() FString GetLaneStage(bool bLeft) const;
 	UFUNCTION() FTransform GetWheelWorld(int32 Index) const;
@@ -181,6 +209,7 @@ public:
 	int32 GetActiveLeftWheelIndex() const { return Lanes[0].WheelIndex; }
 	UFUNCTION() bool IsWheelVisible(int32 Index) const;
 	UFUNCTION() FString GetLeftSensorSummary() const;
+	FString GetLaserInspectionSummary() const;
 	UFUNCTION() void InjectLeftWheelMissing();
 	UFUNCTION() void InjectLeftWheelDisplacement(FVector OffsetCm);
 	void SetLeftWheelSupplyVisible(int32 Index, bool bVisible);
@@ -189,6 +218,7 @@ public:
 	virtual void Tick(float DeltaSeconds) override;
 private:
 	UPROPERTY() TObjectPtr<USceneComponent> CellRoot;
+	UPROPERTY() TObjectPtr<USphereComponent> FrontLeftHubProxy;
 	UPROPERTY() TArray<TObjectPtr<USceneComponent>> WheelRoots;
 	UPROPERTY() TArray<TObjectPtr<UStaticMeshComponent>> TireVisuals;
 	UPROPERTY() TArray<TObjectPtr<UStaticMeshComponent>> HubVisuals;
