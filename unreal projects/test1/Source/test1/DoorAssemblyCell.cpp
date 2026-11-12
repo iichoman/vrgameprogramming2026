@@ -81,7 +81,7 @@ bool ADoorAssemblyCell::ResetCycle()
 	{ State=EDoorAssemblyState::Fault; if (Robot) Status+=TEXT(" ")+Robot->LastStatus; return false; }
 	bDoorHeld=false; bDoorFastened=false;
 	Outcome=EDoorCellOutcome::NotEvaluated; AlignmentCorrections=0; LogFile.Empty(); RunMetadataFile.Empty();
-	SimulationTimeSeconds=0; Accumulator=0; StateTime=0; StableTime=0;
+	SimulationTimeSeconds=0; Accumulator=0; StateTime=0; StableTime=0;LastAlignmentSampleTime=-1;bLastAlignmentSampleValid=false;
 	FTransform Initial=GetPickupDoorWorld();
 	Initial.AddToTranslation(BodyAtStart.TransformVectorNoScale(InitialDoorOffsetMm/10));
 	Initial.SetRotation((BodyAtStart.GetRotation()*InitialDoorRotationDeg.Quaternion()*BodyAtStart.GetRotation().Inverse()*Initial.GetRotation()).GetNormalized());
@@ -352,14 +352,17 @@ FTransform ADoorAssemblyCell::SimulatePoseSensor(const FVector& BiasMm,const FRo
 
 bool ADoorAssemblyCell::MeasureSensors()
 {
-	if (!Pose.IsValid() || !IsValid(Assembly) || !bAlignmentSensorValid) return false;
+	bLastAlignmentSampleValid=false;
+    if (!Pose.IsValid() || !IsValid(Assembly) || !bAlignmentSensorValid) return false;
 	AlignmentMeasuredDoorWorld=SimulatePoseSensor(AlignmentSensorBiasMm,AlignmentSensorRotationBiasDeg);
 	VerificationMeasuredDoorWorld=SimulatePoseSensor(VerificationSensorBiasMm,VerificationSensorRotationBiasDeg);
 	const FTransform Mount=GetMountDoorWorld();
 	AlignmentPositionErrorMm=FVector::Distance(AlignmentMeasuredDoorWorld.GetLocation(),Mount.GetLocation())*10;
 	AlignmentOrientationErrorDeg=FMath::RadiansToDegrees(AlignmentMeasuredDoorWorld.GetRotation().AngularDistance(Mount.GetRotation()));
 	VerificationPositionErrorMm=FVector::Distance(VerificationMeasuredDoorWorld.GetLocation(),Mount.GetLocation())*10;
-	return AlignmentMeasuredDoorWorld.IsValid() && VerificationMeasuredDoorWorld.IsValid();
+	LastAlignmentSampleTime=SimulationTimeSeconds;
+    bLastAlignmentSampleValid=AlignmentMeasuredDoorWorld.IsValid() && VerificationMeasuredDoorWorld.IsValid();
+    return bLastAlignmentSampleValid;
 }
 
 bool ADoorAssemblyCell::AlignmentAccepted() const

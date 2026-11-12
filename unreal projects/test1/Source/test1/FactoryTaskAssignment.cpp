@@ -70,6 +70,5 @@ void AFactoryRuntime::DrawTaskTargets()
     {
         FVector P;if(!TaskTargetWorld(S.Id,P))continue;
         DrawDebugSphere(GetWorld(),P,16,12,FColor::Green,false,0,0,3);
-        DrawDebugString(GetWorld(),P+FVector(0,0,22),S.Label,nullptr,FColor::White,0,true);
     }
 }

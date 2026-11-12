@@ -4,6 +4,7 @@
 #include "VehicleProcessTest.h"
 #include "FactoryLayoutModel.h"
 #include "FactoryEditHistory.h"
+#include "FactoryInspection.h"
 #include "FactoryRuntime.generated.h"
 class AFactoryEquipment;
 class ARobotArm;
@@ -136,6 +137,22 @@ public:
     bool bNeedsPanel = false;
     uint64 PanelGeneration = 0;
     void CreatePanel();
+    FFactoryInspectionModel& Inspection();
+    FString CurrentObjectId() const;
+    FString ObjectName(const FString& Id) const;
+    TArray<FString> InspectableObjects() const;
+    TArray<UStaticMeshComponent*> ObjectMeshes(const FString& Id) const;
+    FBox ObjectBounds(const FString& Id) const;
+    FString HitInspectable(FVector2D Pixel) const;
+    void SelectObject(const FString& Id);
+    void FocusObject(const FString& Id);
+    void OpenDetails(EFactoryDetailTab Tab);
+    void FocusIssue(const FString& IssueId);
+    void RefreshInspection();
+    void UpdateObjectHighlights();
+    FString ProcessDetails() const;
+    FString ResultDetails() const;
+    UFUNCTION() bool RunInspectionChecks();
     UFactoryEquipmentRegistry* GetRegistry() const { return Registry; }
     void BeginPlacement(const FString& TypeId);
     void SelectHall();
@@ -160,7 +177,7 @@ public:
     void OrbitCamera(FVector2D Delta);
     void FocusSelected();
     bool bZoneLabels = false;
-    bool bEquipmentLabels = true;
+    bool bEquipmentLabels = false;
     bool bRouteVisible = true;
     bool bHallSelected = false;
     FString PendingTypeId;
@@ -224,6 +241,7 @@ private:
     UPROPERTY() TObjectPtr<USceneComponent> WheelRoot;
     UPROPERTY() TObjectPtr<ACameraActor> ViewCamera;
     TSharedPtr<SWidget> Panel;
+    TSharedPtr<FFactoryInspectionModel> InspectionState;
     TSharedPtr<SScrollBox> PanelScroll;
     TSharedPtr<SFactoryViewport> ViewportSurface;
     FFactoryEditHistory History;

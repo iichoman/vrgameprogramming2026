@@ -20,7 +20,7 @@ bool AFactoryRuntime::RunUIChecks()
     auto Absolute=[&](FVector2D Local){return FVector2D(Geometry.LocalToAbsolute(Local));};
     auto IsSurface=[&](FVector2D Local){return App.LocateWindowUnderMouse(Absolute(Local),{Window.ToSharedRef()}).ContainsWidget(ViewportSurface.Get());};
     Check(TEXT("viewport_surface_receives_empty_canvas_hits"),IsSurface({Size.X*.65,Size.Y*.4}));
-    Check(TEXT("inspector_blocks_background_hit"),!IsSurface({50,50}));
+    Check(TEXT("toolbar_blocks_background_hit"),!IsSurface({50,50}));
     Check(TEXT("bottom_palette_blocks_background_hit"),!IsSurface({Size.X*.6,Size.Y-40}));
     auto Mouse=[&](FVector2D From,FVector2D To,FKey Button)
     {
@@ -49,7 +49,7 @@ bool AFactoryRuntime::RunUIChecks()
     const FString Initial=Layout.ToJson();SelectedId=bUseAssemblyIntegration?Layout.Items[0].Id:Layout.SupplyId;bSnap=false;
     App.SetKeyboardFocus(ViewportSurface.ToSharedRef(),EFocusCause::SetDirectly);
     SetSelectedPosition(Selected()->Position.X/100+.5,Selected()->Position.Y/100);
-    CreatePanel(); // Real inspector reconstruction must not silently lose shortcut focus.
+    OpenDetails(EFactoryDetailTab::Selection);CreatePanel(); // Real inspector reconstruction must not silently lose shortcut focus.
     Check(TEXT("panel_rebuild_preserves_viewport_keyboard_focus"),ViewportSurface->HasKeyboardFocus());
     const FModifierKeysState Ctrl(false,false,true,false,false,false,false,false,false);
     App.ProcessKeyDownEvent(FKeyEvent(EKeys::Z,Ctrl,0,false,0,0));

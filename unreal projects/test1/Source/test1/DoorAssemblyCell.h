@@ -82,7 +82,9 @@ public:
 	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Quality") EDoorCellOutcome Outcome=EDoorCellOutcome::NotEvaluated;
 	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Quality") bool bQualityValid=false;
 	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Quality") bool bQualityPassed=false;
-	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Sensors") double AlignmentPositionErrorMm=0;
+	double LastAlignmentSampleTime=-1;
+    bool bLastAlignmentSampleValid=false;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Sensors") double AlignmentPositionErrorMm=0;
 	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Sensors") double AlignmentOrientationErrorDeg=0;
 	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Sensors") double VerificationPositionErrorMm=0;
 	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Sensors") FTransform AlignmentMeasuredDoorWorld;

@@ -1,3 +1,4 @@
+#include "FactorySensorChart.h"
 #include "FactoryRuntime.h"
 #include "FactoryEquipmentRegistry.h"
 #include "FactoryViewport.h"
@@ -95,353 +96,166 @@ FString FactoryRoleLabel(const FString& Role)
 
 void AFactoryRuntime::CreatePanel()
 {
-    if (!GEngine || !GEngine->GameViewport) return;
-    const uint64 Generation = ++PanelGeneration;
-    const float SavedScrollOffset = PanelScroll.IsValid() ? PanelScroll->GetScrollOffset() : 0.0f;
-    const bool RestoreViewportFocus=ViewportSurface.IsValid()&&(ViewportSurface->HasKeyboardFocus()||ViewportSurface->HasAnyUserFocus());
-    // Keep the root and input surface attached while refreshing inspector controls.
-    // Detaching the root invalidates Slate's focus/capture path during a drag.
+    if(!GEngine||!GEngine->GameViewport)return;
+    auto& Model=Inspection();const uint64 Generation=++PanelGeneration;
+    const bool RestoreFocus=ViewportSurface.IsValid()&&(ViewportSurface->HasKeyboardFocus()||ViewportSurface->HasAnyUserFocus());
+    const FString FontFile=FPaths::ProjectContentDir()/TEXT("DigitalTwin/Fonts/NanumGothic.ttf");
+    auto Composite=MakeShared<FCompositeFont>(FName(TEXT("NanumGothic")),FontFile,EFontHinting::Default,EFontLoadingPolicy::LazyLoad);
+    const FSlateFontInfo Font(Composite,12),HeadingFont(Composite,15),Small(Composite,10);
+    const FLinearColor Text(.92f,.95f,.98f),Muted(.58f,.68f,.78f),Blue(.2f,.72f,1.f),Orange(1.f,.55f,.2f);
+    const TAttribute<bool> Editing=TAttribute<bool>::CreateLambda([this](){return CanEdit();});
+    auto Button=[this,Font](const FString& Label,TFunction<void()> Action,TAttribute<bool> Enabled=true)->TSharedRef<SWidget>
+    {return SNew(SButton).IsFocusable(false).IsEnabled(Enabled).ContentPadding(FMargin(9,7)).OnClicked_Lambda([this,Action](){Action();if(ViewportSurface)FSlateApplication::Get().SetKeyboardFocus(ViewportSurface.ToSharedRef());return FReply::Handled();})[SNew(STextBlock).Font(Font).Text(FText::FromString(Label))];};
+    auto Card=[](TSharedRef<SWidget> Child)->TSharedRef<SWidget>{return SNew(SBorder).Padding(12).BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush")).BorderBackgroundColor(FLinearColor(.025f,.038f,.057f,.97f))[Child];};
+    TSharedRef<SVerticalBox> Rows=SNew(SVerticalBox);
+    auto Label=[&](const FString& Value,bool Heading=false){Rows->AddSlot().AutoHeight().Padding(0,Heading?9:4)[SNew(STextBlock).Font(Heading?HeadingFont:Font).ColorAndOpacity(Heading?Blue:Text).Text(FText::FromString(Value)).AutoWrapText(true)];};
+    auto Dynamic=[&](TFunction<FString()> Get){Rows->AddSlot().AutoHeight().Padding(0,5)[SNew(STextBlock).Font(Font).ColorAndOpacity(Text).AutoWrapText(true).Text_Lambda([Get](){return FText::FromString(Get());})];};
+    auto Number=[&](const FString& Caption,TFunction<double()> Get,TFunction<void(double)> Set,double Min,double Max)
+    {Rows->AddSlot().AutoHeight().Padding(0,4)[SNew(SHorizontalBox)+SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center)[SNew(STextBlock).Font(Font).Text(FText::FromString(Caption))]
+        +SHorizontalBox::Slot().FillWidth(1)[SNew(SNumericEntryBox<double>).Font(Font).IsEnabled(Editing).AllowSpin(false).MinValue(Min).MaxValue(Max).MaxFractionalDigits(3)
+            .Value_Lambda([Get]()->TOptional<double>{return Get();}).OnValueCommitted_Lambda([this,Generation,Get,Set](double V,ETextCommit::Type Commit){if(Generation==PanelGeneration&&CanEdit()&&Commit!=ETextCommit::OnCleared&&!FMath::IsNearlyEqual(V,Get(),.00001))Set(V);})]];};
+    auto Pair=[&](TSharedRef<SWidget> A,TSharedRef<SWidget> B){Rows->AddSlot().AutoHeight().Padding(0,4)[SNew(SHorizontalBox)+SHorizontalBox::Slot().FillWidth(1).Padding(0,0,3,0)[A]+SHorizontalBox::Slot().FillWidth(1).Padding(3,0,0,0)[B]];};
 
-    const FString FontFile = FPaths::ProjectContentDir() / TEXT("DigitalTwin/Fonts/NanumGothic.ttf");
-    const bool bHasKoreanFont = IFileManager::Get().FileExists(*FontFile);
-    TSharedPtr<const FCompositeFont> KoreanFont;
-    if (bHasKoreanFont) KoreanFont = MakeShared<FCompositeFont>(FName(TEXT("NanumGothic")), FontFile,
-        EFontHinting::Default, EFontLoadingPolicy::LazyLoad);
-    const FSlateFontInfo Font = bHasKoreanFont ? FSlateFontInfo(KoreanFont, 14)
-        : FCoreStyle::GetDefaultFontStyle("Regular", 14);
-    const FSlateFontInfo HeadingFont = bHasKoreanFont ? FSlateFontInfo(KoreanFont, 17)
-        : FCoreStyle::GetDefaultFontStyle("Bold", 17);
-    const FLinearColor TextColor(.92f, .95f, .98f, 1);
-    const FLinearColor Accent(.37f, .8f, .95f, 1);
-    const FString PanelItemId = SelectedId;
-    const TAttribute<bool> Editing = TAttribute<bool>::CreateLambda([this]() { return CanEdit(); });
-    const TAttribute<bool> HasSelection = TAttribute<bool>::CreateLambda([this, PanelItemId]() {
-        return CanEdit() && Selected() && SelectedId == PanelItemId;
-    });
-    const TAttribute<bool> ZoneSelected = TAttribute<bool>::CreateLambda([this, PanelItemId]() {
-        const FFactoryLayoutItem* Item = Selected();
-        return CanEdit() && Item && SelectedId == PanelItemId && Item->Kind == EFactoryItemKind::Zone;
-    });
-    TSharedRef<SVerticalBox> Rows = SNew(SVerticalBox);
+    // Top-level actions stay visible; property controls appear only for the active context.
+    auto Top=SNew(SHorizontalBox);
+    Top->AddSlot().FillWidth(1).VAlign(VAlign_Center)[SNew(STextBlock).Font(HeadingFont).ColorAndOpacity(Text).Text_Lambda([this](){return FText::FromString(TEXT("공장 시뮬레이터  ·  ")+StateText()+(bDirty?TEXT("  • 미저장"):TEXT("")));})];
+    Top->AddSlot().AutoWidth().Padding(3,0)[Button(TEXT("실행"),[this](){if(!StartCycle()){RefreshInspection();OpenDetails(EFactoryDetailTab::Problems);}},Editing)];
+    Top->AddSlot().AutoWidth().Padding(3,0)[Button(TEXT("정지"),[this](){StopCycle();},TAttribute<bool>::CreateLambda([this](){return RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;}))];
+    Top->AddSlot().AutoWidth().Padding(3,0)[Button(TEXT("편집 복귀"),[this](){ResetCycle();},TAttribute<bool>::CreateLambda([this](){return !CanEdit();}))];
+    Top->AddSlot().AutoWidth().Padding(3,0)[Button(TEXT("실행 취소"),[this](){UndoEdit();},TAttribute<bool>::CreateLambda([this](){return CanUndo();}))];
+    Top->AddSlot().AutoWidth().Padding(3,0)[Button(TEXT("다시 실행"),[this](){RedoEdit();},TAttribute<bool>::CreateLambda([this](){return CanRedo();}))];
+    Top->AddSlot().AutoWidth().Padding(3,0)[Button(TEXT("공장·저장"),[this](){OpenDetails(EFactoryDetailTab::Layout);})];
+    Top->AddSlot().AutoWidth().Padding(3,0)[Button(TEXT("상세 정보"),[this](){Inspection().PanelOpen=!Inspection().PanelOpen;bNeedsPanel=true;})];
 
-    auto Label = [&Rows, Font, TextColor](const FString& Value)
+    if(Model.Tab==EFactoryDetailTab::Selection)
     {
-        Rows->AddSlot().AutoHeight().Padding(0, 3)[SNew(STextBlock).Font(Font)
-            .ColorAndOpacity(TextColor).Text(FText::FromString(Value)).AutoWrapText(true)];
-    };
-    auto Heading = [&Rows, HeadingFont, Accent](const FString& Value)
-    {
-        Rows->AddSlot().AutoHeight().Padding(0, 12, 0, 5)[SNew(STextBlock).Font(HeadingFont)
-            .ColorAndOpacity(Accent).Text(FText::FromString(Value)).AutoWrapText(true)];
-    };
-    auto Button = [this,Font](const FString& Caption, TFunction<void()> Action,
-        const TAttribute<bool>& Enabled) -> TSharedRef<SWidget>
-    {
-        return SNew(SButton).IsFocusable(false).IsEnabled(Enabled).ContentPadding(FMargin(5, 6))
-            .HAlign(HAlign_Center).OnClicked_Lambda([this,Action = MoveTemp(Action)]() {
-                Action(); if(ViewportSurface.IsValid())FSlateApplication::Get().SetKeyboardFocus(ViewportSurface.ToSharedRef(),EFocusCause::SetDirectly); return FReply::Handled();
-            })[SNew(STextBlock).Font(Font).Text(FText::FromString(Caption)).AutoWrapText(true)
-                .Justification(ETextJustify::Center)];
-    };
-    auto Pair = [&Rows](TSharedRef<SWidget> Left, TSharedRef<SWidget> Right)
-    {
-        Rows->AddSlot().AutoHeight().Padding(0, 3)[SNew(SHorizontalBox)
-            + SHorizontalBox::Slot().FillWidth(1).Padding(0, 0, 3, 0)[Left]
-            + SHorizontalBox::Slot().FillWidth(1).Padding(3, 0, 0, 0)[Right]];
-    };
-    auto Number = [this, Generation, &Rows, Font, TextColor](const FString& Caption, TFunction<TOptional<double>()> Get,
-        TFunction<void(double)> Set, const TAttribute<bool>& Enabled, double Min, double Max)
-    {
-        Rows->AddSlot().AutoHeight().Padding(0, 3)[SNew(SHorizontalBox)
-            + SHorizontalBox::Slot().FillWidth(.48f).VAlign(VAlign_Center)[SNew(STextBlock).Font(Font)
-                .ColorAndOpacity(TextColor).Text(FText::FromString(Caption)).AutoWrapText(true)]
-            + SHorizontalBox::Slot().FillWidth(.52f)[SNew(SNumericEntryBox<double>).Font(Font)
-                .IsEnabled(Enabled).AllowSpin(false).MinValue(Min).MaxValue(Max)
-                .MinFractionalDigits(0).MaxFractionalDigits(3)
-                .Value_Lambda([Get]() { return Get(); })
-                .OnValueCommitted_Lambda([this, Generation, Get, Set](double Value, ETextCommit::Type Commit) {
-                    if (PanelGeneration != Generation || Commit == ETextCommit::OnCleared) return;
-                    const TOptional<double> Previous = Get();
-                    if (Previous.IsSet() && !FMath::IsNearlyEqual(Previous.GetValue(), Value, 1.e-6)) Set(Value);
-                })]];
-    };
-
-    Heading(bUseAssemblyIntegration?TEXT("공장·조립 통합 테스트"):TEXT("공장 배치·휠 작업"));
-    Rows->AddSlot().AutoHeight().Padding(0, 3)[SNew(STextBlock).Font(Font).ColorAndOpacity(TextColor)
-        .Text_Lambda([this]() { return FText::FromString(StateText()
-            + (bDirty ? TEXT(" · 저장되지 않은 변경") : TEXT(""))); }).AutoWrapText(true)];
-
-    Rows->AddSlot().AutoHeight().Padding(0, 5)[SNew(SHorizontalBox)
-        + SHorizontalBox::Slot().FillWidth(1).Padding(0, 0, 3, 0)[
-            Button(TEXT("작업 실행"), [this]() { StartCycle(); }, Editing)]
-        + SHorizontalBox::Slot().FillWidth(1).Padding(3, 0)[
-            Button(TEXT("정지"), [this]() { StopCycle(); }, TAttribute<bool>::CreateLambda([this]() {
-                return RunState != EFactoryRunState::Editing && RunState != EFactoryRunState::Complete
-                    && RunState != EFactoryRunState::Stopped && RunState != EFactoryRunState::Fault;
-            }))]
-        + SHorizontalBox::Slot().FillWidth(1).Padding(3, 0, 0, 0)[
-            Button(TEXT("편집 복귀"), [this]() { ResetCycle(); }, TAttribute<bool>::CreateLambda([this]() {
-                return !CanEdit();
-            }))]];
-    Rows->AddSlot().AutoHeight().Padding(0, 3)[SNew(STextBlock).Font(Font).ColorAndOpacity(TextColor)
-        .Text_Lambda([this]() {
-            if(bUseAssemblyIntegration)return FText::FromString(AssemblyMetrics());
-            const FString Alignment = RunState == EFactoryRunState::Complete
-                ? FString::Printf(TEXT("%.2fmm"), AlignmentMm) : TEXT("완료 후 표시");
-            const FString PreviousCycle = LastCycleSeconds > 0
-                ? FString::Printf(TEXT("%.2f초"), LastCycleSeconds) : TEXT("없음");
-            return FText::FromString(FString::Printf(
-                TEXT("경과 %.2f초 · 휠 이동 %.2fm\n정렬 오차 %s\n직전 완료 %s"),
-                SimulationSeconds, TravelCm / 100.0, *Alignment, *PreviousCycle));
-        }).AutoWrapText(true)];
-    Rows->AddSlot().AutoHeight().Padding(0, 3)[SNew(STextBlock).Font(Font)
-        .ColorAndOpacity(FLinearColor(.99f, .83f, .48f, 1)).Text_Lambda([this]() {
-            return FText::FromString(Status);
-        }).AutoWrapText(true)];
-    Label(bUseAssemblyIntegration?TEXT("개별 로봇 편집 · 추가 후 작업 연결 · 차량/레일은 공통\nIK·PID / 하중·마찰·체결 토크 미포함"):TEXT("IK·관절 PID / 체결·접촉 물리 미포함"));
-    Pair(Button(TEXT("실행 취소"),[this](){UndoEdit();},TAttribute<bool>::CreateLambda([this](){return CanUndo();})),
-        Button(TEXT("다시 실행"),[this](){RedoEdit();},TAttribute<bool>::CreateLambda([this](){return CanRedo();})));
-
-    Heading(TEXT("시점"));
-    Pair(Button(TEXT("공장 전체"), [this]() { FitView(); }, true),
-        Button(bUseAssemblyIntegration?TEXT("통합 작업 구역"):TEXT("휠 작업 구역"), [this]() { FocusWorkcell(); }, true));
-    Rows->AddSlot().AutoHeight().Padding(0, 3)[SNew(SButton).IsFocusable(false).ContentPadding(6)
-        .OnClicked_Lambda([this]() { ToggleView(); return FReply::Handled(); })[
-            SNew(STextBlock).Font(Font).Justification(ETextJustify::Center).Text_Lambda([this]() {
-                return FText::FromString(bTopView ? TEXT("입체 시점으로 보기") : TEXT("평면 시점으로 보기"));
-            })]];
-    Pair(Button(TEXT("확대 +"), [this]() { ZoomIn(); }, true),
-        Button(TEXT("축소 -"), [this]() { ZoomOut(); }, true));
-    Label(TEXT("좌클릭: 선택·이동 / 휠클릭: 평행 이동\n우클릭: 회전 / 휠: 확대·축소 / F: 초점\nCtrl+Z: 실행 취소 / Ctrl+Y: 다시 실행"));
-    auto Check=[&Rows,Font,TextColor](const TCHAR* Caption,TFunction<bool()> Get,TFunction<void(bool)> Set)
-    {
-        Rows->AddSlot().AutoHeight().Padding(0,3)[SNew(SCheckBox)
-            .IsChecked_Lambda([Get](){return Get()?ECheckBoxState::Checked:ECheckBoxState::Unchecked;})
-            .OnCheckStateChanged_Lambda([Set](ECheckBoxState V){Set(V==ECheckBoxState::Checked);})[
-                SNew(STextBlock).Font(Font).ColorAndOpacity(TextColor).Text(FText::FromString(Caption))]];
-    };
-    Check(TEXT("구역 이름 표시"),[this](){return bZoneLabels;},[this](bool V){SetZoneLabels(V);});
-    Check(TEXT("설비 이름 표시"),[this](){return bEquipmentLabels;},[this](bool V){SetEquipmentLabels(V);});
-    Check(TEXT("공정 흐름 표시"),[this](){return bRouteVisible;},[this](bool V){SetRouteVisible(V);});
-
-    Heading(TEXT("공장 크기"));
-    Rows->AddSlot().AutoHeight().Padding(0,3)[Button(TEXT("공장 테두리 선택"),[this](){SelectHall();},Editing)];
-    Label(TEXT("공장 또는 구역 선택 → 노란 손잡이 드래그"));
-    Number(TEXT("길이 X (m)"), [this]() -> TOptional<double> { return Layout.LengthCm / 100.0; },
-        [this](double Value) { SetHallSize(Value, Layout.WidthCm / 100.0); }, Editing, 12, 200);
-    Number(TEXT("너비 Y (m)"), [this]() -> TOptional<double> { return Layout.WidthCm / 100.0; },
-        [this](double Value) { SetHallSize(Layout.LengthCm / 100.0, Value); }, Editing, 12, 120);
-    Label(TEXT("단위: m · Enter 또는 입력칸 이동으로 적용\n크기 변경 시 설비 크기·위치는 유지"));
-
-    Heading(TEXT("선택한 구역·설비"));
-    // SComboBox keeps a raw pointer to its source array. Captured shared pointers
-    // deliberately keep each option list alive for the lifetime of its widget.
-    auto Choices = MakeShared<TArray<TSharedPtr<FFactoryPanelChoice>>>();
-    TSharedPtr<FFactoryPanelChoice> InitialChoice;
-    for (const FFactoryLayoutItem& Item : Layout.Items)
-    {
-        auto Choice = MakeShared<FFactoryPanelChoice>(Item.Id, Item.Id + TEXT(" · ") + Item.DisplayName());
-        Choices->Add(Choice);
-        if (Item.Id == SelectedId) InitialChoice = Choice;
-    }
-    Rows->AddSlot().AutoHeight().Padding(0, 4)[SNew(SComboBox<TSharedPtr<FFactoryPanelChoice>>)
-        .IsEnabled(Editing).OptionsSource(&Choices.Get()).InitiallySelectedItem(InitialChoice).MaxListHeight(320)
-        .OnGenerateWidget_Lambda([Font, Choices](TSharedPtr<FFactoryPanelChoice> Choice) -> TSharedRef<SWidget> {
-            return SNew(SBox).WidthOverride(295)[SNew(STextBlock).Font(Font)
-                .Text(FText::FromString(Choice.IsValid() ? Choice->Label : FString())).AutoWrapText(true)];
-        })
-        .OnSelectionChanged_Lambda([this, Generation, Choices](TSharedPtr<FFactoryPanelChoice> Choice, ESelectInfo::Type) {
-            if (PanelGeneration == Generation && Choice.IsValid() && CanEdit()) SelectItem(Choice->Id);
-        })[SNew(STextBlock).Font(Font).Text_Lambda([this]() {
-            const FFactoryLayoutItem* Item = Selected();
-            return FText::FromString(Item ? Item->Id + TEXT(" · ") + Item->DisplayName() : TEXT("항목을 선택하세요"));
-        }).AutoWrapText(true)]];
-
-    Number(TEXT("중심 X (m)"), [this]() -> TOptional<double> {
-        return Selected() ? TOptional<double>(Selected()->Position.X / 100.0) : TOptional<double>();
-    }, [this, PanelItemId](double Value) {
-        if (SelectedId == PanelItemId && Selected()) SetSelectedPosition(Value, Selected()->Position.Y / 100.0);
-    },
-        HasSelection, -1000, 1000);
-    Number(TEXT("중심 Y (m)"), [this]() -> TOptional<double> {
-        return Selected() ? TOptional<double>(Selected()->Position.Y / 100.0) : TOptional<double>();
-    }, [this, PanelItemId](double Value) {
-        if (SelectedId == PanelItemId && Selected()) SetSelectedPosition(Selected()->Position.X / 100.0, Value);
-    },
-        HasSelection, -1000, 1000);
-    Number(TEXT("방향 (°)"), [this]() -> TOptional<double> {
-        return Selected() ? TOptional<double>(Selected()->Yaw) : TOptional<double>();
-    }, [this, PanelItemId](double Value) { if (SelectedId == PanelItemId) SetSelectedYaw(Value); }, HasSelection, -360, 360);
-    Number(TEXT("구역 길이 (m)"), [this]() -> TOptional<double> {
-        return Selected() && Selected()->Kind == EFactoryItemKind::Zone
-            ? TOptional<double>(Selected()->Size.X / 100.0) : TOptional<double>();
-    }, [this, PanelItemId](double Value) {
-        if (SelectedId == PanelItemId && Selected()) SetSelectedSize(Value, Selected()->Size.Y / 100.0);
-    },
-        ZoneSelected, .2, 200);
-    Number(TEXT("구역 너비 (m)"), [this]() -> TOptional<double> {
-        return Selected() && Selected()->Kind == EFactoryItemKind::Zone
-            ? TOptional<double>(Selected()->Size.Y / 100.0) : TOptional<double>();
-    }, [this, PanelItemId](double Value) {
-        if (SelectedId == PanelItemId && Selected()) SetSelectedSize(Selected()->Size.X / 100.0, Value);
-    },
-        ZoneSelected, .2, 200);
-
-    Label(TEXT("이름: 한국어 / 영어"));
-    // Commit both names together: rebuilding the panel on every focus-loss
-    // would steal focus when the user tabs from the Korean field to English.
-    const auto NameDraft = MakeShared<FFactoryNameDraft>();
-    if (const FFactoryLayoutItem* Item = Selected())
-    {
-        NameDraft->ItemId = Item->Id;
-        NameDraft->Korean = Item->NameKo;
-        NameDraft->English = Item->NameEn;
-    }
-    auto ApplyNames = [this, Generation, NameDraft]() {
-        const FFactoryLayoutItem* Item = Selected();
-        if (PanelGeneration != Generation || !CanEdit() || !Item || Item->Id != NameDraft->ItemId) return;
-        const FString Korean = NameDraft->Korean.TrimStartAndEnd();
-        const FString English = NameDraft->English.TrimStartAndEnd();
-        if (Korean != Item->NameKo || English != Item->NameEn) SetSelectedName(Korean, English);
-    };
-    Rows->AddSlot().AutoHeight().Padding(0, 3)[SNew(SEditableTextBox).Font(Font).IsEnabled(HasSelection)
-        .HintText(FText::FromString(TEXT("한국어 이름"))).Text(FText::FromString(NameDraft->Korean))
-        .OnTextChanged_Lambda([NameDraft](const FText& Value) { NameDraft->Korean = Value.ToString(); })
-        .OnTextCommitted_Lambda([ApplyNames](const FText&, ETextCommit::Type Commit) {
-            if (Commit == ETextCommit::OnEnter) ApplyNames();
-        })];
-    Rows->AddSlot().AutoHeight().Padding(0, 3)[SNew(SEditableTextBox).Font(Font).IsEnabled(HasSelection)
-        .HintText(FText::FromString(TEXT("영어 이름"))).Text(FText::FromString(NameDraft->English))
-        .OnTextChanged_Lambda([NameDraft](const FText& Value) { NameDraft->English = Value.ToString(); })
-        .OnTextCommitted_Lambda([ApplyNames](const FText&, ETextCommit::Type Commit) {
-            if (Commit == ETextCommit::OnEnter) ApplyNames();
-        })];
-    Rows->AddSlot().AutoHeight().Padding(0, 3)[Button(TEXT("이름 적용"), ApplyNames, HasSelection)];
-    Label(TEXT("이름 두 칸을 편집한 뒤 '이름 적용' 또는 Enter"));
-
-    auto RoleChoices = MakeShared<TArray<TSharedPtr<FFactoryPanelChoice>>>();
-    TSharedPtr<FFactoryPanelChoice> InitialRole;
-    for (const TCHAR* RoleId : { TEXT("work"), TEXT("supply"), TEXT("buffer"), TEXT("walkway"), TEXT("rework"), TEXT("reserve") })
-    {
-        auto Choice = MakeShared<FFactoryPanelChoice>(RoleId, FactoryRoleLabel(RoleId));
-        RoleChoices->Add(Choice);
-        if (Selected() && Selected()->Role == RoleId) InitialRole = Choice;
-    }
-    Rows->AddSlot().AutoHeight().Padding(0, 4)[SNew(SComboBox<TSharedPtr<FFactoryPanelChoice>>)
-        .IsEnabled(ZoneSelected).OptionsSource(&RoleChoices.Get()).InitiallySelectedItem(InitialRole)
-        .OnGenerateWidget_Lambda([Font, RoleChoices](TSharedPtr<FFactoryPanelChoice> Choice) -> TSharedRef<SWidget> {
-            return SNew(STextBlock).Font(Font).Text(FText::FromString(Choice->Label));
-        })
-        .OnSelectionChanged_Lambda([this, Generation, RoleChoices, PanelItemId](TSharedPtr<FFactoryPanelChoice> Choice, ESelectInfo::Type) {
-            if (PanelGeneration == Generation && Choice.IsValid() && CanEdit() && SelectedId == PanelItemId) SetSelectedRole(Choice->Id);
-        })[SNew(STextBlock).Font(Font).Text_Lambda([this]() {
-            return FText::FromString(Selected() && Selected()->Kind == EFactoryItemKind::Zone
-                ? FactoryRoleLabel(Selected()->Role) : TEXT("구역 용도: 구역 선택 시 설정"));
-        }).AutoWrapText(true)]];
-    if(!bUseAssemblyIntegration)
-    Pair(Button(TEXT("선택 항목 삭제"), [this]() { DeleteSelected(); }, HasSelection),
-        Button(bUseAssemblyIntegration?TEXT("작업 부여"):TEXT("선택 설비 작업 연결"), [this]() { if(bUseAssemblyIntegration)OpenRobotPopup(SelectedId,FVector2D(600,120));else BindSelected(); }, TAttribute<bool>::CreateLambda([this]() {
-            const FFactoryLayoutItem* Item = Selected();
-            return CanEdit() && Item && (Item->Kind == EFactoryItemKind::VehicleStation
-                || Item->Kind == EFactoryItemKind::WheelSupply || Item->Kind == EFactoryItemKind::CartesianHandler || Item->Kind == EFactoryItemKind::ArticulatedRobot);
-        })));
-    Rows->AddSlot().AutoHeight().Padding(0, 4)[SNew(STextBlock).Font(Font).ColorAndOpacity(TextColor)
-        .Text_Lambda([this]() { return FText::FromString(BindingText()); }).AutoWrapText(true)];
-
-    Heading(TEXT("공정 순서·동선"));
-    Rows->AddSlot().AutoHeight().Padding(0,3)[SNew(STextBlock).Font(Font).ColorAndOpacity(TextColor)
-        .Text_Lambda([this](){return FText::FromString(RouteText());}).AutoWrapText(true)];
-    Pair(Button(TEXT("선택 항목 추가"),[this](){RouteAppendSelected();},HasSelection),Button(TEXT("순서에서 제외"),[this](){RouteRemoveSelected();},HasSelection));
-    Pair(Button(TEXT("앞 순서로 ↑"),[this](){RouteMoveSelected(-1);},HasSelection),Button(TEXT("뒤 순서로 ↓"),[this](){RouteMoveSelected(1);},HasSelection));
-    Number(TEXT("곡선 굽힘 (m)"),[this]()->TOptional<double>{return Layout.RouteBendCm/100.;},[this](double V){SetRouteBend(V*100);},Editing,-20,20);
-    Label(TEXT("화살표는 공정 순서 표시입니다. 차량 운반·컨베이어 구동 경로는 아닙니다."));
-
-    Heading(TEXT("배치 저장·불러오기"));
-    Pair(Button(TEXT("A 저장"), [this]() { SaveLayout(TEXT("A")); }, Editing),
-        Button(TEXT("A 불러오기"), [this]() { LoadLayout(TEXT("A")); }, Editing));
-    Pair(Button(TEXT("B 저장"), [this]() { SaveLayout(TEXT("B")); }, Editing),
-        Button(TEXT("B 불러오기"), [this]() { LoadLayout(TEXT("B")); }, Editing));
-    Rows->AddSlot().AutoHeight().Padding(0, 3)[Button(TEXT("기본 배치로 복원"), [this]() { RestoreDefault(); }, Editing)];
-    Label(TEXT("저장 슬롯은 같은 이름으로 덮어씁니다.\n불러오기·기본 복원은 현재 편집 내용을 바꿉니다."));
-
-    Heading(TEXT("배치 점검"));
-    Rows->AddSlot().AutoHeight().Padding(0, 3)[SNew(STextBlock).Font(Font)
-        .ColorAndOpacity(FLinearColor(.99f, .83f, .48f, 1)).Text_Lambda([this]() {
-            return FText::FromString(ValidationText());
-        }).AutoWrapText(true)];
-    Label(TEXT("설계 검토용 모델 · 실제 공장 치수·안전 인증 아님"));
-
-    TSharedRef<SVerticalBox> Palette=SNew(SVerticalBox);
-    TSharedRef<SHorizontalBox> Tabs=SNew(SHorizontalBox);
-    for(const TCHAR* Category:{TEXT("전체"),TEXT("구역"),TEXT("로봇"),TEXT("설비")})
-    {
-        const FString Name=Category;
-        Tabs->AddSlot().AutoWidth().Padding(0,0,6,0)[Button((PaletteCategory==Name?TEXT("● "):TEXT(""))+Name,
-            [this,Name](){PaletteCategory=Name;bNeedsPanel=true;},true)];
-    }
-    Tabs->AddSlot().FillWidth(1).Padding(12,0).VAlign(VAlign_Center)[SNew(SCheckBox).IsEnabled(Editing)
-        .IsChecked_Lambda([this](){return bSnap?ECheckBoxState::Checked:ECheckBoxState::Unchecked;})
-        .OnCheckStateChanged_Lambda([this](ECheckBoxState V){bSnap=V==ECheckBoxState::Checked;})[
-            SNew(STextBlock).Font(Font).ColorAndOpacity(TextColor).Text(FText::FromString(TEXT("0.25m 격자 맞춤")))]];
-    Tabs->AddSlot().AutoWidth().Padding(0,0,6,0)[Button(TEXT("선택 삭제 (Del)"),[this](){DeleteSelected();},TAttribute<bool>::CreateLambda([this](){return CanEdit()&&Selected()!=nullptr;}))];
-    Tabs->AddSlot().AutoWidth().Padding(0,0,6,0)[Button(TEXT("공장 크기 조정"),[this](){SelectHall();FitView();},Editing)];
-    Tabs->AddSlot().AutoWidth()[Button(TEXT("배치 취소 (Esc)"),[this](){CancelEdit();},Editing)];
-    Palette->AddSlot().AutoHeight()[Tabs];
-    TSharedRef<SHorizontalBox> Cards=SNew(SHorizontalBox);
-    EnsureRegistry();
-    for(const auto& D:Registry->All())
-    {
-        if(!IsPaletteTypeAllowed(D->TypeId.ToString())||D->TypeId==TEXT("assembly_wheel_right"))continue;
-        if(PaletteCategory!=TEXT("전체")&&D->Category!=PaletteCategory)continue;
-        const FString Id=D->TypeId.ToString();
-        Cards->AddSlot().AutoWidth().Padding(0,8,8,5)[SNew(SBox).WidthOverride(170).HeightOverride(82)[
-            SNew(SButton).IsFocusable(false).IsEnabled(Editing).ToolTipText(FText::FromString(D->Description))
-                .OnClicked_Lambda([this,Id](){BeginPlacement(Id);return FReply::Handled();})[
-                    SNew(STextBlock).Font(Font).Justification(ETextJustify::Center).AutoWrapText(true)
-                    .Text(FText::FromString(D->TypeId==TEXT("assembly_wheel_left")?TEXT("휠 작업 로봇\n(Wheel Robot)"):D->NameKo+TEXT("\n(")+D->NameEn+TEXT(")")))]]];
-    }
-    Palette->AddSlot().AutoHeight()[SNew(SScrollBox).Orientation(Orient_Horizontal).ScrollBarAlwaysVisible(true)+SScrollBox::Slot()[Cards]];
-    Palette->AddSlot().AutoHeight().Padding(0,3)[SNew(STextBlock).Font(Font).ColorAndOpacity(Accent)
-        .Text_Lambda([this](){return FText::FromString(!CanEdit()?TEXT("실행 중에는 설비를 추가하거나 배치를 변경할 수 없습니다."):
-            (!PendingTypeId.IsEmpty()?TEXT("배치 중 · 바닥 클릭 / 구역은 드래그 · Esc 취소"):TEXT("추가 도구 · 항목 선택 → 바닥 클릭으로 배치")));}).AutoWrapText(true)];
-    const auto OldSurface=ViewportSurface;
-    if(!ViewportSurface.IsValid())ViewportSurface=SNew(SFactoryViewport).Runtime(this);
-    const bool bNewPanel = !Panel.IsValid();
-    if (bNewPanel)
-        Panel = SNew(SOverlay).Visibility(EVisibility::SelfHitTestInvisible)
-            + SOverlay::Slot()[ViewportSurface.ToSharedRef()];
-    const TSharedRef<SOverlay> Overlay = StaticCastSharedRef<SOverlay>(Panel.ToSharedRef());
-    while (Overlay->GetNumWidgets() > 1)
-        Overlay->RemoveSlot(Overlay->GetChildren()->GetChildAt(1));
-    Overlay->AddSlot().HAlign(HAlign_Left).VAlign(VAlign_Fill).Padding(12)[
-            SNew(SBox).WidthOverride(330)[SNew(SBorder).Padding(10)
-                .BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
-                .BorderBackgroundColor(FLinearColor(.025f,.035f,.05f,.96f))[
-                    SAssignNew(PanelScroll,SScrollBox).ScrollBarAlwaysVisible(true)+SScrollBox::Slot()[Rows]]]];
-    Overlay->AddSlot().HAlign(HAlign_Fill).VAlign(VAlign_Bottom).Padding(354,0,12,12)[
-            SNew(SBorder).Padding(10).BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
-                .BorderBackgroundColor(FLinearColor(.025f,.035f,.05f,.96f))[Palette]];
-    if(bRobotPopup&&CanEdit()&&Selected())
-    {
-        auto Popup=SNew(SVerticalBox);
-        Popup->AddSlot().AutoHeight()[SNew(STextBlock).Font(Font).Text(FText::FromString(Selected()->NameKo+TEXT(" · 작업 연결")))];
-        Popup->AddSlot().AutoHeight().Padding(0,8)[SNew(STextBlock).Font(Font).AutoWrapText(true)
-            .Text_Lambda([this](){return FText::FromString(PendingTaskId.IsEmpty()?TEXT("① 차체의 초록색 작업 지점을 클릭하세요."):TEXT("② 장착할 휠 또는 도어 부품을 클릭하세요."));})];
-        Popup->AddSlot().AutoHeight()[SNew(STextBlock).Font(Font).AutoWrapText(true).Text_Lambda([this](){return FText::FromString(Status);})];
-        for(const auto& Task:Layout.Tasks)if(Task.RobotId==SelectedId)
+        Label(TEXT("오브젝트"),true);
+        auto Choices=MakeShared<TArray<TSharedPtr<FFactoryPanelChoice>>>();TSharedPtr<FFactoryPanelChoice> Initial;
+        for(const auto& Id:InspectableObjects()){auto C=MakeShared<FFactoryPanelChoice>(Id,ObjectName(Id));Choices->Add(C);if(Id==CurrentObjectId())Initial=C;}
+        Rows->AddSlot().AutoHeight().Padding(0,5)[SNew(SComboBox<TSharedPtr<FFactoryPanelChoice>>).OptionsSource(&Choices.Get()).InitiallySelectedItem(Initial).MaxListHeight(300)
+            .OnGenerateWidget_Lambda([Choices,Font](TSharedPtr<FFactoryPanelChoice> C)->TSharedRef<SWidget>{return SNew(SBox).WidthOverride(300)[SNew(STextBlock).Font(Font).Text(FText::FromString(C->Label)).AutoWrapText(true)];})
+            .OnSelectionChanged_Lambda([this,Choices,Generation](TSharedPtr<FFactoryPanelChoice> C,ESelectInfo::Type){if(C&&PanelGeneration==Generation)SelectObject(C->Id);})[
+                SNew(STextBlock).Font(Font).AutoWrapText(true).Text(FText::FromString(CurrentObjectId().IsEmpty()?TEXT("이름으로 찾기…"):ObjectName(CurrentObjectId())))]];
+        if(CurrentObjectId().IsEmpty())Label(TEXT("화면의 로봇·차체·부품을 클릭하거나 위 목록에서 선택하세요."));
+        else
         {
-            const auto* S=FactoryTasks::Find(Task.Id);const FString Id=Task.Id;
-            Popup->AddSlot().AutoHeight().Padding(0,4)[Button((S?S->Label:Id)+TEXT(" · 연결 해제"),[this,Id](){UnassignTask(Id);},Editing)];
+            Label(ObjectName(CurrentObjectId()),true);
+            Pair(Button(TEXT("선택 위치 보기 · F"),[this](){FocusSelected();}),Button(TEXT("선택 센서"),[this](){Inspection().ShowAllSensors=false;OpenDetails(EFactoryDetailTab::Sensors);}));
+            if(const auto* Item=Selected())
+            {
+                const FString Id=Item->Id;
+                if(Item->EffectiveTypeId().StartsWith(TEXT("assembly_")))
+                {
+                    if(bRobotPopup)Label(PendingTaskId.IsEmpty()?TEXT("① 차체의 초록색 작업 지점을 클릭하세요."):TEXT("② 연결할 실제 부품을 클릭하세요."));
+                    else Rows->AddSlot().AutoHeight()[Button(TEXT("차체 지점 → 부품 연결"),[this,Id](){OpenRobotPopup(Id,FVector2D::ZeroVector);},Editing)];
+                    for(const auto& T:Layout.Tasks)if(T.RobotId==Id){const FString TaskId=T.Id;const auto* S=FactoryTasks::Find(TaskId);Label((S?S->Label:TaskId)+TEXT(" ← ")+ObjectName(T.PartId));Rows->AddSlot().AutoHeight()[Button(TEXT("이 연결 해제"),[this,TaskId](){UnassignTask(TaskId);},Editing)];}
+                    if(bRobotPopup)Dynamic([this](){return Status;});
+                    if(bRobotPopup)Rows->AddSlot().AutoHeight().Padding(0,5)[Button(TEXT("연결 모드 종료 · Esc"),[this](){CloseRobotPopup();})];
+                }
+                Label(TEXT("배치"),true);
+                Number(TEXT("X 위치 (m)"),[this](){return Selected()?Selected()->Position.X/100:0.;},[this,Id](double V){if(SelectedId==Id&&Selected())SetSelectedPosition(V,Selected()->Position.Y/100);},-1000,1000);
+                Number(TEXT("Y 위치 (m)"),[this](){return Selected()?Selected()->Position.Y/100:0.;},[this,Id](double V){if(SelectedId==Id&&Selected())SetSelectedPosition(Selected()->Position.X/100,V);},-1000,1000);
+                Number(TEXT("방향 (°)"),[this](){return Selected()?Selected()->Yaw:0.;},[this,Id](double V){if(SelectedId==Id)SetSelectedYaw(V);},-360,360);
+                if(Item->Kind==EFactoryItemKind::Zone)
+                {
+                    Number(TEXT("길이 (m)"),[this](){return Selected()?Selected()->Size.X/100:0.;},[this,Id](double V){if(SelectedId==Id&&Selected())SetSelectedSize(V,Selected()->Size.Y/100);},.2,200);
+                    Number(TEXT("너비 (m)"),[this](){return Selected()?Selected()->Size.Y/100:0.;},[this,Id](double V){if(SelectedId==Id&&Selected())SetSelectedSize(Selected()->Size.X/100,V);},.2,200);
+                    auto Roles=SNew(SWrapBox).UseAllottedSize(true);for(const TCHAR* RoleId:{TEXT("work"),TEXT("supply"),TEXT("buffer"),TEXT("walkway"),TEXT("rework"),TEXT("reserve")}){const FString R=RoleId;Roles->AddSlot().Padding(0,3,4,0)[Button(FactoryRoleLabel(R),[this,R](){SetSelectedRole(R);},Editing)];}Rows->AddSlot().AutoHeight()[Roles];
+                }
+                Label(TEXT("표시 이름"),true);auto Draft=MakeShared<FFactoryNameDraft>();Draft->ItemId=Id;Draft->Korean=Item->NameKo;Draft->English=Item->NameEn;
+                Rows->AddSlot().AutoHeight().Padding(0,3)[SNew(SEditableTextBox).Font(Font).IsEnabled(Editing).Text(FText::FromString(Draft->Korean)).HintText(FText::FromString(TEXT("한국어 이름"))).OnTextChanged_Lambda([Draft](const FText& V){Draft->Korean=V.ToString();})];
+                Rows->AddSlot().AutoHeight().Padding(0,3)[SNew(SEditableTextBox).Font(Font).IsEnabled(Editing).Text(FText::FromString(Draft->English)).HintText(FText::FromString(TEXT("영어 이름"))).OnTextChanged_Lambda([Draft](const FText& V){Draft->English=V.ToString();})];
+                Pair(Button(TEXT("이름 적용"),[this,Draft,Generation](){if(Generation==PanelGeneration&&SelectedId==Draft->ItemId)SetSelectedName(Draft->Korean.TrimStartAndEnd(),Draft->English.TrimStartAndEnd());},Editing),Button(TEXT("오브젝트 삭제"),[this](){DeleteSelected();},Editing));
+                if(!bUseAssemblyIntegration)Rows->AddSlot().AutoHeight()[Button(TEXT("작업 연결"),[this](){BindSelected();},Editing)];
+            }
+            else
+            {
+                Dynamic([this](){const FBox B=ObjectBounds(CurrentObjectId());return B.IsValid?FString::Printf(TEXT("중심 위치\nX %.3fm   Y %.3fm   Z %.3fm"),B.GetCenter().X/100,B.GetCenter().Y/100,B.GetCenter().Z/100):TEXT("오브젝트를 찾을 수 없습니다.");});
+                Label(CurrentObjectId().StartsWith(TEXT("part_"))?TEXT("편집 모드에서 직접 드래그하여 공급 위치를 옮길 수 있습니다."):TEXT("현재 이 오브젝트는 조회만 가능합니다."));
+            }
         }
-        Popup->AddSlot().AutoHeight().Padding(0,6)[Button(TEXT("닫기 · Esc"),[this](){CloseRobotPopup();},true)];
-        Overlay->AddSlot().HAlign(HAlign_Right).VAlign(VAlign_Top).Padding(12)[SNew(SBox).WidthOverride(320).MaxDesiredHeight(420)
-            [SNew(SBorder).Padding(12).BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush")).BorderBackgroundColor(FLinearColor(.035f,.07f,.10f,.98f))
-                [SNew(SScrollBox)+SScrollBox::Slot()[Popup]]]];
     }
-    PanelScroll->SetScrollOffset(SavedScrollOffset);
-    if(bNewPanel)GEngine->GameViewport->AddViewportWidgetContent(Panel.ToSharedRef(),30);
-    if(RestoreViewportFocus||!OldSurface.IsValid())FSlateApplication::Get().SetKeyboardFocus(ViewportSurface.ToSharedRef(),EFocusCause::SetDirectly);
-    if(bNewPanel)FSlateApplication::Get().RegisterInputPreProcessor(
-        MakeShared<FFactoryShortcutInput>(this,Panel.ToSharedRef(),ViewportSurface.ToSharedRef(),RestoreViewportFocus||!OldSurface.IsValid()),0);
+    else if(Model.Tab==EFactoryDetailTab::Problems)
+    {
+        Label(TEXT("배치·실행 문제"),true);
+        if(Model.Issues.IsEmpty())Label(TEXT("현재 감지된 문제 없음\n실행 시 도달·센서 조건을 추가로 확인합니다."));
+        for(const auto& I:Model.Issues)
+        {
+            Label((I.Level==EFactoryIssueLevel::Error?TEXT("! "):TEXT("△ "))+I.Summary,true);
+            Label(TEXT("로봇: ")+(I.RobotId.IsEmpty()?TEXT("미할당 또는 해당 없음"):ObjectName(I.RobotId))+TEXT("\n부품: ")+(I.PartId.IsEmpty()?TEXT("해당 없음"):ObjectName(I.PartId))+TEXT("\n공정: ")+(FactoryTasks::Find(I.TaskId)?FactoryTasks::Find(I.TaskId)->Label:TEXT("공통 라인")));
+            Label(I.Detail);Label(I.Remedy);const FString Id=I.Id;Rows->AddSlot().AutoHeight().Padding(0,3,0,12)[Button(TEXT("문제 위치 보기"),[this,Id](){FocusIssue(Id);})];
+        }
+
+    }
+    else if(Model.Tab==EFactoryDetailTab::Process){Label(TEXT("공정 진행"),true);Dynamic([this](){return ProcessDetails();});}
+    else if(Model.Tab==EFactoryDetailTab::Results){Label(TEXT("작업 결과"),true);Dynamic([this](){return ResultDetails();});}
+    else if(Model.Tab==EFactoryDetailTab::Sensors)
+    {
+        Label(TEXT("센서 모니터"),true);
+        Pair(Button(TEXT("모든 센서"),[this](){Inspection().ShowAllSensors=true;bNeedsPanel=true;}),Button(TEXT("선택 대상만"),[this](){Inspection().ShowAllSensors=false;bNeedsPanel=true;}));
+        auto ValueText=[this](const FString& Id){const auto* C=Inspection().Sensors.Find(Id);if(!C)return FString(TEXT("연결 정보 없음"));const auto& V=C->Latest;
+            const TCHAR* State=V.State()==EFactorySampleState::Disconnected?TEXT("미연결"):V.State()==EFactorySampleState::Invalid?TEXT("측정 무효"):V.State()==EFactorySampleState::Stale?TEXT("오래된 측정"):TEXT("정상");
+            return V.Label+TEXT(" · ")+State+(V.State()==EFactorySampleState::Valid?FString::Printf(TEXT("  %.3f %s"),V.Value,*V.Unit):TEXT("  —"));};
+        Dynamic([this,ValueText](){const auto* C=Inspection().Sensors.Find(Inspection().SelectedChannel);return ValueText(Inspection().SelectedChannel)+(C?TEXT("\n출처: ")+C->Latest.Source+TEXT("\n대상: ")+ObjectName(C->Latest.ObjectId):FString());});
+        Rows->AddSlot().AutoHeight().Padding(0,5)[SNew(SFactorySensorChart).Model(InspectionState)];
+                Dynamic([this](){const auto* C=Inspection().Sensors.Find(Inspection().SelectedChannel);if(!C||C->History.IsEmpty())return FString(TEXT("측정 이력 없음"));double Min=DBL_MAX,Max=-DBL_MAX;for(const auto& P:C->History)if(P.Valid){Min=FMath::Min(Min,P.Value);Max=FMath::Max(Max,P.Value);}return Min>Max?FString(TEXT("유효 측정 이력 없음")):FString::Printf(TEXT("%.2f–%.2f초 · %.3f–%.3f %s\n세로축 자동 범위 · 최대 180회\n무효 측정은 선을 연결하지 않음"),C->History[0].Time,C->History.Last().Time,Min,Max,*C->Latest.Unit);});
+        TArray<FString> Channels;Model.Sensors.GetKeys(Channels);Channels.Sort();int Shown=0;
+        for(const FString& Id:Channels){const auto& C=Model.Sensors[Id];const auto* Task=Layout.Tasks.FindByPredicate([&](const auto& T){return T.Id==C.Latest.TaskId;});const bool PartChannel=Task&&(Task->PartId.IsEmpty()?TEXT("part_")+Task->Id:Task->PartId)==CurrentObjectId();if(!Model.ShowAllSensors&&C.Latest.ObjectId!=CurrentObjectId()&&!PartChannel&&!Id.StartsWith(TEXT("extension.")))continue;++Shown;
+            Rows->AddSlot().AutoHeight().Padding(0,4)[SNew(SButton).IsFocusable(false).ContentPadding(7).OnClicked_Lambda([this,Id](){Inspection().SelectedChannel=Id;return FReply::Handled();})[
+                SNew(STextBlock).Font(Font).AutoWrapText(true).Text_Lambda([this,ValueText,Id](){const auto* Channel=Inspection().Sensors.Find(Id);return FText::FromString(ValueText(Id)+(Channel&&!Channel->Latest.ObjectId.IsEmpty()?TEXT("\n")+ObjectName(Channel->Latest.ObjectId):FString()));})]];}
+        if(!Shown)Label(TEXT("이 오브젝트에 연결된 센서가 없습니다."));
+    }
+    else
+    {
+        Label(TEXT("공장·보기"),true);
+        Pair(Button(TEXT("전체 보기"),[this](){FitView();}),Button(TEXT("작업 구역 보기"),[this](){FocusWorkcell();}));
+        Pair(Button(TEXT("평면 / 입체"),[this](){ToggleView();}),Button(TEXT("공장 테두리 선택"),[this](){SelectHall();FitView();},Editing));
+        Number(TEXT("공장 길이 (m)"),[this](){return Layout.LengthCm/100;},[this](double V){SetHallSize(V,Layout.WidthCm/100);},12,200);
+        Number(TEXT("공장 너비 (m)"),[this](){return Layout.WidthCm/100;},[this](double V){SetHallSize(Layout.LengthCm/100,V);},12,120);
+        Rows->AddSlot().AutoHeight().Padding(0,5)[SNew(SCheckBox).IsChecked_Lambda([this](){return bRouteVisible?ECheckBoxState::Checked:ECheckBoxState::Unchecked;}).OnCheckStateChanged_Lambda([this](ECheckBoxState V){SetRouteVisible(V==ECheckBoxState::Checked);})[SNew(STextBlock).Font(Font).Text(FText::FromString(TEXT("공정 흐름 표시")))]];
+        Label(TEXT("배치 저장"),true);Label(TEXT("A/B는 서로 다른 배치 저장 슬롯입니다. 같은 슬롯 저장 시 덮어씁니다."));
+        Pair(Button(TEXT("A 저장"),[this](){SaveLayout(TEXT("A"));},Editing),Button(TEXT("A 불러오기"),[this](){LoadLayout(TEXT("A"));},Editing));
+        Pair(Button(TEXT("B 저장"),[this](){SaveLayout(TEXT("B"));},Editing),Button(TEXT("B 불러오기"),[this](){LoadLayout(TEXT("B"));},Editing));
+        Rows->AddSlot().AutoHeight()[Button(TEXT("기본 배치로 복원"),[this](){RestoreDefault();},Editing)];
+        Label(TEXT("공정 흐름 편집"),true);Dynamic([this](){return RouteText();});
+        Pair(Button(TEXT("선택 구역 추가"),[this](){RouteAppendSelected();},Editing),Button(TEXT("순서에서 제외"),[this](){RouteRemoveSelected();},Editing));
+        Pair(Button(TEXT("앞 순서로"),[this](){RouteMoveSelected(-1);},Editing),Button(TEXT("뒤 순서로"),[this](){RouteMoveSelected(1);},Editing));
+        Number(TEXT("곡선 굽힘 (m)"),[this](){return Layout.RouteBendCm/100;},[this](double V){SetRouteBend(V*100);},-20,20);
+        Label(TEXT("흐름선은 순서 표시이며 실제 운반 경로가 아닙니다."));
+    }
+
+    auto Palette=SNew(SVerticalBox);auto PaletteTop=SNew(SHorizontalBox);
+    PaletteTop->AddSlot().AutoWidth()[Button(Model.PaletteOpen?TEXT("추가 도구 접기"):TEXT("설비·구역 추가"),[this](){Inspection().PaletteOpen=!Inspection().PaletteOpen;bNeedsPanel=true;})];
+    PaletteTop->AddSlot().AutoWidth().Padding(8,0)[SNew(SCheckBox).IsEnabled(Editing).IsChecked_Lambda([this](){return bSnap?ECheckBoxState::Checked:ECheckBoxState::Unchecked;}).OnCheckStateChanged_Lambda([this](ECheckBoxState V){bSnap=V==ECheckBoxState::Checked;})[SNew(STextBlock).Font(Font).Text(FText::FromString(TEXT("25cm 격자 맞춤")))]];
+    PaletteTop->AddSlot().FillWidth(1).VAlign(VAlign_Center).Padding(12,0)[SNew(STextBlock).Font(Small).ColorAndOpacity(Muted).AutoWrapText(true).Text_Lambda([this](){return FText::FromString(PendingTypeId.IsEmpty()?TEXT("선택·이동: 좌클릭   카메라: 휠클릭 / 우클릭   초점: F"):TEXT("바닥을 클릭해 배치 · 구역은 드래그 · Esc 취소"));})];
+    Palette->AddSlot().AutoHeight()[PaletteTop];
+    Palette->AddSlot().AutoHeight().Padding(0,5)[SNew(STextBlock).Font(Small).ColorAndOpacity(Muted).OverflowPolicy(ETextOverflowPolicy::Ellipsis).Text_Lambda([this](){return FText::FromString(Status);})];
+    if(Model.PaletteOpen)
+    {auto Cards=SNew(SHorizontalBox);EnsureRegistry();for(const auto& D:Registry->All())if(IsPaletteTypeAllowed(D->TypeId.ToString())&&D->TypeId!=TEXT("assembly_wheel_right"))
+        {const FString Id=D->TypeId.ToString();Cards->AddSlot().AutoWidth().Padding(0,6,8,0)[Button(Id==TEXT("assembly_wheel_left")?TEXT("＋ 휠 작업 로봇"):TEXT("＋ ")+D->NameKo,[this,Id](){BeginPlacement(Id);},Editing)];}
+        Palette->AddSlot().AutoHeight()[SNew(SScrollBox).Orientation(Orient_Horizontal)+SScrollBox::Slot()[Cards]];}
+    auto Chip=SNew(SVerticalBox);
+    Chip->AddSlot().AutoHeight()[SNew(STextBlock).Font(Font).ColorAndOpacity(Blue).AutoWrapText(true).Text_Lambda([this](){return FText::FromString(CurrentObjectId().IsEmpty()?TEXT("오브젝트를 선택하세요"):TEXT("선택됨 · ")+ObjectName(CurrentObjectId()));})];
+    Chip->AddSlot().AutoHeight().Padding(0,5)[SNew(STextBlock).Font(Small).ColorAndOpacity(Muted).Text(FText::FromString(TEXT("파랑: 선택  /  주황: 문제  /  빨강: 확인 중")))];
+    Chip->AddSlot().AutoHeight()[SNew(SButton).IsFocusable(false).OnClicked_Lambda([this](){OpenDetails(EFactoryDetailTab::Problems);return FReply::Handled();})[
+        SNew(STextBlock).Font(Font).ColorAndOpacity(Orange).Text_Lambda([this](){return FText::FromString(FString::Printf(TEXT("문제 %d건 · 상세 보기"),Inspection().Issues.Num()));})]];
+    if(!ViewportSurface)ViewportSurface=SNew(SFactoryViewport).Runtime(this);const bool NewPanel=!Panel;
+    if(NewPanel)Panel=SNew(SOverlay).Visibility(EVisibility::SelfHitTestInvisible)+SOverlay::Slot()[ViewportSurface.ToSharedRef()];
+    auto Overlay=StaticCastSharedRef<SOverlay>(Panel.ToSharedRef());while(Overlay->GetNumWidgets()>1)Overlay->RemoveSlot(Overlay->GetChildren()->GetChildAt(1));
+    Overlay->AddSlot().HAlign(HAlign_Fill).VAlign(VAlign_Top).Padding(10)[Card(Top)];
+    Overlay->AddSlot().HAlign(HAlign_Left).VAlign(VAlign_Top).Padding(10,76,0,0)[SNew(SBox).WidthOverride(260)[Card(Chip)]];
+    Overlay->AddSlot().HAlign(HAlign_Fill).VAlign(VAlign_Bottom).Padding(10)[Card(Palette)];
+    if(Model.PanelOpen)
+    {
+        auto PanelBody=SNew(SVerticalBox);auto Tabs=SNew(SWrapBox).UseAllottedSize(true);
+        const TCHAR* Names[]={TEXT("선택"),TEXT("문제"),TEXT("공정"),TEXT("센서"),TEXT("결과")};
+        for(int I=0;I<5;++I){const auto Tab=EFactoryDetailTab(I);Tabs->AddSlot().Padding(0,0,4,5)[Button((Model.Tab==Tab?TEXT("● "):TEXT(""))+FString(Names[I]),[this,Tab](){OpenDetails(Tab);})];}
+        Tabs->AddSlot().Padding(0,0,0,5)[Button(TEXT("닫기"),[this](){Inspection().PanelOpen=false;bNeedsPanel=true;})];
+        PanelBody->AddSlot().AutoHeight()[Tabs];PanelBody->AddSlot().FillHeight(1)[SAssignNew(PanelScroll,SScrollBox).ScrollBarAlwaysVisible(true)+SScrollBox::Slot()[Rows]];
+        Overlay->AddSlot().HAlign(HAlign_Right).VAlign(VAlign_Fill).Padding(0,76,10,Model.PaletteOpen?140:85)[SNew(SBox).WidthOverride(348)[Card(PanelBody)]];
+    }
+    if(NewPanel)GEngine->GameViewport->AddViewportWidgetContent(Panel.ToSharedRef(),30);
+    if(RestoreFocus||NewPanel)FSlateApplication::Get().SetKeyboardFocus(ViewportSurface.ToSharedRef(),EFocusCause::SetDirectly);
+    if(NewPanel)FSlateApplication::Get().RegisterInputPreProcessor(MakeShared<FFactoryShortcutInput>(this,Panel.ToSharedRef(),ViewportSurface.ToSharedRef(),true),0);
     bNeedsPanel=false;
 }

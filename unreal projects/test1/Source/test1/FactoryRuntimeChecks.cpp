@@ -86,9 +86,9 @@ void AFactoryRuntime::RunChecks()
     Check(TEXT("undo_delete_restores_stable_id_and_job_binding"),Layout.Find(DeletedId)&&Layout.SupplyId==DeletedId);
     SelectedId=TEXT("P03");const auto Order=Layout.ProcessOrder;RouteMoveSelected(1);UndoEdit();Check(TEXT("flow_order_is_undoable"),Layout.ProcessOrder==Order);
     DeleteSelected();Check(TEXT("delete_route_node_removes_dangling_reference"),!Layout.ProcessOrder.Contains(TEXT("P03"))&&Layout.Validate(Error));UndoEdit();
-    SetZoneLabels(false);bool AllHidden=true;for(const auto& I:Layout.Items)if(I.Kind==EFactoryItemKind::Zone)AllHidden&=!Equipment.FindRef(I.Id)->Label->IsVisible();
-    Check(TEXT("zone_label_toggle_hides_all_zone_labels"),AllHidden);Rebuild();Check(TEXT("zone_label_setting_survives_rebuild"),!Equipment.FindRef(TEXT("P01"))->Label->IsVisible());
-    SetZoneLabels(true);Check(TEXT("zone_label_toggle_restores_labels"),Equipment.FindRef(TEXT("P01"))->Label->IsVisible());SetZoneLabels(false);
+    SetZoneLabels(false);bool NoLabels=true;for(const auto& I:Layout.Items)NoLabels&=!IsValid(Equipment.FindRef(I.Id)->Label);
+    Check(TEXT("world_labels_removed"),NoLabels);Rebuild();Check(TEXT("rebuild_keeps_names_in_UI"),!IsValid(Equipment.FindRef(TEXT("P01"))->Label));
+    SetZoneLabels(true);Check(TEXT("legacy_label_setting_does_not_restore_world_widgets"),!IsValid(Equipment.FindRef(TEXT("P01"))->Label));SetZoneLabels(false);
     auto Unknown=Layout;Unknown.Items[0].TypeId=TEXT("missing_team_plugin");
     Check(TEXT("unknown_equipment_definition_rejected"),!Registry->Validate(Unknown,Error));
     Layout=FFactoryLayout::LegacyDefault();Rebuild();History.Clear();SelectedId.Empty();bHallSelected=true;
@@ -135,6 +135,19 @@ void AFactoryRuntime::RunChecks()
 void AFactoryRuntime::CaptureRuntime(float Dt)
 {
     CaptureClock+=Dt;
+    if(FParse::Param(FCommandLine::Get(),TEXT("FactoryInspectionCapture")))
+    {
+        const FString Folder=FPaths::ProjectSavedDir()/TEXT("FactoryInspectionPreview");IFileManager::Get().MakeDirectory(*Folder,true);
+        if(CaptureStage==0&&CaptureClock>2){bUIProbePassed=RunInspectionChecks();bUIProbeDone=true;FocusWorkcell();CaptureStage=1;}
+        if(CaptureStage==1&&CaptureClock>4){FScreenshotRequest::RequestScreenshot(Folder/TEXT("01_Selection.png"),true,false);CaptureStage=2;}
+        if(CaptureStage==2&&CaptureClock>5){OpenRobotPopup(Layout.Tasks[0].RobotId,{});PendingTaskId=TEXT("wheel_fl");ChoosePart(TEXT("part_door_fr"));OpenDetails(EFactoryDetailTab::Problems);CaptureStage=3;}
+        if(CaptureStage==3&&CaptureClock>7){FScreenshotRequest::RequestScreenshot(Folder/TEXT("02_Problem.png"),true,false);CaptureStage=4;}
+        if(CaptureStage==4&&CaptureClock>8){CloseRobotPopup();ResetCycle();OpenDetails(EFactoryDetailTab::Sensors);CaptureStage=5;}
+        if(CaptureStage==5&&CaptureClock>9){bUIProbePassed=StartCycle()&&bUIProbePassed;CaptureStage=6;}
+        if(CaptureStage==6&&CaptureClock>12){FScreenshotRequest::RequestScreenshot(Folder/TEXT("03_Sensors.png"),true,false);CaptureStage=7;}
+        if(CaptureStage==7&&CaptureClock>14){FPlatformMisc::RequestExitWithStatus(false,bUIProbePassed?0:1);}
+        return;
+    }
     const FString Dir=FPaths::ProjectSavedDir()/TEXT("FactoryRuntimePreview");
     IFileManager::Get().MakeDirectory(*Dir,true);
     if(!bUIProbeDone&&CaptureClock>2){bUIProbePassed=RunUIChecks();bUIProbeDone=true;}

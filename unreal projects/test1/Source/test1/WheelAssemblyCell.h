@@ -97,6 +97,9 @@ public:
     bool UsesTaskBindings() const { return TaskRobots.Num()==4; }
     bool PrepareTaskLanes();
     int32 LaneCount() const { return UsesTaskBindings()?4:2; }
+    const FWheelLane* LaneSnapshot(int32 Lane) const { return Lane>=0&&Lane<4?&Lanes[Lane]:nullptr; }
+    int32 FailedWheelIndex=INDEX_NONE;
+    EWheelStage FailedStage=EWheelStage::Idle;
     bool LaneEnabled(int32 Lane) const { return !UsesTaskBindings()||!TaskQueue[Lane].IsEmpty(); }
     UWheelRobotSensorBank* SensorsFor(int32 Lane) const;
     bool SensorDrivenLane(int32 Lane) const;
@@ -189,6 +192,7 @@ private:
 	UPROPERTY() TArray<TObjectPtr<UStaticMeshComponent>> TireVisuals;
 	UPROPERTY() TArray<TObjectPtr<UStaticMeshComponent>> HubVisuals;
 	FWheelLane Lanes[4];
+    int32 EvaluatingLane=INDEX_NONE;
 	FTransform FastenedInBody[4];
 	FTransform BodyAtStart;
 	FTransform RobotAtStart[4];

@@ -4,6 +4,9 @@
 #include "WheelAssemblyCell.h"
 #include "DoorAssemblyCell.h"
 #include "RobotArm.h"
+#include "CamryAssembly.h"
+#include "EngineUtils.h"
+#include "Components/StaticMeshComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "GameFramework/PlayerController.h"
 #include "Camera/PlayerCameraManager.h"
@@ -56,12 +59,29 @@ bool AFactoryRuntime::RunDirectEditChecks()
         const FString After=Layout.ToJson();UndoEdit();Check(TEXT("part_drag_undo"),Layout.ToJson()==Before);RedoEdit();Check(TEXT("part_drag_redo"),Layout.ToJson()==After);UndoEdit();
     }
     FFactoryLayout Read;Check(TEXT("v5_roundtrip"),FFactoryLayout::FromJson(Layout.ToJson(),Read,Error)&&Read.ToJson()==Layout.ToJson());
-    auto Run=[&](){ResetCycle();for(int I=0;I<24;++I)StepSimulation(1./120);bool OK=StartCycle();
-        for(int I=0;I<36000&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)StepSimulation(1./120);return OK&&RunState==EFactoryRunState::Complete;};
+    auto* WheelCell=TestAssemblyLine->WheelCell.Get();
+    AVehicleProcessModule* Visual=nullptr;for(TActorIterator<AVehicleProcessModule> It(GetWorld());It;++It)if(It->VehicleFrame==WheelCell->Assembly&&It->ModuleId==FName(TEXT("Wheel_FL")))Visual=*It;
+    if(Visual)Visual->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+    ResetCycle();Check(TEXT("reset_rebinds_detached_visible_wheel"),Visual&&Visual->GetAttachParentActor()==WheelCell);
+    bool MeshFollow=true;int MeshSamples=0;
+    auto Run=[&](){ResetCycle();for(int I=0;I<24;++I)StepSimulation(1./120);
+        TArray<TPair<TWeakObjectPtr<UStaticMeshComponent>,FTransform>> MeshFrames[4];
+        const TCHAR* Parts[]={TEXT("part_wheel_fl"),TEXT("part_wheel_rl"),TEXT("part_wheel_fr"),TEXT("part_wheel_rr")};
+        for(int W=0;W<4;++W)for(auto* Mesh:ObjectMeshes(Parts[W]))MeshFrames[W].Add({Mesh,Mesh->GetComponentTransform().GetRelativeTransform(WheelCell->GetPhysicalPartWorld(W))});
+        bool OK=StartCycle();
+        for(int I=0;I<36000&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)
+        {StepSimulation(1./120);if(I%12==0)for(int W=0;W<4;++W){MeshFollow&=!MeshFrames[W].IsEmpty();for(const auto& F:MeshFrames[W]){++MeshSamples;MeshFollow&=F.Key.IsValid()&&F.Key->GetComponentTransform().Equals(F.Value*WheelCell->GetPhysicalPartWorld(W),.01);}}}
+        return OK&&RunState==EFactoryRunState::Complete;};
     Check(TEXT("two_wheels_two_doors_complete_with_independent_inspection"),Run()&&TestAssemblyLine->WheelCell->MountedCount==4&&TestAssemblyLine->DoorCell->bDoorFastened&&RightDoorCell->bDoorFastened);
     if(RightDoorCell)UE_LOG(LogTemp,Display,TEXT("RIGHT_DOOR_DETAIL %s"),*RightDoorCell->Status);
     ResetCycle();Layout.PartOffsetsCm.Add(TEXT("part_wheel_fl"),FVector(5,0,0));Layout.PartOffsetsCm.Add(TEXT("part_door_fr"),FVector(0,3,0));Rebuild();
     Check(TEXT("moved_parts_used_by_sequence"),Run());
+    Check(TEXT("visible_wheel_meshes_follow_all_transfer_and_mount_steps"),MeshFollow&&MeshSamples>100);
+    ResetCycle();for(int I=0;I<24;++I)StepSimulation(1./120);const bool Started=StartCycle();
+    if(Visual)Visual->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+    bool DetachBlocked=false;for(int I=0;I<2400&&RunState!=EFactoryRunState::Fault;++I)StepSimulation(1./120);
+    DetachBlocked=RunState==EFactoryRunState::Fault;
+    Check(TEXT("detached_visual_cannot_be_reported_as_installed"),Started&&DetachBlocked&&WheelCell->MountedCount==0);
     ResetCycle();Layout=Original;Rebuild();History.Clear();bSnap=true;CloseRobotPopup();FocusWorkcell();
     auto Report=MakeShared<FJsonObject>();Report->SetBoolField(TEXT("success"),Pass);Report->SetArrayField(TEXT("checks"),Checks);
     Report->SetStringField(TEXT("scope"),TEXT("Runtime picking/drag handlers with projected camera rays, independent two-door cycle. Not OS mouse injection or certified contact physics."));
