@@ -207,6 +207,7 @@ void AFactoryRuntime::CreatePanel()
     if(bUseAssemblyIntegration)
     {
         Heading(TEXT("이식된 센서 기능 확인"));
+        Label(TEXT("물리 파지 시험: 정상 운반은 초록 휠 표식, 저마찰·과중량은 빨간 표식과 파지 해제 후 휠 낙하를 확인하세요. 질량·힘·미끄러짐 수치는 상단 공정 상태에 표시됩니다. 점질량 운반 시연이며 Chaos 충돌은 아닙니다."));
         Rows->AddSlot().AutoHeight().Padding(0,3)[SNew(SCheckBox)
             .IsEnabled_Lambda([this](){return CanEdit()&&IsValid(TestAssemblyLine)&&IsValid(TestAssemblyLine->WheelCell);})
             .IsChecked_Lambda([this](){return IsValid(TestAssemblyLine)&&IsValid(TestAssemblyLine->WheelCell)&&TestAssemblyLine->WheelCell->bLaserScanFrontLeftHub?ECheckBoxState::Checked:ECheckBoxState::Unchecked;})
@@ -221,14 +222,15 @@ void AFactoryRuntime::CreatePanel()
             [SNew(STextBlock).Font(Font).Text(FText::FromString(TEXT("센서·휠 중심·장착점 표시"))) ]];
         Label(TEXT("흰색: 실제 휠 중심 / 노랑: 측정 위치\n빨강: 오래된 측정 / 초록: 장착 목표\n파랑 선: 위치 연결 표시"));
         Label(TEXT("검사 선택 → 센서 준비 후 상단 작업 실행\n왼쪽 앞 휠에서 선택한 사건을 재현합니다."));
-        const TCHAR* Names[]={TEXT("센서 정상"),TEXT("부품 누락·보충"),TEXT("위치 센서 끊김"),TEXT("파지 실패·재시도"),TEXT("휠 위치 변화"),TEXT("기존 난수 사건"),TEXT("물리 파지 · 정상 운반"),TEXT("물리 파지 · 저마찰")};
+        Label(TEXT("휠·차문 규격 검사는 부품 크기를 ±12% 바꾸고 공급 위치에서 레이저 측정한 폭/지름을 기준과 비교합니다. 빨간 측정선과 수치를 확인하세요. 차문 규격 검사는 휠 공정 후 시작합니다."));
+        const TCHAR* Names[]={TEXT("센서 정상"),TEXT("부품 누락·보충"),TEXT("위치 센서 끊김"),TEXT("파지 실패·재시도"),TEXT("휠 위치 변화"),TEXT("기존 난수 사건"),TEXT("물리 파지 · 정상 운반"),TEXT("물리 파지 · 저마찰"),TEXT("물리 파지 · 과중량 휠"),TEXT("휠 규격 · 과대"),TEXT("휠 규격 · 과소"),TEXT("차문 규격 · 과대"),TEXT("차문 규격 · 과소"),TEXT("차체 도킹 초과 · 후진 복구")};
         for(int32 Kind=0;Kind<UE_ARRAY_COUNT(Names);++Kind)
             Rows->AddSlot().AutoHeight().Padding(0,2)[Button(Names[Kind],[this,Kind](){
                 if(IsValid(TestAssemblyLine)){TestAssemblyLine->SetFactoryCheck(Kind);ResetCycle();}
             },Editing)];
         Rows->AddSlot().AutoHeight().Padding(0,3)[SNew(STextBlock).Font(Font).ColorAndOpacity(Accent)
             .Text_Lambda([this](){
-                const TCHAR* Names[]={TEXT("센서 정상"),TEXT("부품 누락·보충"),TEXT("위치 센서 끊김"),TEXT("파지 실패·재시도"),TEXT("휠 위치 변화"),TEXT("기존 난수 사건"),TEXT("물리 파지 · 정상 운반"),TEXT("물리 파지 · 저마찰")};
+                const TCHAR* Names[]={TEXT("센서 정상"),TEXT("부품 누락·보충"),TEXT("위치 센서 끊김"),TEXT("파지 실패·재시도"),TEXT("휠 위치 변화"),TEXT("기존 난수 사건"),TEXT("물리 파지 · 정상 운반"),TEXT("물리 파지 · 저마찰"),TEXT("물리 파지 · 과중량 휠"),TEXT("휠 규격 · 과대"),TEXT("휠 규격 · 과소"),TEXT("차문 규격 · 과대"),TEXT("차문 규격 · 과소"),TEXT("차체 도킹 초과 · 후진 복구")};
                 return FText::FromString(IsValid(TestAssemblyLine)?FString(TEXT("선택: "))+Names[TestAssemblyLine->GetFactoryCheck()]:TEXT("조립 라인 연결 없음"));
             }).AutoWrapText(true)];
     }

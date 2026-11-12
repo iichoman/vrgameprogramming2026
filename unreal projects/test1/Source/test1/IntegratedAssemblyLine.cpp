@@ -140,6 +140,7 @@ void AIntegratedAssemblyLine::Fail(const FString& Reason)
 bool AIntegratedAssemblyLine::PrepareDoor(int32 Index)
 {
     if (!bFourDoorMode || !DoorModules.IsValidIndex(Index) || !IsValid(DoorModules[Index])) return false;
+    DoorCell->DoorSizeScale=1.0;
     const bool bRight = Index >= 2;
     DoorCell->TargetModule=DoorModules[Index];
     DoorCell->Robot=bRight ? RightDoorRobot.Get() : LeftDoorRobot.Get();

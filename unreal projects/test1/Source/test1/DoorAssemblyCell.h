@@ -9,6 +9,7 @@ class ARobotArm;
 class UDoorPoseComponent;
 class UDoorInspectionComponent;
 class AVehicleProcessModule;
+class UPrimitiveComponent;
 
 // BlueprintType is reflection metadata required by Unreal's Python enum wrapper.
 // All gameplay and UI remain native C++; no Blueprint assets or graphs are used.
@@ -69,6 +70,13 @@ public:
 	UPROPERTY(EditAnywhere, Category="Cell|Placement", meta=(Units="mm")) FVector InitialDoorOffsetMm=FVector::ZeroVector;
 	UPROPERTY(EditAnywhere, Category="Cell|Placement") FRotator InitialDoorRotationDeg=FRotator::ZeroRotator;
 	UPROPERTY(EditAnywhere, Category="Cell|Placement") bool bDoorPresent=true;
+	/** Demonstration defect on the first left door only. */
+	double DoorSizeScale=1.0;
+	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Laser") double MeasuredDoorWidthCm=0;
+	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Laser") double NominalDoorWidthCm=0;
+	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Laser") bool bDoorSizePassed=false;
+	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Laser") FVector DoorSizeLeftHitWorld=FVector::ZeroVector;
+	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Laser") FVector DoorSizeRightHitWorld=FVector::ZeroVector;
 	UPROPERTY(EditAnywhere, Category="Cell|Placement") bool bPreservePlacedDoorOnBeginPlay=true;
 	/** Engineering assumptions for the current gripper's recovery window, not manufacturer limits. */
 	UPROPERTY(EditAnywhere, Category="Cell|Placement") double MaxPickupDisplacementMm=500;
@@ -114,6 +122,9 @@ public:
 	virtual void Tick(float DeltaSeconds) override;
 	virtual void EndPlay(const EEndPlayReason::Type Reason) override;
 private:
+	UPROPERTY() TObjectPtr<class UBoxComponent> DoorSizeProxy;
+	TMap<TWeakObjectPtr<UPrimitiveComponent>,FVector> OriginalDoorMeshScales;
+	bool ScanDoorSize();
 	UPROPERTY(Transient) TObjectPtr<UDoorPoseComponent> ModulePose;
     TWeakObjectPtr<UDoorPoseComponent> Pose;
 	TWeakObjectPtr<UDoorInspectionComponent> Inspection;

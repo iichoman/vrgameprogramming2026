@@ -6,6 +6,7 @@
 #include "VehicleProcessTest.h"
 #include "Components/PrimitiveComponent.h"
 #include "Components/SceneComponent.h"
+#include "Components/BoxComponent.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
@@ -16,11 +17,42 @@ ADoorAssemblyCell::ADoorAssemblyCell()
 {
 	PrimaryActorTick.bCanEverTick=true;
 	RootComponent=CreateDefaultSubobject<USceneComponent>(TEXT("CellRoot"));
+	DoorSizeProxy=CreateDefaultSubobject<UBoxComponent>(TEXT("DoorSizeScanProxy"));
+	DoorSizeProxy->SetupAttachment(RootComponent);
+	DoorSizeProxy->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+	DoorSizeProxy->SetCollisionResponseToAllChannels(ECR_Ignore);
+	DoorSizeProxy->SetCollisionResponseToChannel(ECC_Visibility,ECR_Block);
+	DoorSizeProxy->SetHiddenInGame(true);
 }
 
 FString ADoorAssemblyCell::GetStateLabel() const
 {
 	return StaticEnum<EDoorAssemblyState>()->GetNameStringByValue(int64(State));
+}
+
+bool ADoorAssemblyCell::ScanDoorSize()
+{
+	if(!Pose.IsValid()||!DoorSizeProxy||DoorSizeScale<=0)return false;
+	FBox Bounds(ForceInit);
+	TArray<USceneComponent*> DoorParts;
+	Pose->GetControlledDoor()->GetChildrenComponents(true,DoorParts);
+	if(auto* RootPrimitive=Cast<UPrimitiveComponent>(Pose->GetControlledDoor()))Bounds+=RootPrimitive->Bounds.GetBox();
+	for(auto* C:DoorParts)if(auto* P=Cast<UPrimitiveComponent>(C))Bounds+=P->Bounds.GetBox();
+	if(!Bounds.IsValid)return false;
+	const FVector Center=Bounds.GetCenter(),Extent=Bounds.GetExtent();
+	NominalDoorWidthCm=Extent.X*2/DoorSizeScale;
+	DoorSizeProxy->SetBoxExtent(Extent);
+	DoorSizeProxy->SetWorldLocation(Center);
+	DoorSizeProxy->SetWorldRotation(FRotator::ZeroRotator);
+	FHitResult Left,Right;
+	const double Reach=Extent.X+100;
+	const bool HitLeft=DoorSizeProxy->LineTraceComponent(Left,Center-FVector(Reach,0,0),Center+FVector(Reach,0,0),FCollisionQueryParams(SCENE_QUERY_STAT(DoorSizeLaser),false));
+	const bool HitRight=DoorSizeProxy->LineTraceComponent(Right,Center+FVector(Reach,0,0),Center-FVector(Reach,0,0),FCollisionQueryParams(SCENE_QUERY_STAT(DoorSizeLaser),false));
+	DoorSizeLeftHitWorld=HitLeft?Left.ImpactPoint:FVector::ZeroVector;
+	DoorSizeRightHitWorld=HitRight?Right.ImpactPoint:FVector::ZeroVector;
+	MeasuredDoorWidthCm=HitLeft&&HitRight?FVector::Distance(Left.ImpactPoint,Right.ImpactPoint):0;
+	bDoorSizePassed=HitLeft&&HitRight&&FMath::Abs(MeasuredDoorWidthCm-NominalDoorWidthCm)<=1.0;
+	return bDoorSizePassed;
 }
 
 bool ADoorAssemblyCell::ValidateSetup()
@@ -90,6 +122,8 @@ FTransform ADoorAssemblyCell::GetPickupDoorWorld() const
 
 bool ADoorAssemblyCell::ResetCycle()
 {
+	for (const auto& Entry:OriginalDoorMeshScales) if(Entry.Key.IsValid())Entry.Key->SetRelativeScale3D(Entry.Value);
+	OriginalDoorMeshScales.Empty();
 	if (Robot) Robot->Halt();
 	FlushRecording();
 	if (!ValidateSetup() || !Robot->InitializeArm())
@@ -103,6 +137,13 @@ bool ADoorAssemblyCell::ResetCycle()
 	if (!Pose->SetDoorWorldPose(Initial)) { Fail(TEXT("Could not place door in the pickup station.")); return false; }
 	TArray<USceneComponent*> DoorChildren; Pose->GetControlledDoor()->GetChildrenComponents(true,DoorChildren);
 	for (auto* C:DoorChildren) if (auto* P=Cast<UPrimitiveComponent>(C)) P->SetVisibility(bDoorPresent);
+	MeasuredDoorWidthCm=NominalDoorWidthCm=0;bDoorSizePassed=false;
+	DoorSizeLeftHitWorld=DoorSizeRightHitWorld=FVector::ZeroVector;
+	if (DoorSizeScale!=1.0)
+	{
+		for(auto* C:DoorChildren)if(auto* P=Cast<UPrimitiveComponent>(C))
+		{OriginalDoorMeshScales.Add(P,P->GetRelativeScale3D());P->SetRelativeScale3D(P->GetRelativeScale3D()*DoorSizeScale);}
+	}
 	RefreshQuality(); MeasureSensors();
 	TargetTCPWorld=Robot->GetTCPWorld(); MeasureTCP();
 	EnterState(EDoorAssemblyState::Idle,TEXT("Ready. Enter/Start runs the cycle; Space stops; R resets."));
@@ -122,6 +163,8 @@ bool ADoorAssemblyCell::StartCycle()
 		CSVBuffer+=TEXT("\n");
 	}
 	PickupAtStart=Pose->GetControlledDoor()->GetComponentTransform();
+	if(DoorSizeScale!=1.0&&!ScanDoorSize())
+	{Fail(FString::Printf(TEXT("차문 규격 불량 · 레이저 폭 %.1fcm / 기준 %.1fcm ± 1.0cm"),MeasuredDoorWidthCm,NominalDoorWidthCm));return false;}
 	WriteRunMetadata();
 	if (!CheckPickup()) { Fail(Status); return false; }
 	if (!MeasureSensors()) { Fail(TEXT("Invalid alignment sensor input.")); return false; }

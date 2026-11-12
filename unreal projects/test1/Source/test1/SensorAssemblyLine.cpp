@@ -1,5 +1,6 @@
 #include "SensorAssemblyLine.h"
 #include "WheelAssemblyCell.h"
+#include "DoorAssemblyCell.h"
 #include "RobotArm.h"
 #include "CamryAssembly.h"
 #include "Components/SceneComponent.h"
@@ -77,6 +78,7 @@ bool ASensorAssemblyLine::ResetLine()
     if (!Super::ResetLine()) return false;
     WheelCell->bEnableTransport=false;
     SensorTime=Remainder=RunTime=StableTime=NoProgressTime=0;
+    MaxDockOvershootCm=0;bDockOvershootRecovered=false;bOvershootOutbound=bOvershootReturning=false;
     bInjected=bStopRecorded=bLoggedComplete=false; LastLeftRobotState.Reset();
     ArrivalPhase=EArrivalPhase::Ready;
     Sensors->Reset(WheelCell->Assembly,VehicleAtWheelStation);
@@ -172,7 +174,30 @@ void ASensorAssemblyLine::FixedStep(double Dt)
     const double Speed=Sensors->Speed.Value.Size();
     if (ArrivalPhase==EArrivalPhase::Moving)
     {
-        if (Arrived)
+        if (bDemoDockOvershoot && Arrived && !bOvershootOutbound)
+        {
+            OvershootDirectionWorld=Conveyor->Velocity.GetSafeNormal();
+            OvershootTarget=Conveyor->Target+OvershootDirectionWorld*35.0;
+            Conveyor->Target=OvershootTarget;
+            bOvershootOutbound=true;
+            Status=TEXT("도착 감지 · 정지점 초과 재현 중");
+            Record(TEXT("OVERSHOOT_INJECT"),TEXT("conveyor target 35 cm beyond station"));
+        }
+        else if (bOvershootOutbound && !bOvershootReturning)
+        {
+            MaxDockOvershootCm=FMath::Max(MaxDockOvershootCm,
+                FMath::Max(0.0,FVector::DotProduct(WheelCell->Assembly->GetActorLocation()-VehicleAtWheelStation.GetLocation(),OvershootDirectionWorld)));
+            Status=FString::Printf(TEXT("도킹 초과 %.1fcm · 후진 준비"),MaxDockOvershootCm);
+            if(FVector::Distance(WheelCell->Assembly->GetActorLocation(),OvershootTarget)<0.5 && Speed<=StopSpeedCmS)
+            {Conveyor->Target=VehicleAtWheelStation.GetLocation();bOvershootReturning=true;Record(TEXT("REVERSE_COMMAND"),TEXT("return to dock"));}
+        }
+        else if(bOvershootReturning)
+        {
+            Status=FString::Printf(TEXT("후진 재도킹 · 현재 오차 %.1fcm / 최대 초과 %.1fcm"),Sensors->Position.Value.Size(),MaxDockOvershootCm);
+            if(Sensors->Position.Value.Size()<=DockToleranceCm && Speed<=StopSpeedCmS)
+            {Conveyor->CommandRun(false);ArrivalPhase=EArrivalPhase::Docking;bDockOvershootRecovered=true;Record(TEXT("OVERSHOOT_RECOVERED"),TEXT("position and speed accepted"));}
+        }
+        else if (Arrived)
         {
             Conveyor->CommandRun(false); ArrivalPhase=EArrivalPhase::Docking;
             Status=TEXT("도착 감지 · 정지 명령, 위치와 속도 확인 중");
@@ -182,7 +207,7 @@ void ASensorAssemblyLine::FixedStep(double Dt)
         {
             NoProgressTime=Speed<=StopSpeedCmS ? NoProgressTime+Dt : 0;
             if (RunTime>1 && NoProgressTime>1.5) { SensorFault(TEXT("이송 정체: 이동 명령 중 측정 속도가 1.5초간 정지")); return; }
-            if (RunTime>ArrivalTimeoutSeconds) { SensorFault(TEXT("도착 제한시간 초과")); return; }
+            if (RunTime>ArrivalTimeoutSeconds+(bDemoDockOvershoot?10.0:0.0)) { SensorFault(TEXT("도착 제한시간 초과")); return; }
         }
     }
     else if (ArrivalPhase==EArrivalPhase::Docking)
@@ -225,6 +250,38 @@ void ASensorAssemblyLine::Tick(float Seconds)
 void ASensorAssemblyLine::DrawSensorVisualization() const
 {
     if (!bShowSensorVisualization || !Sensors || !GetWorld() || (GetWorld()->WorldType!=EWorldType::PIE && GetWorld()->WorldType!=EWorldType::Game)) return;
+	if(DoorCell&&DoorCell->DoorSizeScale!=1.0&&DoorCell->MeasuredDoorWidthCm>0)
+	{
+		const FColor Color=DoorCell->bDoorSizePassed?FColor::Green:FColor::Red;
+		DrawDebugLine(GetWorld(),DoorCell->DoorSizeLeftHitWorld,DoorCell->DoorSizeRightHitWorld,Color,false,.08f,0,4.f);
+		DrawDebugSphere(GetWorld(),DoorCell->DoorSizeLeftHitWorld,6,10,Color,false,.08f,0,2.f);
+		DrawDebugSphere(GetWorld(),DoorCell->DoorSizeRightHitWorld,6,10,Color,false,.08f,0,2.f);
+		DrawDebugString(GetWorld(),(DoorCell->DoorSizeLeftHitWorld+DoorCell->DoorSizeRightHitWorld)*.5+FVector(0,0,65),
+			FString::Printf(TEXT("DOOR SIZE: %.1fcm / %.1f +/- 1.0cm: %s"),DoorCell->MeasuredDoorWidthCm,DoorCell->NominalDoorWidthCm,
+				DoorCell->bDoorSizePassed?TEXT("PASS"):TEXT("REJECT")),nullptr,Color,.08f,false,1.f);
+	}
+	if (WheelCell && WheelCell->FrontLeftWheelMeasuredDiameterCm>0 && WheelCell->FrontLeftWheelSizeScale!=1.0)
+	{
+		const FColor SizeColor=WheelCell->bFrontLeftWheelSizePassed?FColor::Green:FColor::Red;
+		DrawDebugLine(GetWorld(),WheelCell->WheelSizeNearHitWorld,WheelCell->WheelSizeFarHitWorld,SizeColor,false,.08f,0,4.f);
+		DrawDebugSphere(GetWorld(),WheelCell->WheelSizeNearHitWorld,6,10,SizeColor,false,.08f,0,2.f);
+		DrawDebugSphere(GetWorld(),WheelCell->WheelSizeFarHitWorld,6,10,SizeColor,false,.08f,0,2.f);
+		DrawDebugString(GetWorld(),WheelCell->GetWheelWorld(0).GetLocation()+FVector(0,0,65),
+			FString::Printf(TEXT("WHEEL SIZE: %.1fcm / 66.0 +/- 1.0cm: %s"),WheelCell->FrontLeftWheelMeasuredDiameterCm,
+				WheelCell->bFrontLeftWheelSizePassed?TEXT("PASS"):TEXT("REJECT")),nullptr,SizeColor,.08f,false,1.f);
+	}
+	if (WheelCell && WheelCell->bPhysicalLeftGrip && WheelCell->GetLeftGripState().WheelIndex==0)
+	{
+		const FVector Wheel=WheelCell->GetWheelWorld(0).GetLocation();
+		const auto& Grip=WheelCell->GetLeftGripState();
+		const bool Released=WheelCell->Outcome==EWheelOutcome::Blocked && Grip.SlipMm>=3;
+		const FColor GripColor=Released?FColor::Red:FColor::Green;
+		DrawDebugSphere(GetWorld(),Wheel,22,16,GripColor,false,.08f,0,3.f);
+		DrawDebugString(GetWorld(),Wheel+FVector(0,0,80),
+			FString::Printf(TEXT("GRIP %s | mass %.0fkg | need %.0fN / applied %.0fN / limit %.0fN | slip %.1fmm"),
+				Released?TEXT("RELEASED"):TEXT("ACTIVE"),WheelCell->FrontLeftWheelMassKg,Grip.DemandN,Grip.AppliedForceN,Grip.CapacityN,Grip.SlipMm),
+			nullptr,GripColor,.08f,false,1.f);
+	}
 	if (WheelCell && WheelCell->bLaserScanFrontLeftHub)
 	{
 		const FWheelHubScanReading* Stages[]={&WheelCell->FrontLeftDockScan,&WheelCell->FrontLeftPreMountScan,&WheelCell->FrontLeftFinalWheelScan};

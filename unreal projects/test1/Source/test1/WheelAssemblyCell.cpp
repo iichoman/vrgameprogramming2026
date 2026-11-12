@@ -149,6 +149,7 @@ bool AWheelAssemblyCell::ScanFrontLeftHub(bool bScanWheel)
 	constexpr double RadiusCm = 8.0;
 	constexpr double RangeCm = 1500.0;
 	constexpr double MaxResidualMm = 1.0;
+	FrontLeftHubProxy->SetSphereRadius(RadiusCm);
 	FrontLeftHubProxy->SetWorldLocation(bScanWheel?GetWheelWorld(0).GetLocation():GetMountWorld(0).GetLocation());
 	const FVector NominalCenter = bScanWheel?FrontLeftHubScan.MeasuredWorld.GetLocation():(FTransform(FQuat::Identity,
 		MountCentersCm.Num() == 4 ? MountCentersCm[0] : FVector(FrontXcm,-HubHalfTrackCm,HubHeightCm)) * BodyAtStart).GetLocation();
@@ -188,6 +189,24 @@ bool AWheelAssemblyCell::ScanFrontLeftHub(bool bScanWheel)
 	Reading.MeasuredWorld = FTransform(BodyAtStart.GetRotation(),Estimated);
 	Reading.bValid = true;
 	return true;
+}
+
+bool AWheelAssemblyCell::ScanFrontLeftWheelSize()
+{
+	if (!IsValid(FrontLeftHubProxy)) return false;
+	constexpr double NominalRadiusCm=33.0;
+	FrontLeftHubProxy->SetSphereRadius(NominalRadiusCm*FrontLeftWheelSizeScale);
+	const FVector Center=GetWheelWorld(0).GetLocation();
+	FrontLeftHubProxy->SetWorldLocation(Center);
+	const FVector Axis=BodyAtStart.TransformVectorNoScale(FVector(1,0,0)).GetSafeNormal();
+	FHitResult NearHit,FarHit;
+	const bool Near=FrontLeftHubProxy->LineTraceComponent(NearHit,Center-Axis*100,Center+Axis*100,FCollisionQueryParams(SCENE_QUERY_STAT(WheelSizeLaser),false));
+	const bool Far=FrontLeftHubProxy->LineTraceComponent(FarHit,Center+Axis*100,Center-Axis*100,FCollisionQueryParams(SCENE_QUERY_STAT(WheelSizeLaser),false));
+	WheelSizeNearHitWorld=Near?NearHit.ImpactPoint:FVector::ZeroVector;
+	WheelSizeFarHitWorld=Far?FarHit.ImpactPoint:FVector::ZeroVector;
+	FrontLeftWheelMeasuredDiameterCm=Near&&Far?FVector::Distance(NearHit.ImpactPoint,FarHit.ImpactPoint):0;
+	bFrontLeftWheelSizePassed=Near&&Far&&FMath::Abs(FrontLeftWheelMeasuredDiameterCm-2*NominalRadiusCm)<=1.0;
+	return bFrontLeftWheelSizePassed;
 }
 
 FTransform AWheelAssemblyCell::GetPickupWorld(int32 Index) const
@@ -254,7 +273,7 @@ FString AWheelAssemblyCell::GetLeftSensorSummary() const
 		PoseFresh ? TEXT("유효") : TEXT("무효/지연"), GripFresh ? (LeftSensors->Gripped.bDetected ? TEXT("확인") : TEXT("미확인")) : TEXT("지연"),
 		LeftSensors->MountPose.Fresh(Now, LeftSensors->MaxAge) ? TEXT("유효") : TEXT("무효/지연"), Lanes[0].GripAttempts)
 		+ FString::Printf(TEXT(" · 경로 재계산 %d · 파지 재시도 %d"), LeftPickupReplans, LeftGripRetries)
-		+ (bPhysicalLeftGrip ? FString::Printf(TEXT("\n앞 휠 필요 힘 %.0f N · 전달 힘 %.0f N · 마찰 한계 %.0f N · 미끄러짐 %.1f mm"), Lanes[0].DemandN, Lanes[0].AppliedForceN, Lanes[0].CapacityN, Lanes[0].SlipMm) : FString())
+		+ (bPhysicalLeftGrip ? FString::Printf(TEXT("\n앞 휠 질량 %.0f kg · 필요 힘 %.0f N · 전달 힘 %.0f N · 마찰 한계 %.0f N · 미끄러짐 %.1f mm"), FrontLeftWheelMassKg, Lanes[0].DemandN, Lanes[0].AppliedForceN, Lanes[0].CapacityN, Lanes[0].SlipMm) : FString())
 		+ (bLaserScanFrontLeftHub ? FString::Printf(TEXT("\n레이저 도착 %s · 장착 직전 %s · 장착 후 %s\n광선 %d/5 · 잔차 %.2fmm · 실패 %s"),
 			FrontLeftDockScan.bValid ? TEXT("유효") : TEXT("대기/실패"),
 			FrontLeftPreMountScan.bValid ? TEXT("유효") : TEXT("대기/실패"),
@@ -354,8 +373,11 @@ bool AWheelAssemblyCell::ResetCycle()
 		bStationCaptured = true;
 	}
 	MountedCount = 0; SimulationTimeSeconds = 0; Accumulator = 0;
+	bLeftWheelSlipFall = false; LeftWheelSlipFallSeconds = 0; LeftWheelSlipVelocityCmps = FVector::ZeroVector;
 	FrontLeftHubScan = FWheelHubScanReading();
 	FrontLeftDockScan = FrontLeftPreMountScan = FrontLeftFinalWheelScan = FWheelHubScanReading();
+	FrontLeftWheelMeasuredDiameterCm = 0; bFrontLeftWheelSizePassed = false;
+	WheelSizeNearHitWorld = WheelSizeFarHitWorld = FVector::ZeroVector;
 	LeftPickupReplans = LeftGripRetries = 0;
 	Outcome = EWheelOutcome::NotEvaluated;
 	MountPositionErrorMm.Init(0, 4); MountOrientationErrorDeg.Init(0, 4); FastenedWheels.Init(false, 4);
@@ -369,6 +391,7 @@ bool AWheelAssemblyCell::ResetCycle()
 				* BodyAtStart.GetRotation().Inverse() * Initial.GetRotation()).GetNormalized());
 		}
 		WheelRoots[PartIndex(Index)]->SetWorldTransform(Initial);
+		TireVisuals[PartIndex(Index)]->SetRelativeScale3D(FVector(0.66,0.66,0.16)*(Index==0?FrontLeftWheelSizeScale:1.0));
 		const bool Visible = Index != FaultWheelIndex || bWheelPresent;
 		TireVisuals[PartIndex(Index)]->SetVisibility(Visible); HubVisuals[PartIndex(Index)]->SetVisibility(Visible);
 	}
@@ -421,6 +444,8 @@ bool AWheelAssemblyCell::BeginWheel(int32 Side)
     if (Lane.WheelIndex == 0 && bLaserScanFrontLeftHub && !ScanFrontLeftHub())
     { Fail(TEXT("왼쪽 앞 허브 레이저 스캔 실패 · ")+FrontLeftHubScan.FailureReason); return false; }
     if (Lane.WheelIndex == 0 && bLaserScanFrontLeftHub) FrontLeftDockScan=FrontLeftHubScan;
+    if (Lane.WheelIndex == 0 && FrontLeftWheelSizeScale != 1.0 && !ScanFrontLeftWheelSize())
+    { Fail(FString::Printf(TEXT("휠 규격 불량 · 레이저 측정 지름 %.1fcm / 기준 66.0cm ± 1.0cm"),FrontLeftWheelMeasuredDiameterCm)); return false; }
     auto* Sensors=SensorsFor(Side);
     // Rear-only robots first move through the calibrated, base-adjusted transit pose.
     if(UsesTaskBindings()&&Lane.Completed==0&&Lane.Stage==EWheelStage::Idle&&Lane.WheelIndex%2==1)
@@ -590,10 +615,20 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
         FTransform Target = Lane.WheelInTCP * Robot->GetTCPWorld();
         const bool Physical = bPhysicalLeftGrip && Lane.WheelIndex == 0;
         if (Physical)
-            Target.SetLocation(StepWheelGrip(Lane.LastCarried.GetLocation(), Target.GetLocation(), Dt, bLowFrictionGrip,
+            Target.SetLocation(StepWheelGrip(Lane.LastCarried.GetLocation(), Target.GetLocation(), Dt, bLowFrictionGrip, FrontLeftWheelMassKg,
                 Lane.GripVelocity, Lane.DemandN, Lane.CapacityN, Lane.SlipMm, Lane.AppliedForceN));
         WheelRoots[PartIndex(Lane.WheelIndex)]->SetWorldTransform(Target);
-        if (Physical && Lane.SlipMm >= 3.0) { Fail(TEXT("휠 미끄러짐 감지 · 운반 정지")); return; }
+        if (Physical && Lane.SlipMm >= 3.0)
+        {
+            bLeftWheelSlipFall = true;
+            LeftWheelSlipFallSeconds = 0;
+            LeftWheelSlipVelocityCmps = BodyAtStart.TransformVectorNoScale(FVector(0,-100,0));
+            Lane.bHeld = false;
+            if (Sensors) Sensors->CommandGrip(false);
+            Fail(FString::Printf(TEXT("%s · 휠 질량 %.0fkg · 미끄러짐 %.1fmm · 필요 %.0fN > 마찰 한계 %.0fN · 파지 해제/낙하"),
+                bLowFrictionGrip?TEXT("저마찰"):TEXT("과중량"),FrontLeftWheelMassKg,Lane.SlipMm,Lane.DemandN,Lane.CapacityN));
+            return;
+        }
     }
 	Lane.LastCarried = GetWheelWorld(Lane.WheelIndex);
 	const FTransform CurrentTCP = Robot->GetTCPWorld();
@@ -838,10 +873,33 @@ void AWheelAssemblyCell::UpdateFastenedWheels()
 		if (FastenedWheels.IsValidIndex(I) && FastenedWheels[I])
 			WheelRoots[PartIndex(I)]->SetWorldTransform(FastenedInBody[I] * Assembly->GetBodyFrame()->GetComponentTransform());
 }
+void AWheelAssemblyCell::AdvanceLeftWheelSlipFall(double DeltaSeconds)
+{
+	if (!bLeftWheelSlipFall || !WheelRoots.IsValidIndex(PartIndex(0)) || !WheelRoots[PartIndex(0)]) return;
+	const double Dt=FMath::Clamp(DeltaSeconds,0.0,0.05);
+	if (Dt<=0) return;
+	LeftWheelSlipFallSeconds+=Dt;
+	const double GroundCenterZ=FMath::Min(GetPickupWorld(0).GetLocation().Z,GetMountWorld(0).GetLocation().Z)-25.0;
+	FTransform Pose=GetWheelWorld(0);
+	FVector Position=Pose.GetLocation();
+	LeftWheelSlipVelocityCmps.Z-=981.0*Dt;
+	Position+=LeftWheelSlipVelocityCmps*Dt;
+	if (Position.Z<=GroundCenterZ)
+	{
+		Position.Z=GroundCenterZ;
+		LeftWheelSlipVelocityCmps.Z=0;
+		LeftWheelSlipVelocityCmps.X*=FMath::Exp(-2.0*Dt);
+		LeftWheelSlipVelocityCmps.Y*=FMath::Exp(-2.0*Dt);
+	}
+	Pose.SetLocation(Position);
+	WheelRoots[PartIndex(0)]->SetWorldTransform(Pose);
+	if (LeftWheelSlipFallSeconds>=2.0) bLeftWheelSlipFall=false;
+}
 void AWheelAssemblyCell::BeginPlay() { Super::BeginPlay(); if (!bExternallyDriven) ResetCycle(); }
 void AWheelAssemblyCell::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	AdvanceLeftWheelSlipFall(DeltaSeconds);
 	if (bExternallyDriven) return;
 	if (DeltaSeconds > 1 && bRunning) { StopCycle(); Status = TEXT("Large frame stall; reset required."); return; }
 	AdvanceSimulation(DeltaSeconds);

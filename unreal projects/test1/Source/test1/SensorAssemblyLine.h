@@ -81,6 +81,9 @@ public:
     UPROPERTY(EditAnywhere) double StableSeconds = .5;
     UPROPERTY(EditAnywhere) double ArrivalTimeoutSeconds = 15;
     UPROPERTY(EditAnywhere) bool bShowSensorVisualization = true;
+    bool bDemoDockOvershoot=false;
+    UPROPERTY(VisibleAnywhere, Transient) double MaxDockOvershootCm=0;
+    UPROPERTY(VisibleAnywhere, Transient) bool bDockOvershootRecovered=false;
     UPROPERTY(VisibleAnywhere, Transient) double SensorTime = 0;
     UPROPERTY(VisibleAnywhere, Transient) FString EventLog;
     UFUNCTION() virtual bool SelectDemo(EArrivalDemo Selection);
@@ -95,6 +98,9 @@ protected:
 	virtual void BeforeSensorStep(double Dt) {}
 	void Record(const FString& Kind, const FString& Message);
 private:
+    bool bOvershootOutbound=false,bOvershootReturning=false;
+    FVector OvershootTarget=FVector::ZeroVector;
+    FVector OvershootDirectionWorld=FVector::ZeroVector;
     double Remainder=0, RunTime=0, StableTime=0, NoProgressTime=0;
     bool bInjected=false, bStopRecorded=false, bLoggedComplete=false;
 	FString LastLeftRobotState;

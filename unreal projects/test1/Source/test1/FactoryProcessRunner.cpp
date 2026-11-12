@@ -160,7 +160,7 @@ bool UFactoryWheelProcessRunner::UpdatePhysicalGrip(FTransform& WheelPose, doubl
 {
     const FVector Previous = Runtime()->WheelRoot->GetComponentLocation();
     const FVector Target = WheelPose.GetLocation();
-    const FVector Actual = StepWheelGrip(Previous, Target, Dt, FeatureKind == 6, WheelVelocityMps, GripDemandN, GripCapacityN, SlipMm, AppliedGripForceN);
+    const FVector Actual = StepWheelGrip(Previous, Target, Dt, FeatureKind == 6, 18.0, WheelVelocityMps, GripDemandN, GripCapacityN, SlipMm, AppliedGripForceN);
     WheelPose.SetLocation(Actual);
     return SlipMm < 3.0;
 }

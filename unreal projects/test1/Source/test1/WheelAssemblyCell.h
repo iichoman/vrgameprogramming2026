@@ -114,6 +114,17 @@ public:
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") FWheelHubScanReading FrontLeftFinalWheelScan;
     bool bPhysicalLeftGrip = false;
     bool bLowFrictionGrip = false;
+    double FrontLeftWheelMassKg = 18.0;
+    double FrontLeftWheelSizeScale = 1.0;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") double FrontLeftWheelMeasuredDiameterCm = 0;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") bool bFrontLeftWheelSizePassed = false;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") FVector WheelSizeNearHitWorld = FVector::ZeroVector;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") FVector WheelSizeFarHitWorld = FVector::ZeroVector;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Grip") bool bLeftWheelSlipFall = false;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Grip") double LeftWheelSlipFallSeconds = 0;
+    FVector LeftWheelSlipVelocityCmps = FVector::ZeroVector;
+    void AdvanceLeftWheelSlipFall(double DeltaSeconds);
+    const FWheelLane& GetLeftGripState() const { return Lanes[0]; }
     // Runtime adapter bindings, ordered LF/LR/RF/RR. Empty preserves standalone demos.
     UPROPERTY(Transient) TArray<TObjectPtr<ARobotArm>> TaskRobots;
     UPROPERTY(Transient) TArray<TObjectPtr<UWheelRobotSensorBank>> TaskSensors;
@@ -245,5 +256,6 @@ private:
 	FTransform TCPFor(int32 Side) const;
 	FTransform OffsetOutward(const FTransform& Pose, int32 Side, double Centimeters) const;
 	bool BeginWheel(int32 Side);
+	bool ScanFrontLeftWheelSize();
 	void WaitForLeftSensor(int32 Side, EWheelStage WaitStage, const FString& Message);
 };

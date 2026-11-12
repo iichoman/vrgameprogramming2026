@@ -1,11 +1,10 @@
 #pragma once
 #include "CoreMinimal.h"
 
-inline FVector StepWheelGrip(const FVector& Previous, const FVector& Target, double Dt, bool LowFriction,
+inline FVector StepWheelGrip(const FVector& Previous, const FVector& Target, double Dt, bool LowFriction, double MassKg,
     FVector& WheelVelocityMps, double& GripDemandN, double& GripCapacityN, double& SlipMm,
     double& AppliedGripForceN)
 {
-    constexpr double MassKg = 18.0;
     constexpr double TotalPadForceN = 1200.0;
     const double Friction = LowFriction ? 0.08 : 0.65;
     GripCapacityN = TotalPadForceN * Friction;

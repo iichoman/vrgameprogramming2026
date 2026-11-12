@@ -1,5 +1,6 @@
 #include "AutonomousAssemblyLine.h"
 #include "WheelAssemblyCell.h"
+#include "DoorAssemblyCell.h"
 
 bool AAutonomousAssemblyLine::SelectDemo(EArrivalDemo Selection)
 {
@@ -35,12 +36,16 @@ bool AAutonomousAssemblyLine::ResetLine()
 
 void AAutonomousAssemblyLine::SetFactoryCheck(int32 Kind)
 {
-	FactoryCheck = FMath::Clamp(Kind, 0, 7);
+	FactoryCheck = FMath::Clamp(Kind, 0, 13);
     if (WheelCell)
     {
-        WheelCell->bPhysicalLeftGrip = FactoryCheck >= 6;
+        WheelCell->bPhysicalLeftGrip = FactoryCheck >= 6 && FactoryCheck <= 8;
         WheelCell->bLowFrictionGrip = FactoryCheck == 7;
+        WheelCell->FrontLeftWheelMassKg = FactoryCheck == 8 ? 90.0 : 18.0;
+        WheelCell->FrontLeftWheelSizeScale = FactoryCheck == 9 ? 1.12 : FactoryCheck == 10 ? 0.88 : 1.0;
     }
+    bDemoDockOvershoot=FactoryCheck==13;
+    if(DoorCell)DoorCell->DoorSizeScale=FactoryCheck==11?1.12:FactoryCheck==12?0.88:1.0;
 }
 
 void AAutonomousAssemblyLine::InjectEvent(int32 Index)
