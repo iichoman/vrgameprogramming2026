@@ -133,12 +133,20 @@ bool AFactoryRuntime::RunModularEditorChecks()
         bool NormalDoorSizeObserved=false;
         bool SupplyTransitObserved=false;
         TOptional<FVector> SupplyTransitFirstPosition;
+        bool GripRetryMovementObserved=false;
+        TOptional<FVector> GripRetryFirstTcp;
         for(int32 I=0;I<120*300&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)
         {
             StepSimulation(1./120);
             const auto Stage=TestAssemblyLine->WheelCell->GetLeftStage();
             WaitObserved|=(Kind==1&&Stage==EWheelStage::WaitSupply)||(Kind==2&&Stage==EWheelStage::WaitPose);
             const auto& Grip=TestAssemblyLine->WheelCell->GetLeftGripState();
+            if(Kind==3&&TestAssemblyLine->WheelCell->LeftGripRetries>0)
+            {
+                const FVector CurrentTcp=TestAssemblyLine->WheelCell->LeftRobot->GetTCPWorld().GetLocation();
+                if(!GripRetryFirstTcp.IsSet())GripRetryFirstTcp=CurrentTcp;
+                GripRetryMovementObserved|=FVector::Distance(GripRetryFirstTcp.GetValue(),CurrentTcp)>5.0;
+            }
             NormalGripObserved|=Kind==6&&Grip.AppliedForceN>0&&Grip.AppliedForceN<=Grip.CapacityN+1.e-6&&Grip.SlipMm<3.0;
             NormalWheelSizeObserved|=Kind==0&&TestAssemblyLine->WheelCell->bFrontLeftWheelSizePassed
                 &&FMath::IsNearlyEqual(TestAssemblyLine->WheelCell->FrontLeftWheelMeasuredDiameterCm,66.0,1.0);
@@ -184,6 +192,8 @@ bool AFactoryRuntime::RunModularEditorChecks()
         if(Kind==4)
             Check(TEXT("replanned_pickup_has_distinct_before_after_positions"),
                 Cell->LeftPickupReplans>0&&FVector::Distance(Cell->PreviousPickupWorld,Cell->ReplannedPickupWorld)>=3.0);
+        if(Kind==3)
+            Check(TEXT("grip_retry_retracts_and_moves_tcp_before_regrip"),GripRetryMovementObserved);
         if(Kind==6)
             Check(TEXT("normal_grip_stays_within_force_limit"),NormalGripObserved);
         if(Kind==0)

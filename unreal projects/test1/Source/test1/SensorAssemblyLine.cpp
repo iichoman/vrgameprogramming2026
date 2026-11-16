@@ -352,6 +352,15 @@ void ASensorAssemblyLine::DrawSensorVisualization() const
 		DrawDebugString(GetWorld(),TCP+FVector(0,0,45),
 			FString::Printf(TEXT("LEFT SENSOR: wheel %s | grip %s"),Present?TEXT("YES"):TEXT("NO"),Gripped?TEXT("YES"):TEXT("NO")),
 			nullptr,ArmColor,.08f,false,1.f);
+		if(WheelCell->LeftGripRetries>0 && WheelCell->GetLeftStage()==EWheelStage::ApproachPickup)
+		{
+			const FVector Retreat=WheelCell->GetLeftGripState().TargetTCP.GetLocation();
+			DrawDebugLine(GetWorld(),TCP,Retreat,FColor::Cyan,false,.08f,0,2.f);
+			DrawDebugSphere(GetWorld(),Retreat,11,12,FColor::Cyan,false,.08f,0,2.f);
+			DrawDebugString(GetWorld(),Retreat+FVector(0,0,55),
+				FString::Printf(TEXT("GRIP RETRY %d: RETREAT THEN REAPPROACH"),WheelCell->LeftGripRetries),
+				nullptr,FColor::Cyan,.08f,false,1.f);
+		}
 		if (ArmSensors->PickupPose.bValid && ArmSensors->PickupPose.MeasuredAt>=0)
 		{
 			const FVector Measured=ArmSensors->PickupPose.Pose.GetLocation();

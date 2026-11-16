@@ -706,7 +706,14 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
 				{
 					if (Lane.GripAttempts >= (bAutoRecoverLeftRobot ? MaxAutoGripAttempts : 2))
 						Fail(TEXT("Left robot: grip recovery attempts exhausted."));
-					else { Sensors->CommandGrip(false); Lane.bGripCommanded = false; ++LeftGripRetries; Status = TEXT("Left arm: grip not confirmed; retrying"); }
+					else
+					{
+						Sensors->CommandGrip(false);
+						Lane.bGripCommanded = false;
+						++LeftGripRetries;
+						if (MoveTo(Side,EWheelStage::ApproachPickup,OffsetOutward(Lane.Pickup,Side,25)))
+							Status=TEXT("파지 미확인 · 그리퍼 열고 후퇴 후 재접근");
+					}
 				}
 				break;
 			}
