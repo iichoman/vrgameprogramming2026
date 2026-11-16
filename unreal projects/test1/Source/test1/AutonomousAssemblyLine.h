@@ -23,6 +23,7 @@ public:
 	virtual bool SelectDemo(EArrivalDemo Selection) override;
 	virtual bool ResetLine() override;
 	virtual FString GetSummary() const override;
+	virtual void Tick(float Seconds) override;
 	// 0: no injected event, 1..4: first left wheel only, 5: original seeded mode.
 	void SetFactoryCheck(int32 Kind);
 	int32 GetFactoryCheck() const { return FactoryCheck; }
@@ -35,8 +36,13 @@ private:
 	double FirstSeenAt[2] = {-1,-1};
 	double TriggerAfter[2] = {0,0};
 	double RestoreAt[2] = {-1,-1};
+	double SupplyTravelStartedAt[2] = {-1,-1};
+	FVector SupplyTravelFrom[2];
+	FVector SupplyTravelTo[2];
+	static constexpr double SupplyTravelSeconds = 1.6;
 	bool bInjected[2] = {false,false};
 	bool bRestored[2] = {false,false};
 	void InjectEvent(int32 Index);
 	void RestoreEvent(int32 Index);
+	void AdvanceSupplyDelivery(int32 Index);
 };

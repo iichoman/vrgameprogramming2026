@@ -1,6 +1,8 @@
 #include "AutonomousAssemblyLine.h"
 #include "WheelAssemblyCell.h"
 #include "DoorAssemblyCell.h"
+#include "CamryAssembly.h"
+#include "DrawDebugHelpers.h"
 
 bool AAutonomousAssemblyLine::SelectDemo(EArrivalDemo Selection)
 {
@@ -20,7 +22,8 @@ bool AAutonomousAssemblyLine::ResetLine()
 	for (int32 Index=0; Index<2; ++Index)
 	{
 		Planned[Index] = ERandomWheelEvent(Random.RandRange(0,3));
-		FirstSeenAt[Index] = RestoreAt[Index] = -1;
+		FirstSeenAt[Index] = RestoreAt[Index] = SupplyTravelStartedAt[Index] = -1;
+		SupplyTravelFrom[Index] = SupplyTravelTo[Index] = FVector::ZeroVector;
 		TriggerAfter[Index] = Random.FRandRange(.1,.4);
 		bInjected[Index] = bRestored[Index] = false;
 	}
@@ -58,6 +61,10 @@ void AAutonomousAssemblyLine::InjectEvent(int32 Index)
 	{
 	case ERandomWheelEvent::SupplyMissing:
 		WheelCell->SetLeftWheelSupplyVisible(Index,false);
+		SupplyTravelTo[Index] = WheelCell->GetWheelWorld(Index).GetLocation();
+		SupplyTravelFrom[Index] = SupplyTravelTo[Index]
+			+ WheelCell->Assembly->GetBodyFrame()->GetComponentTransform().TransformVectorNoScale(FVector(0,-160,0));
+		WheelCell->DisplaceLeftWheel(Index,SupplyTravelFrom[Index]-SupplyTravelTo[Index]);
 		RestoreAt[Index] = SensorTime + RecoveryDelay;
 		ActiveEvent = FString::Printf(TEXT("타이어 %d 누락 → 자동 공급 요청"),Index+1);
 		break;
@@ -78,6 +85,25 @@ void AAutonomousAssemblyLine::InjectEvent(int32 Index)
 		break;
 	}
 	Record(TEXT("RANDOM_EVENT"),ActiveEvent);
+}
+
+void AAutonomousAssemblyLine::AdvanceSupplyDelivery(int32 Index)
+{
+	if (SupplyTravelStartedAt[Index]<0)
+	{
+		SupplyTravelStartedAt[Index]=SensorTime;
+		WheelCell->SetLeftWheelSupplyVisible(Index,true);
+		Record(TEXT("SPARE_DISPATCHED"),FString::Printf(TEXT("wheel %d moving from reserve to pickup"),Index+1));
+	}
+	const double Progress=FMath::Clamp((SensorTime-SupplyTravelStartedAt[Index])/SupplyTravelSeconds,0.0,1.0);
+	const FVector Desired=FMath::Lerp(SupplyTravelFrom[Index],SupplyTravelTo[Index],Progress);
+	WheelCell->DisplaceLeftWheel(Index,Desired-WheelCell->GetWheelWorld(Index).GetLocation());
+	ActiveEvent=FString::Printf(TEXT("예비 타이어 %d 공급 이송 %.0f%% → 도착 센서 확인"),Index+1,Progress*100.0);
+	// The wheel sensor samples after this plant step. Only its next fresh pickup-zone
+	// observation can release the robot from WaitSupply.
+	if (Progress>=1.0 && WheelCell->LeftSensors->Presence.Fresh(WheelCell->SimulationTimeSeconds,WheelCell->LeftSensors->MaxAge)
+		&& WheelCell->LeftSensors->Presence.bDetected)
+		RestoreEvent(Index);
 }
 
 void AAutonomousAssemblyLine::RestoreEvent(int32 Index)
@@ -108,7 +134,10 @@ void AAutonomousAssemblyLine::BeforeSensorStep(double Dt)
 	if (!WheelCell || !WheelCell->LeftSensors || ArrivalPhase!=EArrivalPhase::Released || Stage!=EAssemblyLineStage::Wheels) return;
 	for (int32 Index=0; Index<2; ++Index)
 		if (bInjected[Index] && !bRestored[Index] && RestoreAt[Index]>=0 && SensorTime>=RestoreAt[Index])
-			RestoreEvent(Index);
+		{
+			if (Planned[Index]==ERandomWheelEvent::SupplyMissing) AdvanceSupplyDelivery(Index);
+			else RestoreEvent(Index);
+		}
 	const int32 Index = WheelCell->GetActiveLeftWheelIndex();
 	if (Index<0 || Index>1 || bInjected[Index]) return;
 	const EWheelStage ArmStage = WheelCell->GetLeftStage();
@@ -125,4 +154,23 @@ FString AAutonomousAssemblyLine::GetSummary() const
 	return FString::Printf(TEXT("자율 복구 조립 실험 · 시드 %d · 실행 %d\n%s\n\n발생 %d/2 | 복구 %d/2\n%s\n%s\n\nEnter 시작 / Space 정지 / R 새 난수 실행\nF2 도킹 센서 / F3 왼팔 추적"),
 		CurrentSeed,RunNumber,*Status,InjectedEvents,RecoveredEvents,*ActiveEvent,
 		WheelCell ? *WheelCell->GetLeftSensorSummary() : TEXT("로봇 센서 없음"));
+}
+
+void AAutonomousAssemblyLine::Tick(float Seconds)
+{
+	Super::Tick(Seconds);
+	if (!bShowSensorVisualization || !GetWorld() ||
+		(GetWorld()->WorldType!=EWorldType::PIE && GetWorld()->WorldType!=EWorldType::Game)) return;
+	for (int32 Index=0;Index<2;++Index)
+	{
+		if (!bInjected[Index] || bRestored[Index] || Planned[Index]!=ERandomWheelEvent::SupplyMissing) continue;
+		const FVector Start=SupplyTravelFrom[Index], End=SupplyTravelTo[Index];
+		DrawDebugLine(GetWorld(),Start,End,FColor::Cyan,false,.08f,0,3.f);
+		DrawDebugSphere(GetWorld(),Start,12,12,FColor::Cyan,false,.08f,0,2.f);
+		DrawDebugSphere(GetWorld(),End,12,12,FColor::Green,false,.08f,0,2.f);
+		DrawDebugString(GetWorld(),End+FVector(0,0,60),
+			FString::Printf(TEXT("SPARE WHEEL %d: %s"),Index+1,
+				SupplyTravelStartedAt[Index]<0?TEXT("DISPATCH WAIT"):TEXT("MOVING TO SUPPLY SENSOR")),
+			nullptr,FColor::Cyan,.08f,false,1.f);
+	}
 }

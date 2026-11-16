@@ -45,6 +45,14 @@ void UWheelRobotSensorBank::Sample(double Now, const AWheelAssemblyCell* Cell, i
             PickupPose.Pose=M.MeasuredWorld;PickupPose.MeasuredAt=M.SampleTimeSeconds;}
         MountPose=PickupPose;
     }
+	// Supply presence is a pickup-zone observation, not merely mesh visibility.
+	// A wheel travelling from reserve remains unavailable until its measured pose
+	// enters the station. The same tolerance still accepts the 3-5 cm replan demo.
+	if (WheelIndex<2 && Cell->GetLeftGripState().WheelIndex==WheelIndex
+		&& !Cell->GetLeftGripState().bHeld && !Cell->GetLeftGripState().bFastened
+		&& PickupPose.Fresh(Now,MaxAge))
+		Presence.bDetected = Presence.bDetected
+			&& FVector::Distance(PickupPose.Pose.GetLocation(),Cell->GetPickupWorld(WheelIndex).GetLocation())<=8.0;
 }
 
 AWheelAssemblyCell::AWheelAssemblyCell()
@@ -267,7 +275,7 @@ FString AWheelAssemblyCell::GetLeftSensorSummary() const
 	const int32 Index = Lanes[0].WheelIndex;
 	const bool PoseFresh = LeftSensors->PickupPose.Fresh(Now, LeftSensors->MaxAge);
 	const bool GripFresh = LeftSensors->Gripped.Fresh(Now, LeftSensors->MaxAge);
-	return FString::Printf(TEXT("왼팔 %s · 타이어 %d · 부품 %s · 위치 %s · 파지 %s · 장착 측정 %s · 재시도 %d"),
+	return FString::Printf(TEXT("왼팔 %s · 타이어 %d · 공급위치 %s · 위치 %s · 파지 %s · 장착 측정 %s · 재시도 %d"),
 		*GetLaneStage(true), Index + 1,
 		LeftSensors->Presence.Fresh(Now, LeftSensors->MaxAge) ? (LeftSensors->Presence.bDetected ? TEXT("있음") : TEXT("없음")) : TEXT("신호 지연"),
 		PoseFresh ? TEXT("유효") : TEXT("무효/지연"), GripFresh ? (LeftSensors->Gripped.bDetected ? TEXT("확인") : TEXT("미확인")) : TEXT("지연"),
@@ -563,6 +571,8 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
 			|| FMath::RadiansToDegrees(Measured.GetRotation().AngularDistance(Expected.GetRotation())) > MaxPickupRotationDeg)
 		{ Fail(TEXT("Left robot: restored supply is outside pickup range.")); return; }
 		Lane.Pickup = Measured;
+		if (Lane.Stage==EWheelStage::WaitSupply && Lane.WheelIndex==0 && !ScanFrontLeftWheelSize())
+		{ Fail(FString::Printf(TEXT("보충 휠 규격 검사 실패 · 측정 지름 %.1fcm / 기준 66.0cm ± 1.0cm"),FrontLeftWheelMeasuredDiameterCm)); return; }
 		MoveTo(Side, EWheelStage::ApproachPickup, OffsetOutward(Measured, Side, 25));
 		return;
 	}

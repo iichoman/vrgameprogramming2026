@@ -131,6 +131,8 @@ bool AFactoryRuntime::RunModularEditorChecks()
         bool NormalGripObserved=false;
         bool NormalWheelSizeObserved=false;
         bool NormalDoorSizeObserved=false;
+        bool SupplyTransitObserved=false;
+        TOptional<FVector> SupplyTransitFirstPosition;
         for(int32 I=0;I<120*300&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)
         {
             StepSimulation(1./120);
@@ -142,6 +144,15 @@ bool AFactoryRuntime::RunModularEditorChecks()
                 &&FMath::IsNearlyEqual(TestAssemblyLine->WheelCell->FrontLeftWheelMeasuredDiameterCm,66.0,1.0);
             NormalDoorSizeObserved|=Kind==0&&TestAssemblyLine->DoorCell->bDoorSizePassed
                 &&TestAssemblyLine->DoorCell->MeasuredDoorWidthCm>0;
+            const auto* SupplyCell=TestAssemblyLine->WheelCell.Get();
+            if(Kind==1&&SupplyCell->IsWheelVisible(0)
+                &&FVector::Distance(SupplyCell->GetWheelWorld(0).GetLocation(),SupplyCell->GetPickupWorld(0).GetLocation())>20.0
+                &&Stage==EWheelStage::WaitSupply&&!SupplyCell->LeftSensors->Presence.bDetected)
+            {
+                const FVector CurrentSupply=SupplyCell->GetWheelWorld(0).GetLocation();
+                if(!SupplyTransitFirstPosition.IsSet())SupplyTransitFirstPosition=CurrentSupply;
+                SupplyTransitObserved|=FVector::Distance(SupplyTransitFirstPosition.GetValue(),CurrentSupply)>40.0;
+            }
         }
         const auto* Line=TestAssemblyLine.Get();
         auto* Cell=Line->WheelCell.Get();
@@ -177,6 +188,8 @@ bool AFactoryRuntime::RunModularEditorChecks()
             Check(TEXT("normal_grip_stays_within_force_limit"),NormalGripObserved);
         if(Kind==0)
             Check(TEXT("normal_wheel_and_door_use_size_scan"),NormalWheelSizeObserved&&NormalDoorSizeObserved);
+        if(Kind==1)
+            Check(TEXT("missing_wheel_visible_supply_transit_waits_for_arrival_sensor"),SupplyTransitObserved);
         Check(*FString::Printf(TEXT("selected_sensor_case_%d"),Kind),
             Began&&RunState==EFactoryRunState::Complete&&Cell->MountedCount==4&&EventObserved&&DecisionObserved);
     }
