@@ -182,6 +182,11 @@ bool AFactoryRuntime::RunModularEditorChecks()
                 Began&&RunState==EFactoryRunState::Fault&&!Cell->bFrontLeftWheelSizePassed
                 &&(Kind==9?Cell->FrontLeftWheelMeasuredDiameterCm>67:Cell->FrontLeftWheelMeasuredDiameterCm<65)
                 &&!Cell->GetLeftGripState().bHeld&&Cell->MountedCount==0);
+            for(int32 TickIndex=0;TickIndex<40;++TickIndex)Cell->Tick(0.05f);
+            Check(Kind==9?TEXT("oversized_wheel_reaches_local_hold_point"):TEXT("undersized_wheel_reaches_local_hold_point"),
+                Cell->bFrontLeftWheelRejected&&!Cell->bFrontLeftWheelRejecting
+                &&FVector::Distance(Cell->GetWheelWorld(0).GetLocation(),Cell->WheelRejectTargetWorld)<0.5
+                &&FVector::Distance(Cell->WheelRejectStartWorld,Cell->WheelRejectTargetWorld)>170.0);
             continue;
         }
         if(Kind==7||Kind==8)

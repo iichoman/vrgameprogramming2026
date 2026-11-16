@@ -266,9 +266,19 @@ void ASensorAssemblyLine::DrawSensorVisualization() const
 		DrawDebugLine(GetWorld(),WheelCell->WheelSizeNearHitWorld,WheelCell->WheelSizeFarHitWorld,SizeColor,false,.08f,0,4.f);
 		DrawDebugSphere(GetWorld(),WheelCell->WheelSizeNearHitWorld,6,10,SizeColor,false,.08f,0,2.f);
 		DrawDebugSphere(GetWorld(),WheelCell->WheelSizeFarHitWorld,6,10,SizeColor,false,.08f,0,2.f);
-		DrawDebugString(GetWorld(),WheelCell->GetWheelWorld(0).GetLocation()+FVector(0,0,65),
+		DrawDebugString(GetWorld(),(WheelCell->WheelSizeNearHitWorld+WheelCell->WheelSizeFarHitWorld)*.5+FVector(0,0,65),
 			FString::Printf(TEXT("WHEEL SIZE: %.1fcm / 66.0 +/- 1.0cm: %s"),WheelCell->FrontLeftWheelMeasuredDiameterCm,
 				WheelCell->bFrontLeftWheelSizePassed?TEXT("PASS"):TEXT("REJECT")),nullptr,SizeColor,.08f,false,1.f);
+	}
+	if (WheelCell && (WheelCell->bFrontLeftWheelRejecting || WheelCell->bFrontLeftWheelRejected))
+	{
+		const FVector Current=WheelCell->GetWheelWorld(0).GetLocation();
+		DrawDebugLine(GetWorld(),WheelCell->WheelRejectStartWorld,WheelCell->WheelRejectTargetWorld,FColor::Red,false,.08f,0,3.f);
+		DrawDebugSphere(GetWorld(),WheelCell->WheelRejectTargetWorld,20,12,FColor::Red,false,.08f,0,3.f);
+		DrawDebugSphere(GetWorld(),Current,14,12,FColor::Red,false,.08f,0,3.f);
+		DrawDebugString(GetWorld(),WheelCell->WheelRejectTargetWorld+FVector(0,0,85),
+			WheelCell->bFrontLeftWheelRejected?TEXT("REJECTED WHEEL: LOCAL HOLD POINT"):TEXT("REJECTED WHEEL: MOVING TO HOLD POINT"),
+			nullptr,FColor::Red,.08f,false,1.f);
 	}
 	if (WheelCell && WheelCell->LeftPickupReplans>0)
 	{

@@ -386,6 +386,9 @@ bool AWheelAssemblyCell::ResetCycle()
 	FrontLeftDockScan = FrontLeftPreMountScan = FrontLeftFinalWheelScan = FWheelHubScanReading();
 	FrontLeftWheelMeasuredDiameterCm = 0; bFrontLeftWheelSizePassed = false;
 	WheelSizeNearHitWorld = WheelSizeFarHitWorld = FVector::ZeroVector;
+	bFrontLeftWheelRejecting = bFrontLeftWheelRejected = false;
+	WheelRejectElapsedSeconds = 0;
+	WheelRejectStartWorld = WheelRejectTargetWorld = FVector::ZeroVector;
 	PreviousPickupWorld = ReplannedPickupWorld = FVector::ZeroVector;
 	LeftPickupReplans = LeftGripRetries = 0;
 	Outcome = EWheelOutcome::NotEvaluated;
@@ -484,7 +487,19 @@ bool AWheelAssemblyCell::BeginWheel(int32 Side)
 	// Presence and pickup pose must be observed first so a missing wheel cannot
 	// pass inspection through the independent collision proxy.
 	if (Lane.WheelIndex == 0 && !ScanFrontLeftWheelSize())
-	{ Fail(FString::Printf(TEXT("휠 규격 검사 실패 · 레이저 측정 지름 %.1fcm / 기준 66.0cm ± 1.0cm"),FrontLeftWheelMeasuredDiameterCm)); return false; }
+	{
+		if (FrontLeftWheelMeasuredDiameterCm>0)
+		{
+			WheelRejectStartWorld=GetWheelWorld(0).GetLocation();
+			WheelRejectTargetWorld=WheelRejectStartWorld
+				+BodyAtStart.TransformVectorNoScale(FVector(-80,-160,0));
+			bFrontLeftWheelRejecting=true;
+			bFrontLeftWheelRejected=false;
+			WheelRejectElapsedSeconds=0;
+		}
+		Fail(FString::Printf(TEXT("휠 규격 검사 실패 · 레이저 측정 지름 %.1fcm / 기준 66.0cm ± 1.0cm · 불합격품 격리"),FrontLeftWheelMeasuredDiameterCm));
+		return false;
+	}
 	return MoveTo(Side, EWheelStage::ApproachPickup, OffsetOutward(Lane.Pickup, Side, 25));
 }
 
@@ -918,11 +933,29 @@ void AWheelAssemblyCell::AdvanceLeftWheelSlipFall(double DeltaSeconds)
 	WheelRoots[PartIndex(0)]->SetWorldTransform(Pose);
 	if (LeftWheelSlipFallSeconds>=2.0) bLeftWheelSlipFall=false;
 }
+void AWheelAssemblyCell::AdvanceFrontLeftWheelReject(double DeltaSeconds)
+{
+	if (!bFrontLeftWheelRejecting || !WheelRoots.IsValidIndex(PartIndex(0)) || !WheelRoots[PartIndex(0)]) return;
+	const double Dt=FMath::Clamp(DeltaSeconds,0.0,0.05);
+	if (Dt<=0) return;
+	WheelRejectElapsedSeconds+=Dt;
+	const double Alpha=FMath::Clamp(WheelRejectElapsedSeconds/1.8,0.0,1.0);
+	const double Smooth=Alpha*Alpha*(3.0-2.0*Alpha);
+	FTransform Pose=GetWheelWorld(0);
+	Pose.SetLocation(FMath::Lerp(WheelRejectStartWorld,WheelRejectTargetWorld,Smooth));
+	WheelRoots[PartIndex(0)]->SetWorldTransform(Pose);
+	if (Alpha>=1.0)
+	{
+		bFrontLeftWheelRejecting=false;
+		bFrontLeftWheelRejected=true;
+	}
+}
 void AWheelAssemblyCell::BeginPlay() { Super::BeginPlay(); if (!bExternallyDriven) ResetCycle(); }
 void AWheelAssemblyCell::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 	AdvanceLeftWheelSlipFall(DeltaSeconds);
+	AdvanceFrontLeftWheelReject(DeltaSeconds);
 	if (bExternallyDriven) return;
 	if (DeltaSeconds > 1 && bRunning) { StopCycle(); Status = TEXT("Large frame stall; reset required."); return; }
 	AdvanceSimulation(DeltaSeconds);

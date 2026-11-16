@@ -120,6 +120,12 @@ public:
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") bool bFrontLeftWheelSizePassed = false;
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") FVector WheelSizeNearHitWorld = FVector::ZeroVector;
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") FVector WheelSizeFarHitWorld = FVector::ZeroVector;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") bool bFrontLeftWheelRejecting = false;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") bool bFrontLeftWheelRejected = false;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") FVector WheelRejectStartWorld = FVector::ZeroVector;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") FVector WheelRejectTargetWorld = FVector::ZeroVector;
+    double WheelRejectElapsedSeconds = 0;
+    void AdvanceFrontLeftWheelReject(double DeltaSeconds);
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Sensors") FVector PreviousPickupWorld = FVector::ZeroVector;
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Sensors") FVector ReplannedPickupWorld = FVector::ZeroVector;
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Grip") bool bLeftWheelSlipFall = false;
