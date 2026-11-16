@@ -250,7 +250,7 @@ void ASensorAssemblyLine::Tick(float Seconds)
 void ASensorAssemblyLine::DrawSensorVisualization() const
 {
     if (!bShowSensorVisualization || !Sensors || !GetWorld() || (GetWorld()->WorldType!=EWorldType::PIE && GetWorld()->WorldType!=EWorldType::Game)) return;
-	if(DoorCell&&DoorCell->DoorSizeScale!=1.0&&DoorCell->MeasuredDoorWidthCm>0)
+	if(DoorCell&&DoorCell->MeasuredDoorWidthCm>0)
 	{
 		const FColor Color=DoorCell->bDoorSizePassed?FColor::Green:FColor::Red;
 		DrawDebugLine(GetWorld(),DoorCell->DoorSizeLeftHitWorld,DoorCell->DoorSizeRightHitWorld,Color,false,.08f,0,4.f);
@@ -260,7 +260,7 @@ void ASensorAssemblyLine::DrawSensorVisualization() const
 			FString::Printf(TEXT("DOOR SIZE: %.1fcm / %.1f +/- 1.0cm: %s"),DoorCell->MeasuredDoorWidthCm,DoorCell->NominalDoorWidthCm,
 				DoorCell->bDoorSizePassed?TEXT("PASS"):TEXT("REJECT")),nullptr,Color,.08f,false,1.f);
 	}
-	if (WheelCell && WheelCell->FrontLeftWheelMeasuredDiameterCm>0 && WheelCell->FrontLeftWheelSizeScale!=1.0)
+	if (WheelCell && WheelCell->FrontLeftWheelMeasuredDiameterCm>0)
 	{
 		const FColor SizeColor=WheelCell->bFrontLeftWheelSizePassed?FColor::Green:FColor::Red;
 		DrawDebugLine(GetWorld(),WheelCell->WheelSizeNearHitWorld,WheelCell->WheelSizeFarHitWorld,SizeColor,false,.08f,0,4.f);
@@ -269,6 +269,17 @@ void ASensorAssemblyLine::DrawSensorVisualization() const
 		DrawDebugString(GetWorld(),WheelCell->GetWheelWorld(0).GetLocation()+FVector(0,0,65),
 			FString::Printf(TEXT("WHEEL SIZE: %.1fcm / 66.0 +/- 1.0cm: %s"),WheelCell->FrontLeftWheelMeasuredDiameterCm,
 				WheelCell->bFrontLeftWheelSizePassed?TEXT("PASS"):TEXT("REJECT")),nullptr,SizeColor,.08f,false,1.f);
+	}
+	if (WheelCell && WheelCell->LeftPickupReplans>0)
+	{
+		const FVector Before=WheelCell->PreviousPickupWorld;
+		const FVector After=WheelCell->ReplannedPickupWorld;
+		DrawDebugSphere(GetWorld(),Before,13,12,FColor(150,150,150),false,.08f,0,2.f);
+		DrawDebugSphere(GetWorld(),After,13,12,FColor::Yellow,false,.08f,0,2.f);
+		DrawDebugLine(GetWorld(),Before,After,FColor::Yellow,false,.08f,0,2.f);
+		DrawDebugString(GetWorld(),After+FVector(0,0,50),
+			FString::Printf(TEXT("PICKUP REPLAN: %.1fcm | #%d"),FVector::Distance(Before,After),WheelCell->LeftPickupReplans),
+			nullptr,FColor::Yellow,.08f,false,1.f);
 	}
 	if (WheelCell && WheelCell->bPhysicalLeftGrip && WheelCell->GetLeftGripState().WheelIndex==0)
 	{
@@ -311,6 +322,21 @@ void ASensorAssemblyLine::DrawSensorVisualization() const
     DrawDebugLine(GetWorld(),Station,Station+FVector(0,0,180),Color,false,.08f,0,2.f);
     DrawDebugSphere(GetWorld(),Station+FVector(0,0,180),12,12,Color,false,.08f,0,2.f);
     DrawDebugString(GetWorld(),Station+FVector(0,0,205),Fresh ? TEXT("DOCK SENSOR: LIVE") : TEXT("DOCK SENSOR: STALE"),nullptr,Color,.08f,false,1.f);
+    if (bDemoDockOvershoot && bOvershootOutbound && IsValid(WheelCell) && IsValid(WheelCell->Assembly))
+    {
+        const FVector Stop=VehicleAtWheelStation.GetLocation();
+        const FVector Actual=WheelCell->Assembly->GetActorLocation();
+        const FColor ActualColor=bDockOvershootRecovered?FColor::Green:FColor::Yellow;
+        DrawDebugSphere(GetWorld(),Stop,17,12,FColor::Green,false,.08f,0,3.f);
+        DrawDebugSphere(GetWorld(),OvershootTarget,17,12,FColor::Red,false,.08f,0,3.f);
+        DrawDebugLine(GetWorld(),Stop,OvershootTarget,FColor::Red,false,.08f,0,3.f);
+        DrawDebugSphere(GetWorld(),Actual,12,12,ActualColor,false,.08f,0,3.f);
+        DrawDebugString(GetWorld(),Stop+FVector(0,0,240),
+            FString::Printf(TEXT("DOCK %.1fcm / <= %.1fcm | max overshoot %.1fcm | %s"),
+                FVector::Distance(Actual,Stop),DockToleranceCm,MaxDockOvershootCm,
+                bDockOvershootRecovered?TEXT("RECOVERED"):bOvershootReturning?TEXT("RETURNING"):TEXT("OVERSHOOT")),
+            nullptr,ActualColor,.08f,false,1.f);
+    }
     if (Sensors->Position.Fresh(SensorTime,Sensors->MaxAge))
         DrawDebugSphere(GetWorld(),Sensors->Station.TransformPosition(Sensors->Position.Value),9,10,FColor::Yellow,false,.08f,0,2.f);
 	if (ArrivalPhase==EArrivalPhase::Released && WheelCell && WheelCell->bSensorDrivenLeftRobot

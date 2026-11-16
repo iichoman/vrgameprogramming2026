@@ -378,6 +378,7 @@ bool AWheelAssemblyCell::ResetCycle()
 	FrontLeftDockScan = FrontLeftPreMountScan = FrontLeftFinalWheelScan = FWheelHubScanReading();
 	FrontLeftWheelMeasuredDiameterCm = 0; bFrontLeftWheelSizePassed = false;
 	WheelSizeNearHitWorld = WheelSizeFarHitWorld = FVector::ZeroVector;
+	PreviousPickupWorld = ReplannedPickupWorld = FVector::ZeroVector;
 	LeftPickupReplans = LeftGripRetries = 0;
 	Outcome = EWheelOutcome::NotEvaluated;
 	MountPositionErrorMm.Init(0, 4); MountOrientationErrorDeg.Init(0, 4); FastenedWheels.Init(false, 4);
@@ -444,8 +445,6 @@ bool AWheelAssemblyCell::BeginWheel(int32 Side)
     if (Lane.WheelIndex == 0 && bLaserScanFrontLeftHub && !ScanFrontLeftHub())
     { Fail(TEXT("왼쪽 앞 허브 레이저 스캔 실패 · ")+FrontLeftHubScan.FailureReason); return false; }
     if (Lane.WheelIndex == 0 && bLaserScanFrontLeftHub) FrontLeftDockScan=FrontLeftHubScan;
-    if (Lane.WheelIndex == 0 && FrontLeftWheelSizeScale != 1.0 && !ScanFrontLeftWheelSize())
-    { Fail(FString::Printf(TEXT("휠 규격 불량 · 레이저 측정 지름 %.1fcm / 기준 66.0cm ± 1.0cm"),FrontLeftWheelMeasuredDiameterCm)); return false; }
     auto* Sensors=SensorsFor(Side);
     // Rear-only robots first move through the calibrated, base-adjusted transit pose.
     if(UsesTaskBindings()&&Lane.Completed==0&&Lane.Stage==EWheelStage::Idle&&Lane.WheelIndex%2==1)
@@ -473,6 +472,11 @@ bool AWheelAssemblyCell::BeginWheel(int32 Side)
 		Lane.Pickup = Sensors->PickupPose.Pose;
 	}
 	else Lane.Pickup = GetWheelWorld(Lane.WheelIndex);
+	// Apply the same supply inspection to normal and defective front-left wheels.
+	// Presence and pickup pose must be observed first so a missing wheel cannot
+	// pass inspection through the independent collision proxy.
+	if (Lane.WheelIndex == 0 && !ScanFrontLeftWheelSize())
+	{ Fail(FString::Printf(TEXT("휠 규격 검사 실패 · 레이저 측정 지름 %.1fcm / 기준 66.0cm ± 1.0cm"),FrontLeftWheelMeasuredDiameterCm)); return false; }
 	return MoveTo(Side, EWheelStage::ApproachPickup, OffsetOutward(Lane.Pickup, Side, 25));
 }
 
@@ -587,6 +591,8 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
 			const double AngleDeg = FMath::RadiansToDegrees(Measured.GetRotation().AngularDistance(Expected.GetRotation()));
 			if (OffsetMm > MaxPickupDisplacementMm || AngleDeg > MaxPickupRotationDeg)
 			{ Fail(TEXT("Left robot: measured wheel outside pickup recovery window.")); return; }
+			PreviousPickupWorld = Lane.Pickup.GetLocation();
+			ReplannedPickupWorld = Measured.GetLocation();
 			Lane.Pickup = Measured; Lane.bGripCommanded = false; Sensors->CommandGrip(false); ++LeftPickupReplans;
 			MoveTo(Side, EWheelStage::ApproachPickup, OffsetOutward(Measured, Side, 25));
 			return;

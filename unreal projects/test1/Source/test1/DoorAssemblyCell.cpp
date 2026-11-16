@@ -163,8 +163,8 @@ bool ADoorAssemblyCell::StartCycle()
 		CSVBuffer+=TEXT("\n");
 	}
 	PickupAtStart=Pose->GetControlledDoor()->GetComponentTransform();
-	if(DoorSizeScale!=1.0&&!ScanDoorSize())
-	{Fail(FString::Printf(TEXT("차문 규격 불량 · 레이저 폭 %.1fcm / 기준 %.1fcm ± 1.0cm"),MeasuredDoorWidthCm,NominalDoorWidthCm));return false;}
+	if(!ScanDoorSize())
+	{Fail(FString::Printf(TEXT("차문 규격 검사 실패 · 레이저 폭 %.1fcm / 기준 %.1fcm ± 1.0cm"),MeasuredDoorWidthCm,NominalDoorWidthCm));return false;}
 	WriteRunMetadata();
 	if (!CheckPickup()) { Fail(Status); return false; }
 	if (!MeasureSensors()) { Fail(TEXT("Invalid alignment sensor input.")); return false; }
