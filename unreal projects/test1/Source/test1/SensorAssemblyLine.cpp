@@ -364,9 +364,17 @@ void ASensorAssemblyLine::DrawSensorVisualization() const
 		if (ArmSensors->PickupPose.bValid && ArmSensors->PickupPose.MeasuredAt>=0)
 		{
 			const FVector Measured=ArmSensors->PickupPose.Pose.GetLocation();
-			const FColor MeasurementColor=ArmSensors->PickupPose.Fresh(Now,ArmSensors->MaxAge)?FColor::Yellow:FColor::Red;
+			const bool PoseFresh=ArmSensors->PickupPose.Fresh(Now,ArmSensors->MaxAge);
+			const FColor MeasurementColor=PoseFresh?FColor::Yellow:FColor::Red;
 			DrawDebugSphere(GetWorld(),Measured,10,10,MeasurementColor,false,.08f,0,2.f);
 			DrawDebugLine(GetWorld(),TCP,Measured,MeasurementColor,false,.08f,0,1.f);
+			if (!PoseFresh || WheelCell->GetLeftStage()==EWheelStage::WaitPose)
+				DrawDebugString(GetWorld(),Measured+FVector(0,0,95),
+					FString::Printf(TEXT("WHEEL PICKUP POSE: %s | age %.2fs / max %.2fs | sample %.2fs"),
+						PoseFresh?TEXT("NEW SAMPLE"):TEXT("STALE - ARM WAITING"),
+						FMath::Max(0.0,Now-ArmSensors->PickupPose.MeasuredAt),ArmSensors->MaxAge,
+						ArmSensors->PickupPose.MeasuredAt),
+					nullptr,PoseFresh?FColor::Green:FColor::Red,.08f,false,1.f);
 		}
 		const int32 WheelIndex=WheelCell->GetActiveLeftWheelIndex();
 		if(WheelIndex>=0 && WheelIndex<2)

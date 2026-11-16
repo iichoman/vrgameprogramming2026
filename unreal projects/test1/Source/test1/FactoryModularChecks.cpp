@@ -135,11 +135,23 @@ bool AFactoryRuntime::RunModularEditorChecks()
         TOptional<FVector> SupplyTransitFirstPosition;
         bool GripRetryMovementObserved=false;
         TOptional<FVector> GripRetryFirstTcp;
+        bool StalePickupPoseObserved=false;
+        bool FreshPickupPoseAfterRecovery=false;
         for(int32 I=0;I<120*300&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)
         {
             StepSimulation(1./120);
             const auto Stage=TestAssemblyLine->WheelCell->GetLeftStage();
             WaitObserved|=(Kind==1&&Stage==EWheelStage::WaitSupply)||(Kind==2&&Stage==EWheelStage::WaitPose);
+            if(Kind==2)
+            {
+                const auto* PoseSensor=TestAssemblyLine->WheelCell->LeftSensors.Get();
+                const double Now=TestAssemblyLine->WheelCell->SimulationTimeSeconds;
+                StalePickupPoseObserved|=Stage==EWheelStage::WaitPose
+                    &&PoseSensor->PickupPose.MeasuredAt>=0
+                    &&Now-PoseSensor->PickupPose.MeasuredAt>PoseSensor->MaxAge;
+                FreshPickupPoseAfterRecovery|=TestAssemblyLine->RecoveredEvents>0
+                    &&Stage!=EWheelStage::WaitPose&&PoseSensor->PickupPose.Fresh(Now,PoseSensor->MaxAge);
+            }
             const auto& Grip=TestAssemblyLine->WheelCell->GetLeftGripState();
             if(Kind==3&&TestAssemblyLine->WheelCell->LeftGripRetries>0)
             {
@@ -194,6 +206,9 @@ bool AFactoryRuntime::RunModularEditorChecks()
                 Cell->LeftPickupReplans>0&&FVector::Distance(Cell->PreviousPickupWorld,Cell->ReplannedPickupWorld)>=3.0);
         if(Kind==3)
             Check(TEXT("grip_retry_retracts_and_moves_tcp_before_regrip"),GripRetryMovementObserved);
+        if(Kind==2)
+            Check(TEXT("pickup_pose_link_stales_then_new_measurement_resumes"),
+                StalePickupPoseObserved&&FreshPickupPoseAfterRecovery);
         if(Kind==6)
             Check(TEXT("normal_grip_stays_within_force_limit"),NormalGripObserved);
         if(Kind==0)
