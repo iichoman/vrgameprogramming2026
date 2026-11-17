@@ -186,6 +186,21 @@ void AFactoryRuntime::RunChecks()
 void AFactoryRuntime::CaptureRuntime(float Dt)
 {
     CaptureClock+=Dt;
+    if(FParse::Param(FCommandLine::Get(),TEXT("FactoryInspectionCapture")))
+    {
+        const FString Folder=FPaths::ProjectSavedDir()/TEXT("FactoryInspectionPreview");IFileManager::Get().MakeDirectory(*Folder,true);
+        if(CaptureStage==0&&CaptureClock>2){bUIProbePassed=RunInspectionChecks();bUIProbeDone=true;FocusWorkcell();CaptureStage=1;}
+        if(CaptureStage==1&&CaptureClock>4){FScreenshotRequest::RequestScreenshot(Folder/TEXT("01_Selection.png"),true,false);CaptureStage=2;}
+        if(CaptureStage==2&&CaptureClock>5){OpenRobotPopup(Layout.Tasks[0].RobotId,{});PendingTaskId=TEXT("wheel_fl");ChoosePart(TEXT("part_door_fr"));OpenDetails(EFactoryDetailTab::Problems);CaptureStage=3;}
+        if(CaptureStage==3&&CaptureClock>7){FScreenshotRequest::RequestScreenshot(Folder/TEXT("02_Problem.png"),true,false);CaptureStage=4;}
+        if(CaptureStage==4&&CaptureClock>8){CloseRobotPopup();ResetCycle();OpenDetails(EFactoryDetailTab::Sensors);CaptureStage=5;}
+        if(CaptureStage==5&&CaptureClock>9){bUIProbePassed=StartCycle()&&bUIProbePassed;CaptureStage=6;}
+        if(CaptureStage==6&&CaptureClock>12){FScreenshotRequest::RequestScreenshot(Folder/TEXT("03_Sensors.png"),true,false);CaptureStage=7;}
+        if(CaptureStage==7&&CaptureClock>13){ResetCycle();OpenDetails(EFactoryDetailTab::Demo);CaptureStage=8;}
+        if(CaptureStage==8&&CaptureClock>15){FScreenshotRequest::RequestScreenshot(Folder/TEXT("04_Demo.png"),true,false);CaptureStage=9;}
+        if(CaptureStage==9&&CaptureClock>17){FPlatformMisc::RequestExitWithStatus(false,bUIProbePassed?0:1);}
+        return;
+    }
     const FString Dir=FPaths::ProjectSavedDir()/TEXT("FactoryRuntimePreview");
     IFileManager::Get().MakeDirectory(*Dir,true);
     if(!bUIProbeDone&&CaptureClock>2){bUIProbePassed=RunUIChecks();bUIProbeDone=true;}

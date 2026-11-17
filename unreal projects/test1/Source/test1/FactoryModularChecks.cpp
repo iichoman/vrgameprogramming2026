@@ -189,6 +189,11 @@ bool AFactoryRuntime::RunModularEditorChecks()
         auto* Cell=Line->WheelCell.Get();
         if(Kind==9||Kind==10)
         {
+            RefreshInspection();
+            const auto* Diameter=Inspection().Sensors.Find(TEXT("wheel.fl.diameter"));
+            Check(Kind==9?TEXT("oversized_wheel_measurement_reaches_sensor_panel"):TEXT("undersized_wheel_measurement_reaches_sensor_panel"),
+                Diameter&&Diameter->Latest.Unit==TEXT("cm")&&Diameter->Latest.Value==Cell->FrontLeftWheelMeasuredDiameterCm
+                &&Diameter->Latest.SampleTime>=0);
             Check(Kind==9?TEXT("oversized_wheel_laser_rejects_before_pickup"):TEXT("undersized_wheel_laser_rejects_before_pickup"),
                 Began&&RunState==EFactoryRunState::Fault&&!Cell->bFrontLeftWheelSizePassed
                 &&(Kind==9?Cell->FrontLeftWheelMeasuredDiameterCm>67:Cell->FrontLeftWheelMeasuredDiameterCm<65)
@@ -223,7 +228,13 @@ bool AFactoryRuntime::RunModularEditorChecks()
             Check(TEXT("pickup_pose_link_stales_then_new_measurement_resumes"),
                 StalePickupPoseObserved&&FreshPickupPoseAfterRecovery);
         if(Kind==6)
+        {
             Check(TEXT("normal_grip_stays_within_force_limit"),NormalGripObserved);
+            RefreshInspection();
+            const auto* Grip=Inspection().Sensors.Find(TEXT("wheel.fl.grip.demand"));
+            Check(TEXT("physical_grip_force_reaches_sensor_panel"),Grip&&Grip->Latest.Unit==TEXT("N")
+                &&Grip->Latest.SampleTime>=0&&Grip->Latest.Value>0);
+        }
         if(Kind==0)
             Check(TEXT("normal_wheel_and_door_use_size_scan"),NormalWheelSizeObserved&&NormalDoorSizeObserved);
         if(Kind==1)

@@ -136,20 +136,23 @@ bool AFactoryRuntime::DragPlane(FVector2D Pixel,double Z,FVector& Out) const
 }
 void AFactoryRuntime::OpenRobotPopup(const FString& Id,FVector2D Pixel)
 {
+    OpenDetails(EFactoryDetailTab::Selection);
     SelectItem(Id);SelectedPartId.Empty();PendingTaskId.Empty();bRobotPopup=bAssigningTask=true;
     RobotPopupPixel=Pixel+FVector2D(25,20);bNeedsPanel=true;
     Status=TEXT("① 차체의 작업 지점 클릭 → ② 운반할 부품 클릭 · Esc 닫기");
 }
-void AFactoryRuntime::CloseRobotPopup(){bRobotPopup=bAssigningTask=false;PendingTaskId.Empty();bNeedsPanel=true;}
+void AFactoryRuntime::CloseRobotPopup(){bRobotPopup=bAssigningTask=false;PendingTaskId.Empty();Inspection().InteractionIssue.Reset();bNeedsPanel=true;}
 bool AFactoryRuntime::ChoosePart(const FString& Id)
 {
     if(!CanEdit()||!Selected()||PendingTaskId.IsEmpty())return false;
     auto* Task=Layout.Tasks.FindByPredicate([&](const auto& T){return T.Id==PendingTaskId;});
     const auto* Part=Id.StartsWith(TEXT("part_"))?FactoryTasks::Find(Id.Mid(5)):nullptr;
+    Inspection().InteractionIssue.Reset();
+    auto Reject=[&](const FString& Detail){Status=Detail;FFactoryIssue I;I.Id=TEXT("assignment_rejected");I.Summary=TEXT("작업 연결 실패");I.Detail=Detail;I.Remedy=TEXT("현재 작업 지점과 호환되는 미사용 부품을 선택하세요.");I.RobotId=SelectedId;I.PartId=Id;I.TaskId=PendingTaskId;I.Objects={SelectedId,Id};Inspection().InteractionIssue=I;RefreshInspection();bNeedsPanel=true;return false;};
     if(!Task||!Part||Part->PartType!=Task->PartType||(Part->PartType==TEXT("door")&&Id!=TEXT("part_")+Task->Id))
-    {Status=TEXT("선택한 장착 지점과 부품이 호환되지 않습니다.");bNeedsPanel=true;return false;}
+    {return Reject(TEXT("선택한 장착 지점과 부품이 호환되지 않습니다."));}
     auto Candidate=Layout;auto* T=Candidate.Tasks.FindByPredicate([&](const auto& V){return V.Id==PendingTaskId;});T->PartId=Id;T->SourcePort=Part->SourcePort;T->RobotId=SelectedId;
-    FString Error;if(!Candidate.Validate(Error)){Status=Error+TEXT(" 기존 연결을 해제한 뒤 선택하세요.");bNeedsPanel=true;return false;}
+    FString Error;if(!Candidate.Validate(Error)){return Reject(Error+TEXT(" 기존 연결을 해제한 뒤 선택하세요."));}
     BeginEdit();*Task=*T;PendingTaskId.Empty();BindAssemblyRobots();ResetCycle();EndEdit();bNeedsPanel=true;
     Status=TEXT("연결 완료. 다른 작업 지점을 클릭하면 이 로봇에 작업을 추가할 수 있습니다.");return true;
 }

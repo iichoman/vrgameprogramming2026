@@ -65,6 +65,7 @@ UStaticMeshComponent* AFactoryRuntime::MakeMesh(USceneComponent* Parent,UStaticM
 }
 void AFactoryRuntime::ClearGenerated()
 {
+    if(InspectionState)InspectionState->RestoreOverlays();
     TArray<AFactoryEquipment*> Old;
     for(TActorIterator<AFactoryEquipment> It(GetWorld());It;++It)if(It->GetOwner()==this)Old.Add(*It);
     for(auto* A:Old)A->Destroy();
@@ -153,7 +154,7 @@ void AFactoryRuntime::BeginPlay()
     if(FParse::Param(FCommandLine::Get(),TEXT("FactoryAssemblyAutoTest")))
     { const bool Ok=RunAssemblyIntegrationChecks(); FPlatformMisc::RequestExitWithStatus(false,Ok?0:1); return; }
     const bool bTest=FParse::Param(FCommandLine::Get(),TEXT("FactoryRuntimeAutoTest"));
-    bCapturing=FParse::Param(FCommandLine::Get(),TEXT("FactoryRuntimeCapture"));
+    bCapturing=FParse::Param(FCommandLine::Get(),TEXT("FactoryRuntimeCapture"))||FParse::Param(FCommandLine::Get(),TEXT("FactoryInspectionCapture"));
     if(bTest){RunChecks();return;}
     if(!bUseAssemblyIntegration)Status=TEXT("편집 모드: 설비를 드래그하거나 속성 값을 변경하세요. 배치는 A/B 슬롯에 따로 저장됩니다.");
     if(!bCapturing && !bUseAssemblyIntegration && (IFileManager::Get().FileExists(*SlotPath(TEXT("A")))
@@ -170,6 +171,7 @@ void AFactoryRuntime::BeginPlay()
 }
 void AFactoryRuntime::EndPlay(const EEndPlayReason::Type Reason)
 {
+    if(InspectionState)InspectionState->RestoreOverlays();
     if(GEngine && GEngine->GameViewport && Panel.IsValid())GEngine->GameViewport->RemoveViewportWidgetContent(Panel.ToSharedRef());
     Panel.Reset();PanelScroll.Reset();
     if(bInputConfigured)if(auto* PC=UGameplayStatics::GetPlayerController(this,0))
@@ -181,9 +183,13 @@ void AFactoryRuntime::Tick(float Dt)
     Super::Tick(Dt);
     if(FParse::Param(FCommandLine::Get(),TEXT("FactoryDirectAutoTest"))&&!bUIProbeDone&&GetWorld()->GetTimeSeconds()>.5)
     {bUIProbeDone=true;const bool Ok=RunDirectEditChecks();FPlatformMisc::RequestExitWithStatus(false,Ok?0:1);return;}
+    if(FParse::Param(FCommandLine::Get(),TEXT("FactoryInspectionAutoTest"))&&!bUIProbeDone&&GetWorld()->GetTimeSeconds()>.8)
+    {bUIProbeDone=true;const bool Ok=RunInspectionChecks();FPlatformMisc::RequestExitWithStatus(false,Ok?0:1);return;}
     EditorTick();
     if(bUseAssemblyIntegration && IsValid(TestAssemblyLine))TestAssemblyLine->DrawSensorVisualization();
     else if(WheelProcess)WheelProcess->DrawFeatureVisualization();
+    if(GetWorld()->GetTimeSeconds()>=Inspection().NextRefresh){RefreshInspection();Inspection().NextRefresh=GetWorld()->GetTimeSeconds()+.1;}
+    UpdateObjectHighlights();
     /* Legacy input replaced by the Slate viewport surface.
     if(bDragging && CanEdit())
     {
@@ -201,10 +207,10 @@ void AFactoryRuntime::Tick(float Dt)
         while(SimRemainder>=FixedStep && Budget-->0 && (Active(RunState)||bUseAssemblyIntegration))
         {SimRemainder-=FixedStep;StepSimulation(FixedStep);}
     }
-    if(bNeedsPanel && bInputConfigured && !bDragging){CreatePanel();bNeedsPanel=false;}
+    if(bNeedsPanel && bInputConfigured && !bDragging && !bDraggingPart){CreatePanel();bNeedsPanel=false;}
     if(bCapturing)CaptureRuntime(Dt);
 }
-void AFactoryRuntime::SelectItem(const FString& Id){if(!CanEdit())return;bHallSelected=false;SelectedId=Layout.Find(Id)?Id:FString();RefreshHighlights();bNeedsPanel=true;}
+void AFactoryRuntime::SelectItem(const FString& Id){bHallSelected=false;SelectedPartId.Empty();Inspection().LooseSelection.Empty();Inspection().FocusedIssue.Empty();SelectedId=Layout.Find(Id)?Id:FString();if(!SelectedId.IsEmpty())OpenDetails(EFactoryDetailTab::Selection);RefreshHighlights();bNeedsPanel=true;}
 void AFactoryRuntime::RefreshHighlights()
 {
     for(const auto& Item:Layout.Items)if(auto* A=Equipment.FindRef(Item.Id).Get())A->SetSelected(Item.Id==SelectedId,!Layout.Contains(Item));
@@ -389,9 +395,9 @@ bool AFactoryRuntime::ValidateRun(FString& Error) const
         {Error=TEXT("설비 바닥 영역 겹침: ")+Layout.Items[A].DisplayName()+TEXT(" / ")+Layout.Items[B].DisplayName();return false;}
     return WheelProcess&&WheelProcess->Validate(Error);
 }
-bool AFactoryRuntime::StartCycle(){return bUseAssemblyIntegration?AssemblyProcess->Start():(WheelProcess&&WheelProcess->Start());}
+bool AFactoryRuntime::StartCycle(){Inspection().StartError.Empty();const bool OK=bUseAssemblyIntegration?AssemblyProcess->Start():(WheelProcess&&WheelProcess->Start());if(!OK)Inspection().StartError=Status;return OK;}
 void AFactoryRuntime::StopCycle(){if(bUseAssemblyIntegration)AssemblyProcess->Stop();else if(WheelProcess)WheelProcess->Stop();}
-void AFactoryRuntime::ResetCycle(){if(bUseAssemblyIntegration)AssemblyProcess->Reset();else if(WheelProcess)WheelProcess->Reset();}
+void AFactoryRuntime::ResetCycle(){if(bUseAssemblyIntegration)AssemblyProcess->Reset();else if(WheelProcess)WheelProcess->Reset();if(InspectionState){InspectionState->Sensors.Empty();InspectionState->NextRefresh=0;InspectionState->StartError.Empty();InspectionState->InteractionIssue.Reset();}bNeedsPanel=true;}
 void AFactoryRuntime::StepSimulation(double Dt){if(bUseAssemblyIntegration)AssemblyProcess->Step(Dt);else if(WheelProcess)WheelProcess->Step(Dt);}
 FString AFactoryRuntime::StateText() const
 {

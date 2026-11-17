@@ -251,6 +251,7 @@ bool AWheelAssemblyCell::ScanFrontLeftWheelSize()
 	WheelSizeNearHitWorld=Near?NearHit.ImpactPoint:FVector::ZeroVector;
 	WheelSizeFarHitWorld=Far?FarHit.ImpactPoint:FVector::ZeroVector;
 	FrontLeftWheelMeasuredDiameterCm=Near&&Far?FVector::Distance(NearHit.ImpactPoint,FarHit.ImpactPoint):0;
+	FrontLeftWheelSizeMeasuredAt=SimulationTimeSeconds;
 	bFrontLeftWheelSizePassed=Near&&Far&&FMath::Abs(FrontLeftWheelMeasuredDiameterCm-2*NominalRadiusCm)<=1.0;
 	return bFrontLeftWheelSizePassed;
 }
@@ -437,6 +438,7 @@ bool AWheelAssemblyCell::ResetCycle()
 	FrontLeftHubScan = FWheelHubScanReading();
 	FrontLeftDockScan = FrontLeftPreMountScan = FrontLeftFinalWheelScan = FWheelHubScanReading();
 	FrontLeftWheelMeasuredDiameterCm = 0; bFrontLeftWheelSizePassed = false;
+	FrontLeftWheelSizeMeasuredAt=-1;LeftGripMeasuredAt=-1;
 	WheelSizeNearHitWorld = WheelSizeFarHitWorld = FVector::ZeroVector;
 	bFrontLeftWheelRejecting = bFrontLeftWheelRejected = false;
 	WheelRejectElapsedSeconds = 0;
@@ -444,6 +446,7 @@ bool AWheelAssemblyCell::ResetCycle()
 	PreviousPickupWorld = ReplannedPickupWorld = FVector::ZeroVector;
 	LeftPickupReplans = LeftGripRetries = 0;
 	Outcome = EWheelOutcome::NotEvaluated;
+	FailedWheelIndex=INDEX_NONE;FailedStage=EWheelStage::Idle;
 	MountPositionErrorMm.Init(0, 4); MountOrientationErrorDeg.Init(0, 4); FastenedWheels.Init(false, 4);
 	for (int32 Index = 0; Index < 4; ++Index)
 	{
@@ -588,6 +591,8 @@ void AWheelAssemblyCell::WaitForLeftSensor(int32 Side,EWheelStage WaitStage, con
 void AWheelAssemblyCell::Fail(const FString& Reason)
 {
 	const FString Saved = Reason;
+	for(const FWheelLane& Lane:Lanes)if(Lane.Stage!=EWheelStage::Idle&&Lane.Stage!=EWheelStage::Complete&&Lane.Stage!=EWheelStage::Fault)
+	{FailedWheelIndex=Lane.WheelIndex;FailedStage=Lane.Stage;break;}
 	bRunning = false; bTransporting = false; Outcome = EWheelOutcome::Blocked;
 	if (LeftRobot) LeftRobot->Halt();
 	if (RightRobot) RightRobot->Halt();
@@ -699,8 +704,11 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
         FTransform Target = Lane.WheelInTCP * Robot->GetTCPWorld();
         const bool Physical = bPhysicalLeftGrip && Lane.WheelIndex == 0;
         if (Physical)
+        {
             Target.SetLocation(StepWheelGrip(Lane.LastCarried.GetLocation(), Target.GetLocation(), Dt, bLowFrictionGrip, FrontLeftWheelMassKg,
                 Lane.GripVelocity, Lane.DemandN, Lane.CapacityN, Lane.SlipMm, Lane.AppliedForceN));
+            LeftGripMeasuredAt=SimulationTimeSeconds;
+        }
         WheelRoots[PartIndex(Lane.WheelIndex)]->SetWorldTransform(Target);
         if (Physical && Lane.SlipMm >= 3.0)
         {

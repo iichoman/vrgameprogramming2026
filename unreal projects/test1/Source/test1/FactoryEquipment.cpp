@@ -120,32 +120,7 @@ void AFactoryEquipment::Configure(const FFactoryLayoutItem& Item, UStaticMesh* R
             for(int32 Slot=0;Slot<Replacement->GetStaticMaterials().Num();++Slot) C->SetMaterial(Slot, Replacement->GetMaterial(Slot));
         }
     }
-    Label=NewObject<UWidgetComponent>(this, NAME_None, RF_Transactional);
-    AddInstanceComponent(Label);
-    Label->SetupAttachment(FunctionalRoot);
-    Label->SetMobility(EComponentMobility::Movable);
-    Label->SetWidgetSpace(EWidgetSpace::World);
-    Label->SetDrawSize(FVector2D(1100,400));
-    Label->SetPivot(FVector2D(.5,.5));
-    Label->SetTwoSided(true);
-    Label->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-    Label->SetCastShadow(false);
-    Label->SetRelativeRotation(FRotator(90,90,0));
-    const bool bZone=Item.Kind==EFactoryItemKind::Zone;
-    Label->SetRelativeLocation(FVector(0,bZone?Item.Size.Y*.24:Item.Size.Y*.5+38,bZone?5:6));
-    Label->SetRelativeScale3D(FVector(bZone?FMath::Min(Item.Size.X/1200.,1.0):.18));
-    Label->RegisterComponent();
-    const FString FontPath=FPaths::ProjectContentDir()/TEXT("DigitalTwin/Fonts/NanumGothic.ttf");
-    const FSlateFontInfo KoreanFont(FontPath,bZone?84.f:58.f), EnglishFont(FontPath,bZone?46.f:34.f);
-    Label->SetSlateWidget(SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
-        .BorderBackgroundColor(FLinearColor(.015f,.025f,.04f,.95f)).Padding(12)
-        .HAlign(HAlign_Center).VAlign(VAlign_Center)
-        [SNew(SVerticalBox)
-            +SVerticalBox::Slot().AutoHeight()[SNew(STextBlock).Font(KoreanFont).ColorAndOpacity(FLinearColor::White)
-                .Justification(ETextJustify::Center).Text(FText::FromString(Item.NameKo)).WrapTextAt(1060)]
-            +SVerticalBox::Slot().AutoHeight()[SNew(STextBlock).Font(EnglishFont).ColorAndOpacity(FLinearColor(.7f,.85f,1.f))
-                .Justification(ETextJustify::Center).Text(FText::FromString(TEXT("(")+Item.NameEn+TEXT(")"))).WrapTextAt(1060)]]);
-    Label->SetRedrawTime(.2f);
+    Label=nullptr; // Names belong to the screen inspector, never rotating world widgets.
 #if WITH_EDITOR
     SetActorLabel(Item.DisplayName());
     SetFolderPath(Item.Kind==EFactoryItemKind::Zone?TEXT("FactoryRuntime/구역 (Zones)"):TEXT("FactoryRuntime/설비 (Equipment)"));
@@ -154,14 +129,14 @@ void AFactoryEquipment::Configure(const FFactoryLayoutItem& Item, UStaticMesh* R
 
 void AFactoryEquipment::OrientLabel(double CameraYaw)
 {
-    if(Label)Label->SetWorldRotation(FRotator(90,CameraYaw+180,0));
+    // Retained for source compatibility. World name widgets are no longer created.
 }
 
 void AFactoryEquipment::SetSelected(bool bSelected, bool bInvalid)
 {
     if(!Selection)return;
-    Selection->SetVisibility(bSelected||bInvalid);
-    Tint(Selection,bInvalid?FLinearColor(.9,.05,.03):FLinearColor(1,.75,.04));
+    Selection->SetVisibility(Definition.Kind==EFactoryItemKind::Zone&&(bSelected||bInvalid));
+    Tint(Selection,bInvalid?FLinearColor(.9,.05,.03):FLinearColor(.06,.55,1));
 }
 
 FVector AFactoryEquipment::Anchor() const
@@ -189,6 +164,6 @@ void AFactoryEquipment::UpdateTool(const FVector& WorldPoint, double WorldYaw)
     Mast->SetRelativeScale3D(FVector(.12,.12,FMath::Max(10.,FMath::Abs(295-Q.Z-28))/100.));
 }
 
-void AFactoryEquipment::SetLabelVisible(bool Visible) { if(Label){Label->SetVisibility(Visible);Label->SetHiddenInGame(!Visible);} }
+void AFactoryEquipment::SetLabelVisible(bool Visible) { if(Label){Label->SetVisibility(false);Label->SetHiddenInGame(true);} }
 
 UFactoryMotionController* AFactoryEquipment::CreateController(){return NewObject<UFactoryMotionController>(this);}

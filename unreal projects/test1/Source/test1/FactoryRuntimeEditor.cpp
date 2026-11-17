@@ -45,7 +45,7 @@ void AFactoryRuntime::CancelEdit()
     bDragging=bCreateZone=bPanning=bOrbiting=false;ResizeHandle=-1;PendingTypeId.Empty();
     if(History.Cancel(Layout,SelectedId)){Rebuild();RefreshDirty();}
 }
-void AFactoryRuntime::SelectHall(){if(!CanEdit())return;CancelEdit();SelectedId.Empty();bHallSelected=true;RefreshHighlights();bNeedsPanel=true;}
+void AFactoryRuntime::SelectHall(){if(!CanEdit())return;CancelEdit();SelectedId.Empty();Inspection().LooseSelection=TEXT("hall");bHallSelected=true;RefreshHighlights();OpenDetails(EFactoryDetailTab::Layout);}
 void AFactoryRuntime::BeginPlacement(const FString& Id)
 {
     if(!CanEdit())return;CancelEdit();EnsureRegistry();const auto* D=Registry->Find(Id);if(!D)return;if(!IsPaletteTypeAllowed(Id)){Status=TEXT("현재 모드에서 지원하지 않는 설비입니다.");return;}
@@ -157,7 +157,8 @@ void AFactoryRuntime::ViewportPointer(FVector2D Pixel,FKey Button,bool Pressed)
     PointerPixel=LastPointerPixel=Pixel;bHasViewportPointer=true;
     if(Button==EKeys::MiddleMouseButton){bPanning=Pressed;return;}
     if(Button==EKeys::RightMouseButton){bOrbiting=Pressed;return;}
-    if(Button!=EKeys::LeftMouseButton||!CanEdit())return;
+    if(Button!=EKeys::LeftMouseButton)return;
+    if(!CanEdit()){if(Pressed){FString Id=HitPart(Pixel);if(Id.IsEmpty())Id=HitRobot(Pixel);if(Id.IsEmpty())Id=HitInspectable(Pixel);if(!Id.IsEmpty())SelectObject(Id);}return;}
     if(!Pressed){OnPointerUp();return;}
     const FString Part=HitPart(Pixel);
     if(bRobotPopup&&!PendingTaskId.IsEmpty())
@@ -165,7 +166,7 @@ void AFactoryRuntime::ViewportPointer(FVector2D Pixel,FKey Button,bool Pressed)
     if(bRobotPopup&&HitTaskTarget(Pixel))return;
     if(!Part.IsEmpty())
     {
-        CloseRobotPopup();SelectedPartId=Part;SelectedId.Empty();RefreshHighlights();FTransform P;PartWorld(Part,P);
+        SelectObject(Part);RefreshHighlights();FTransform P;PartWorld(Part,P);
         if(DragPlane(Pixel,P.GetLocation().Z,PartDragStart))
         {PartOffsetStart=Layout.PartOffsetsCm.FindRef(Part);BeginEdit();bDraggingPart=true;}return;
     }
@@ -175,6 +176,7 @@ void AFactoryRuntime::ViewportPointer(FVector2D Pixel,FKey Button,bool Pressed)
         OpenRobotPopup(Robot,Pixel);FVector P;if(PointerOnFloor(P)){DragStart=P;DragOffset=Selected()->Position-FVector2D(P);BeginEdit();bDragging=true;}return;
     }
     CloseRobotPopup();
+    if(PendingTypeId.IsEmpty()&&HitResizeHandle(Pixel)<0){const FString Id=HitInspectable(Pixel);if(!Id.IsEmpty()){SelectObject(Id);return;}}
     FVector P;if(!PointerOnFloor(P))return;DragStart=P;
     if(!PendingTypeId.IsEmpty()&&!bCreateZone){const FString Id=PendingTypeId;PendingTypeId.Empty();AddRegisteredItem(Id,{P.X,P.Y});return;}
     ResizeHandle=PendingTypeId.IsEmpty()?HitResizeHandle(Pixel):-1;
@@ -245,7 +247,7 @@ void AFactoryRuntime::PanCamera(FVector2D D)
 void AFactoryRuntime::OrbitCamera(FVector2D D)
 {if(bTopView)return;CameraYaw=FRotator::NormalizeAxis(CameraYaw+D.X*.25);CameraPitch=FMath::Clamp(CameraPitch-D.Y*.2,-85.,-10.);UpdateCamera();}
 void AFactoryRuntime::FocusSelected()
-{if(const auto* I=Selected()){CameraCentre=I->Position;CameraWidth=FMath::Clamp(I->Size.GetMax()*2.5,700.,10000.);UpdateCamera();}else if(bHallSelected)FitView();else FocusWorkcell();}
+{if(!CurrentObjectId().IsEmpty())FocusObject(CurrentObjectId());else if(bHallSelected)FitView();else FocusWorkcell();}
 void AFactoryRuntime::ViewportKey(FKey Key,bool Ctrl,bool Shift)
 {
     if(Key==EKeys::Escape){CancelEdit();return;}

@@ -117,6 +117,7 @@ public:
     double FrontLeftWheelMassKg = 18.0;
     double FrontLeftWheelSizeScale = 1.0;
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") double FrontLeftWheelMeasuredDiameterCm = 0;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") double FrontLeftWheelSizeMeasuredAt = -1;
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") bool bFrontLeftWheelSizePassed = false;
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") FVector WheelSizeNearHitWorld = FVector::ZeroVector;
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") FVector WheelSizeFarHitWorld = FVector::ZeroVector;
@@ -132,6 +133,7 @@ public:
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Grip") double LeftWheelSlipFallSeconds = 0;
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Grip") int32 SlipRecoveryPhase = 0;
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Grip") double SlipFailureMassKg = 0;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Grip") double LeftGripMeasuredAt = -1;
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Grip") bool bSlipFailureLowFriction = false;
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Grip") bool bDroppedWheelHitSurface = false;
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Grip") FVector SlipRecoveryWorkerLocation = FVector::ZeroVector;
@@ -155,6 +157,9 @@ public:
     bool PrepareTaskLanes();
     int32 LaneCount() const { return UsesTaskBindings()?4:2; }
     bool LaneEnabled(int32 Lane) const { return !UsesTaskBindings()||!TaskQueue[Lane].IsEmpty(); }
+    const FWheelLane* LaneSnapshot(int32 Lane) const { return Lane>=0&&Lane<LaneCount()?&Lanes[Lane]:nullptr; }
+    int32 FailedWheelIndex = INDEX_NONE;
+    EWheelStage FailedStage = EWheelStage::Idle;
     UWheelRobotSensorBank* SensorsFor(int32 Lane) const;
     bool SensorDrivenLane(int32 Lane) const;
     int32 GeometricSide(int32 Lane) const { return UsesTaskBindings()?(Lanes[Lane].WheelIndex>=0?Lanes[Lane].WheelIndex/2:(!TaskQueue[Lane].IsEmpty()?TaskQueue[Lane][0]/2:Lane%2)):Lane; }

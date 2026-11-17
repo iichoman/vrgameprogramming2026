@@ -73,6 +73,7 @@ public:
 	/** Demonstration defect on the first left door only. */
 	double DoorSizeScale=1.0;
 	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Laser") double MeasuredDoorWidthCm=0;
+	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Laser") double DoorSizeMeasuredAt=-1;
 	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Laser") double NominalDoorWidthCm=0;
 	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Laser") bool bDoorSizePassed=false;
 	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Laser") FVector DoorSizeLeftHitWorld=FVector::ZeroVector;
@@ -94,6 +95,8 @@ public:
 	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Quality") bool bQualityValid=false;
 	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Quality") bool bQualityPassed=false;
 	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Sensors") double AlignmentPositionErrorMm=0;
+	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Sensors") double LastAlignmentSampleTime=-1;
+	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Sensors") bool bLastAlignmentSampleValid=false;
 	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Sensors") double AlignmentOrientationErrorDeg=0;
 	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Sensors") double VerificationPositionErrorMm=0;
 	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Sensors") FTransform AlignmentMeasuredDoorWorld;

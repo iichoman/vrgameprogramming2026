@@ -51,6 +51,7 @@ bool ADoorAssemblyCell::ScanDoorSize()
 	DoorSizeLeftHitWorld=HitLeft?Left.ImpactPoint:FVector::ZeroVector;
 	DoorSizeRightHitWorld=HitRight?Right.ImpactPoint:FVector::ZeroVector;
 	MeasuredDoorWidthCm=HitLeft&&HitRight?FVector::Distance(Left.ImpactPoint,Right.ImpactPoint):0;
+	DoorSizeMeasuredAt=SimulationTimeSeconds;
 	bDoorSizePassed=HitLeft&&HitRight&&FMath::Abs(MeasuredDoorWidthCm-NominalDoorWidthCm)<=1.0;
 	return bDoorSizePassed;
 }
@@ -131,6 +132,7 @@ bool ADoorAssemblyCell::ResetCycle()
 	bDoorHeld=false; bDoorFastened=false;
 	Outcome=EDoorCellOutcome::NotEvaluated; AlignmentCorrections=0; LogFile.Empty(); RunMetadataFile.Empty();
 	SimulationTimeSeconds=0; Accumulator=0; StateTime=0; StableTime=0;
+	LastAlignmentSampleTime=-1;bLastAlignmentSampleValid=false;
 	FTransform Initial=GetPickupDoorWorld();
 	Initial.AddToTranslation(BodyAtStart.TransformVectorNoScale(InitialDoorOffsetMm/10));
 	Initial.SetRotation((BodyAtStart.GetRotation()*InitialDoorRotationDeg.Quaternion()*BodyAtStart.GetRotation().Inverse()*Initial.GetRotation()).GetNormalized());
@@ -138,6 +140,7 @@ bool ADoorAssemblyCell::ResetCycle()
 	TArray<USceneComponent*> DoorChildren; Pose->GetControlledDoor()->GetChildrenComponents(true,DoorChildren);
 	for (auto* C:DoorChildren) if (auto* P=Cast<UPrimitiveComponent>(C)) P->SetVisibility(bDoorPresent);
 	MeasuredDoorWidthCm=NominalDoorWidthCm=0;bDoorSizePassed=false;
+	DoorSizeMeasuredAt=-1;
 	DoorSizeLeftHitWorld=DoorSizeRightHitWorld=FVector::ZeroVector;
 	if (DoorSizeScale!=1.0)
 	{
@@ -419,6 +422,7 @@ FTransform ADoorAssemblyCell::SimulatePoseSensor(const FVector& BiasMm,const FRo
 
 bool ADoorAssemblyCell::MeasureSensors()
 {
+	bLastAlignmentSampleValid=false;
 	if (!Pose.IsValid() || !IsValid(Assembly) || !bAlignmentSensorValid) return false;
 	AlignmentMeasuredDoorWorld=SimulatePoseSensor(AlignmentSensorBiasMm,AlignmentSensorRotationBiasDeg);
 	VerificationMeasuredDoorWorld=SimulatePoseSensor(VerificationSensorBiasMm,VerificationSensorRotationBiasDeg);
@@ -426,7 +430,9 @@ bool ADoorAssemblyCell::MeasureSensors()
 	AlignmentPositionErrorMm=FVector::Distance(AlignmentMeasuredDoorWorld.GetLocation(),Mount.GetLocation())*10;
 	AlignmentOrientationErrorDeg=FMath::RadiansToDegrees(AlignmentMeasuredDoorWorld.GetRotation().AngularDistance(Mount.GetRotation()));
 	VerificationPositionErrorMm=FVector::Distance(VerificationMeasuredDoorWorld.GetLocation(),Mount.GetLocation())*10;
-	return AlignmentMeasuredDoorWorld.IsValid() && VerificationMeasuredDoorWorld.IsValid();
+	LastAlignmentSampleTime=SimulationTimeSeconds;
+	bLastAlignmentSampleValid=AlignmentMeasuredDoorWorld.IsValid() && VerificationMeasuredDoorWorld.IsValid();
+	return bLastAlignmentSampleValid;
 }
 
 bool ADoorAssemblyCell::AlignmentAccepted() const
