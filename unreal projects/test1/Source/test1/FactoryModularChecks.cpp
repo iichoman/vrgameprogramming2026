@@ -20,6 +20,21 @@ bool AFactoryRuntime::RunModularEditorChecks()
     const auto Original=Layout;const auto Initial=Layout.ToJson();FString Error;FFactoryLayout Read;
     Check(TEXT("three_registered_bound_team_robots"),bUseAssemblyIntegration&&Layout.AssemblyBindings.Num()==3&&ValidateAssemblyBindings(Error));
     Check(TEXT("v3_roundtrip_preserves_explicit_bindings"),FFactoryLayout::FromJson(Initial,Read,Error)&&Read.ToJson()==Initial);
+    // The factory UI sends one request to the line adapter; selecting a new case clears prior faults.
+    const bool DemoAdapterValid=TestAssemblyLine && TestAssemblyLine->ConfigureIncidentDemo(14)
+        &&TestAssemblyLine->WheelCell->bGripDegradesInTransit
+        &&TestAssemblyLine->ConfigureIncidentDemo(15)
+        &&!TestAssemblyLine->WheelCell->bGripDegradesInTransit
+        &&TestAssemblyLine->WheelCell->LaserTransientBlockScans==2
+        &&TestAssemblyLine->ConfigureIncidentDemo(16)
+        &&TestAssemblyLine->WheelCell->bReplaceRejectedWheel
+        &&TestAssemblyLine->WheelCell->LaserTransientBlockScans==0
+        &&TestAssemblyLine->ConfigureIncidentDemo(18)
+        &&TestAssemblyLine->bExtendedRandomEvents
+        &&TestAssemblyLine->ConfigureIncidentDemo(5)
+        &&!TestAssemblyLine->bExtendedRandomEvents
+        &&!TestAssemblyLine->WheelCell->bReplaceRejectedWheel;
+    Check(TEXT("incident_demo_adapter_resets_previous_fault_configuration"),DemoAdapterValid);
     auto Broken=Layout;Broken.AssemblyBindings.Add(TEXT("assembly_door"),TEXT("missing"));
     Check(TEXT("dangling_operation_binding_rejected"),!Broken.Validate(Error));
     bSnap=false;

@@ -88,6 +88,27 @@ void AAutonomousAssemblyLine::SetFactoryCheck(int32 Kind)
     if(DoorCell)DoorCell->DoorSizeScale=FactoryCheck==11?1.12:FactoryCheck==12?0.88:1.0;
 }
 
+bool AAutonomousAssemblyLine::ConfigureIncidentDemo(int32 Preset)
+{
+    if (!IsValid(WheelCell) || Preset < 0 || Preset > 18) return false;
+    const int32 BaseCheck = Preset <= 13 ? Preset : Preset == 14 ? 6 : Preset == 15 ? 0
+        : Preset == 16 ? 9 : Preset == 17 ? 10 : 5;
+    // The line adapter configures the cell before ResetLine; the UI never writes equipment state.
+    bExtendedRandomEvents = false;
+    WheelCell->bReplaceRejectedWheel = false;
+    WheelCell->LaserTransientBlockScans = 0;
+    SetFactoryCheck(BaseCheck);
+    switch (Preset)
+    {
+    case 14: WheelCell->bGripDegradesInTransit = true; break;
+    case 15: WheelCell->bLaserScanFrontLeftHub = true; WheelCell->LaserTransientBlockScans = 2; break;
+    case 16: case 17: WheelCell->bReplaceRejectedWheel = true; break;
+    case 18: bExtendedRandomEvents = true; break;
+    default: break;
+    }
+    return true;
+}
+
 void AAutonomousAssemblyLine::InjectEvent(int32 Index)
 {
 	if (!WheelCell || !WheelCell->LeftSensors) return;
