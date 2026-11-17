@@ -12,6 +12,7 @@
 #include "Misc/Paths.h"
 #include "Serialization/JsonSerializer.h"
 #include "Dom/JsonObject.h"
+#include "DrawDebugHelpers.h"
 
 ADoorAssemblyCell::ADoorAssemblyCell()
 {
@@ -123,6 +124,9 @@ FTransform ADoorAssemblyCell::GetPickupDoorWorld() const
 
 bool ADoorAssemblyCell::ResetCycle()
 {
+	bDoorSizeRejectMoving=bDoorSizeRejected=false;
+	DoorRejectElapsedSeconds=RejectedDoorWidthCm=0;
+	DoorRejectStartWorld=DoorRejectTargetWorld=FVector::ZeroVector;
 	for (const auto& Entry:OriginalDoorMeshScales) if(Entry.Key.IsValid())Entry.Key->SetRelativeScale3D(Entry.Value);
 	OriginalDoorMeshScales.Empty();
 	if (Robot) Robot->Halt();
@@ -167,7 +171,18 @@ bool ADoorAssemblyCell::StartCycle()
 	}
 	PickupAtStart=Pose->GetControlledDoor()->GetComponentTransform();
 	if(!ScanDoorSize())
-	{Fail(FString::Printf(TEXT("차문 규격 검사 실패 · 레이저 폭 %.1fcm / 기준 %.1fcm ± 1.0cm"),MeasuredDoorWidthCm,NominalDoorWidthCm));return false;}
+	{
+		if(MeasuredDoorWidthCm>0 && DoorSizeScale!=1.0)
+		{
+			RejectedDoorWidthCm=MeasuredDoorWidthCm;
+			DoorRejectStartWorld=Pose->GetControlledDoor()->GetComponentLocation();
+			DoorRejectTargetWorld=DoorRejectStartWorld
+				+BodyAtStart.TransformVectorNoScale(FVector(-90,bRightDoor?180:-180,0));
+			bDoorSizeRejectMoving=true;
+		}
+		Fail(FString::Printf(TEXT("차문 규격 검사 실패 · 레이저 폭 %.1fcm / 기준 %.1fcm ± 1.0cm · 파지 금지·격리"),MeasuredDoorWidthCm,NominalDoorWidthCm));
+		return false;
+	}
 	WriteRunMetadata();
 	if (!CheckPickup()) { Fail(Status); return false; }
 	if (!MeasureSensors()) { Fail(TEXT("Invalid alignment sensor input.")); return false; }
@@ -359,9 +374,34 @@ void ADoorAssemblyCell::BeginPlay()
 void ADoorAssemblyCell::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	AdvanceRejectedDoor(DeltaSeconds);
+	if (bDoorSizeRejectMoving || bDoorSizeRejected)
+	{
+		if (GetWorld() && (GetWorld()->WorldType==EWorldType::PIE || GetWorld()->WorldType==EWorldType::Game))
+		{
+			DrawDebugLine(GetWorld(),DoorRejectStartWorld,DoorRejectTargetWorld,FColor::Red,false,.08f,0,3.f);
+			DrawDebugSphere(GetWorld(),DoorRejectTargetWorld,24,12,FColor::Red,false,.08f,0,2.f);
+			DrawDebugString(GetWorld(),DoorRejectTargetWorld+FVector(0,0,90),
+				FString::Printf(TEXT("DOOR REJECT HOLD / %.1f cm / %s"),RejectedDoorWidthCm,
+					bDoorSizeRejected?TEXT("ISOLATED"):TEXT("MOVING")),nullptr,FColor::Red,.08f,false,1.f);
+		}
+	}
 	if (bExternallyDriven) return;
 	if (DeltaSeconds>1) { if (Robot) StopCycle(); Status=TEXT("Large frame stall: stopped; reset required."); return; }
 	AdvanceSimulation(DeltaSeconds);
+}
+void ADoorAssemblyCell::AdvanceRejectedDoor(double DeltaSeconds)
+{
+	if(!bDoorSizeRejectMoving || !Pose.IsValid() || !Pose->GetControlledDoor())return;
+	const double Dt=FMath::Clamp(DeltaSeconds,0.0,0.05);
+	if(Dt<=0)return;
+	DoorRejectElapsedSeconds+=Dt;
+	const double Alpha=FMath::Clamp(DoorRejectElapsedSeconds/1.8,0.0,1.0);
+	const double Smooth=Alpha*Alpha*(3.0-2.0*Alpha);
+	FTransform World=Pose->GetControlledDoor()->GetComponentTransform();
+	World.SetLocation(FMath::Lerp(DoorRejectStartWorld,DoorRejectTargetWorld,Smooth));
+	if(!Pose->SetDoorWorldPose(World)) { bDoorSizeRejectMoving=false; return; }
+	if(Alpha>=1.0) { bDoorSizeRejectMoving=false; bDoorSizeRejected=true; }
 }
 void ADoorAssemblyCell::EndPlay(const EEndPlayReason::Type Reason)
 { FlushRecording(); Super::EndPlay(Reason); }

@@ -7,6 +7,7 @@
 #include "RobotArm.h"
 #include "VehicleProcessTest.h"
 #include "CamryAssembly.h"
+#include "Components/SceneComponent.h"
 #include "EngineUtils.h"
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonSerializer.h"
@@ -334,11 +335,19 @@ bool AFactoryRuntime::RunModularEditorChecks()
         for(int32 I=0;I<24;++I)StepSimulation(1./120);
         const bool Began=StartCycle();
         for(int32 I=0;I<120*300&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)StepSimulation(1./120);
-        const auto* Door=TestAssemblyLine->DoorCell.Get();
+        auto* Door=TestAssemblyLine->DoorCell.Get();
         Check(Kind==11?TEXT("oversized_door_laser_rejects_before_pickup"):TEXT("undersized_door_laser_rejects_before_pickup"),
             Began&&RunState==EFactoryRunState::Fault&&Door->MeasuredDoorWidthCm>0&&!Door->bDoorSizePassed
             &&(Kind==11?Door->MeasuredDoorWidthCm>Door->NominalDoorWidthCm+1:Door->MeasuredDoorWidthCm<Door->NominalDoorWidthCm-1)
             &&!Door->bDoorHeld);
+        for(int32 TickIndex=0;TickIndex<40;++TickIndex)Door->Tick(0.05f);
+        const USceneComponent* RejectedDoorRoot=Door->TargetModule
+            ? Door->TargetModule->GetRootComponent() : Door->Assembly->GetLeftDoor();
+        Check(Kind==11?TEXT("oversized_door_moves_to_reject_hold"):TEXT("undersized_door_moves_to_reject_hold"),
+            Door->bDoorSizeRejected&&!Door->bDoorSizeRejectMoving&&RejectedDoorRoot
+            &&FVector::Distance(RejectedDoorRoot->GetComponentLocation(),Door->DoorRejectTargetWorld)<0.5
+            &&FVector::Distance(Door->DoorRejectStartWorld,Door->DoorRejectTargetWorld)>190.0
+            &&FMath::IsNearlyEqual(Door->RejectedDoorWidthCm,Door->MeasuredDoorWidthCm,0.01));
     }
     for(int32 Kind : {1,2,3,4,9})
     {
