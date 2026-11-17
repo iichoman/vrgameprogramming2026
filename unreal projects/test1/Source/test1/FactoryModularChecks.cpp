@@ -227,6 +227,16 @@ bool AFactoryRuntime::RunModularEditorChecks()
         }
         const auto* Line=TestAssemblyLine.Get();
         auto* Cell=Line->WheelCell.Get();
+        if(Kind==0)
+        {
+            const auto Assessment=Cell->GetEvaluationSnapshot();
+            Check(TEXT("demo_completion_does_not_claim_physical_quality"),
+                RunState==EFactoryRunState::Complete
+                &&Assessment.Control==EWheelControlAssessment::Completed
+                &&Assessment.DemoGeometry==EWheelQualityAssessment::DemoGeometryPassed
+                &&Assessment.PhysicalQuality==EWheelQualityAssessment::NotAssessed
+                &&Assessment.Model==EWheelModelAssessment::DemoOnly);
+        }
         if(Kind==9||Kind==10)
         {
             RefreshInspection();

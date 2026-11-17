@@ -98,6 +98,18 @@ enum class EWheelOutcome : uint8 { NotEvaluated, Pass, QualityFail, Blocked, Sto
 UENUM(BlueprintType)
 enum class EWheelStage : uint8 { Idle, ApproachPickup, Grip, Lift, Transfer, ApproachMount, Align, Fasten, Release, Retract, Reposition, WaitSupply, WaitPose, Complete, Fault, Stopped };
 
+// A read-only assessment boundary. Geometric demo checks are never promoted to physical quality.
+enum class EWheelControlAssessment : uint8 { Waiting, Running, Completed, Failed };
+enum class EWheelQualityAssessment : uint8 { NotAssessed, DemoGeometryPassed, DemoGeometryFailed };
+enum class EWheelModelAssessment : uint8 { DemoOnly, InvalidSetup };
+struct FWheelEvaluationSnapshot
+{
+    EWheelControlAssessment Control = EWheelControlAssessment::Waiting;
+    EWheelQualityAssessment DemoGeometry = EWheelQualityAssessment::NotAssessed;
+    EWheelQualityAssessment PhysicalQuality = EWheelQualityAssessment::NotAssessed;
+    EWheelModelAssessment Model = EWheelModelAssessment::DemoOnly;
+};
+
 struct FWheelLane
 {
 	int32 WheelIndex = INDEX_NONE;
@@ -278,6 +290,7 @@ public:
 	UPROPERTY(EditAnywhere, Category="Wheel Cell|Experiment") double MaxPickupDisplacementMm = 500;
 	UPROPERTY(EditAnywhere, Category="Wheel Cell|Experiment") double MaxPickupRotationDeg = 30;
 	UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|State") EWheelOutcome Outcome = EWheelOutcome::NotEvaluated;
+	FWheelEvaluationSnapshot GetEvaluationSnapshot() const;
 	UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|State") FString Status;
 	UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|State") int32 MountedCount = 0;
 	UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|State") double SimulationTimeSeconds = 0;

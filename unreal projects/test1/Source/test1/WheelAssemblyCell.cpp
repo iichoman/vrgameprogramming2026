@@ -212,6 +212,22 @@ int32 AWheelAssemblyCell::CountIncidents(const TCHAR* Kind, const TCHAR* Inciden
 	return Count;
 }
 
+FWheelEvaluationSnapshot AWheelAssemblyCell::GetEvaluationSnapshot() const
+{
+    FWheelEvaluationSnapshot Snapshot;
+    Snapshot.Model = IsValid(Assembly) && IsValid(LeftRobot) && IsValid(RightRobot)
+        ? EWheelModelAssessment::DemoOnly : EWheelModelAssessment::InvalidSetup;
+    if (bRunning) Snapshot.Control = EWheelControlAssessment::Running;
+    else if (Outcome == EWheelOutcome::Pass) Snapshot.Control = EWheelControlAssessment::Completed;
+    else if (Outcome == EWheelOutcome::Blocked || Outcome == EWheelOutcome::Stopped || Outcome == EWheelOutcome::QualityFail)
+        Snapshot.Control = EWheelControlAssessment::Failed;
+    if (Outcome == EWheelOutcome::Pass) Snapshot.DemoGeometry = EWheelQualityAssessment::DemoGeometryPassed;
+    else if (Outcome == EWheelOutcome::QualityFail) Snapshot.DemoGeometry = EWheelQualityAssessment::DemoGeometryFailed;
+    // The current Transform-driven mount and time-based fastening cannot establish physical quality.
+    Snapshot.PhysicalQuality = EWheelQualityAssessment::NotAssessed;
+    return Snapshot;
+}
+
 FString AWheelAssemblyCell::GetIncidentSummary(int32 MaxRows) const
 {
 	if (Incidents.IsEmpty()) return TEXT("기록된 사건 없음");
