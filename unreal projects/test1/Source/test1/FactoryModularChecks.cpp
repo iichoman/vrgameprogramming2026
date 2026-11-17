@@ -172,6 +172,7 @@ bool AFactoryRuntime::RunModularEditorChecks()
         bool NormalWheelSizeObserved=false;
         bool NormalDoorSizeObserved=false;
         bool SupplyTransitObserved=false;
+        bool SupplyRecoveredOnlyAfterVerification=true;
         TOptional<FVector> SupplyTransitFirstPosition;
         bool GripRetryMovementObserved=false;
         TOptional<FVector> GripRetryFirstTcp;
@@ -216,6 +217,10 @@ bool AFactoryRuntime::RunModularEditorChecks()
             NormalDoorSizeObserved|=Kind==0&&TestAssemblyLine->DoorCell->bDoorSizePassed
                 &&TestAssemblyLine->DoorCell->MeasuredDoorWidthCm>0;
             const auto* SupplyCell=TestAssemblyLine->WheelCell.Get();
+            if(Kind==1&&TestAssemblyLine->RecoveredEvents>0)
+                SupplyRecoveredOnlyAfterVerification &= SupplyCell->CountIncidents(TEXT("supply_verified"),TEXT("observed"))>0
+                    &&SupplyCell->CountIncidents(TEXT("supply_missing"),TEXT("recovered"))>0
+                    &&Stage!=EWheelStage::WaitSupply;
             if(Kind==1&&SupplyCell->IsWheelVisible(0)
                 &&FVector::Distance(SupplyCell->GetWheelWorld(0).GetLocation(),SupplyCell->GetPickupWorld(0).GetLocation())>20.0
                 &&Stage==EWheelStage::WaitSupply&&!SupplyCell->LeftSensors->Presence.bDetected)
@@ -230,6 +235,9 @@ bool AFactoryRuntime::RunModularEditorChecks()
         if(Kind==1)
         {
             const FWheelIncidentRecord* Event=Cell->Incidents.FindByPredicate([](const FWheelIncidentRecord& R){return R.Kind==TEXT("supply_missing");});
+            const FWheelIncidentRecord* Dispatch=Cell->Incidents.FindByPredicate([](const FWheelIncidentRecord& R){return R.Kind==TEXT("spare_dispatched");});
+            const FWheelIncidentRecord* Arrival=Cell->Incidents.FindByPredicate([](const FWheelIncidentRecord& R){return R.Kind==TEXT("spare_arrived");});
+            const FWheelIncidentRecord* Verified=Cell->Incidents.FindByPredicate([](const FWheelIncidentRecord& R){return R.Kind==TEXT("supply_verified");});
             const FFactoryTask* Task=Layout.Tasks.FindByPredicate([](const FFactoryTask& T){return T.Id==TEXT("wheel_fl");});
             Check(TEXT("incident_identifies_demo_request_product_and_part"),Event
                 &&Task
@@ -242,6 +250,17 @@ bool AFactoryRuntime::RunModularEditorChecks()
                 &&Event->TargetPort==Task->TargetPort
                 &&Event->SourcePort==Task->SourcePort
                 &&Cell->GetIncidentCsv().Contains(TEXT("task_id,target_port,source_port")));
+            Check(TEXT("missing_wheel_supply_history_waits_for_arrival_and_rescan"),Event&&Dispatch&&Arrival&&Verified
+                &&Event->DetectedAt<Dispatch->DetectedAt
+                &&Dispatch->DetectedAt<Arrival->DetectedAt
+                &&Arrival->DetectedAt<=Verified->DetectedAt
+                &&Dispatch->Measured>100.0&&Dispatch->Unit==TEXT("cm")
+                &&Arrival->Measured<=Arrival->Limit&&Arrival->Unit==TEXT("cm")
+                &&Verified->Measured>=65.0&&Verified->Measured<=67.0
+                &&Verified->Outcome==TEXT("observed")&&Event->Outcome==TEXT("recovered")
+                &&SupplyRecoveredOnlyAfterVerification
+                &&Event->RequestId==Verified->RequestId&&Event->PartInstanceId==Verified->PartInstanceId
+                &&Cell->GetIncidentCsv().Contains(TEXT("spare_arrived")));
         }
         if(Kind==0)
         {

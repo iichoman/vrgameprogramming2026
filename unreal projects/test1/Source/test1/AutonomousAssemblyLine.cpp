@@ -27,7 +27,7 @@ bool AAutonomousAssemblyLine::ResetLine()
 		FirstSeenAt[Index] = RestoreAt[Index] = SupplyTravelStartedAt[Index] = -1;
 		SupplyTravelFrom[Index] = SupplyTravelTo[Index] = FVector::ZeroVector;
 		TriggerAfter[Index] = Random.FRandRange(.1,.4);
-		bInjected[Index] = bRestored[Index] = false;
+		bInjected[Index] = bRestored[Index] = bSupplyArrivalRecorded[Index] = false;
 	}
 	if (FactoryCheck != 5)
 	{
@@ -153,6 +153,10 @@ void AAutonomousAssemblyLine::AdvanceSupplyDelivery(int32 Index)
 	{
 		SupplyTravelStartedAt[Index]=SensorTime;
 		WheelCell->SetLeftWheelSupplyVisible(Index,true);
+		WheelCell->OpenIncident(TEXT("spare_dispatched"),Index,WheelCell->GetLeftStage(),TEXT("공급 이송 예정 거리"),TEXT("cm"),
+			FVector::Distance(SupplyTravelFrom[Index],SupplyTravelTo[Index]),
+			FVector::Distance(SupplyTravelFrom[Index],SupplyTravelTo[Index]),
+			TEXT("예비 위치에서 공급 위치로 이송 시작"),TEXT("observed"));
 		Record(TEXT("SPARE_DISPATCHED"),FString::Printf(TEXT("wheel %d moving from reserve to pickup"),Index+1));
 	}
 	const double Progress=FMath::Clamp((SensorTime-SupplyTravelStartedAt[Index])/SupplyTravelSeconds,0.0,1.0);
@@ -172,8 +176,20 @@ void AAutonomousAssemblyLine::RestoreEvent(int32 Index)
 	switch (Planned[Index])
 	{
 	case ERandomWheelEvent::SupplyMissing:
-		WheelCell->SetLeftWheelSupplyVisible(Index,true);
-		ActiveEvent = FString::Printf(TEXT("타이어 %d 자동 보충 완료 → 센서 재확인"),Index+1);
+		if (!bSupplyArrivalRecorded[Index])
+		{
+			WheelCell->OpenIncident(TEXT("spare_arrived"),Index,WheelCell->GetLeftStage(),TEXT("공급 위치 오차"),TEXT("cm"),
+				FVector::Distance(WheelCell->GetWheelWorld(Index).GetLocation(),WheelCell->GetPickupWorld(Index).GetLocation()),
+				8.0,TEXT("공급 위치 센서 검출 · 휠 규격/자세 재검사 대기"),TEXT("observed"));
+			bSupplyArrivalRecorded[Index]=true;
+			ActiveEvent=FString::Printf(TEXT("타이어 %d 공급 위치 도착 → 센서·규격 재검사 대기"),Index+1);
+			return;
+		}
+		// Arrival alone is not a recovered assembly. The cell must close the missing-supply
+		// incident and leave WaitSupply after its own fresh sensor and size checks.
+		if (WheelCell->GetLeftStage()==EWheelStage::WaitSupply
+			|| WheelCell->CountIncidents(TEXT("supply_missing"),TEXT("pending"))>0) return;
+		ActiveEvent=FString::Printf(TEXT("타이어 %d 센서·규격 재검사 완료 → 로봇 재개"),Index+1);
 		break;
 	case ERandomWheelEvent::PickupPoseDropout:
 		WheelCell->LeftSensors->bPublishPickupPose = true;

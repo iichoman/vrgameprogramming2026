@@ -258,7 +258,8 @@ FString AWheelAssemblyCell::GetIncidentSummary(int32 MaxRows) const
 	{
 		const FWheelIncidentRecord& Row = Incidents[Index];
 		const TCHAR* Result = Row.Outcome == TEXT("recovered") ? TEXT("복구 완료")
-			: Row.Outcome == TEXT("stopped") ? TEXT("안전 중단") : TEXT("진행 중");
+			: Row.Outcome == TEXT("stopped") ? TEXT("안전 중단")
+			: Row.Outcome == TEXT("observed") ? TEXT("확인") : TEXT("진행 중");
 		Text += FString::Printf(TEXT("%.2fs %s"), Row.DetectedAt, *Row.Kind);
 		if (!Row.Quantity.IsEmpty())
 			Text += FString::Printf(TEXT(" · %s %.2f%s / 기준 %.2f%s"), *Row.Quantity, Row.Measured, *Row.Unit, Row.Limit, *Row.Unit);
@@ -820,6 +821,15 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
 		Lane.Pickup = Measured;
 		if (Lane.Stage==EWheelStage::WaitSupply && Lane.WheelIndex==0 && !ScanFrontLeftWheelSize())
 		{ Fail(FString::Printf(TEXT("보충 휠 규격 검사 실패 · 측정 지름 %.1fcm / 기준 66.0cm ± 1.0cm"),FrontLeftWheelMeasuredDiameterCm)); return; }
+		if (Lane.Stage==EWheelStage::WaitSupply && CountIncidents(TEXT("supply_missing"),TEXT("pending"))>0)
+		{
+			if (Lane.WheelIndex==0)
+				OpenIncident(TEXT("supply_verified"),Lane.WheelIndex,Lane.Stage,TEXT("재검사 휠 지름"),TEXT("cm"),
+					FrontLeftWheelMeasuredDiameterCm,66.0,TEXT("허용 65–67 cm · 공급 위치 센서 확인 후 작업 재개"),TEXT("observed"));
+			else
+				OpenIncident(TEXT("supply_verified"),Lane.WheelIndex,Lane.Stage,TEXT("공급 휠 검출"),TEXT(""),
+					1,1,TEXT("공급 위치·자세 센서 확인 후 작업 재개"),TEXT("observed"));
+		}
 		CloseIncidents(TEXT("supply_missing"),TEXT("recovered"));
 		CloseIncidents(TEXT("pickup_pose_stale"),TEXT("recovered"));
 		CloseIncidents(TEXT("wheel_size_reject"),TEXT("recovered"));

@@ -44,7 +44,7 @@ struct FWheelHubScanReading
 
 /** One detected incident: what was compared, the limit, the cell's response and how it ended.
  * Written by the cell when it decides; a UI should display these rows rather than re-derive them.
- * Kind and Outcome are stable English ids. Outcome: pending, recovered, stopped. */
+ * Kind and Outcome are stable English ids. Outcome: pending, observed, recovered, stopped. */
 USTRUCT(BlueprintType)
 struct FWheelIncidentRecord
 {

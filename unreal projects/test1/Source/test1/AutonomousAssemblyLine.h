@@ -51,6 +51,7 @@ private:
 	static constexpr double SupplyTravelSeconds = 1.6;
 	bool bInjected[2] = {false,false};
 	bool bRestored[2] = {false,false};
+	bool bSupplyArrivalRecorded[2] = {false,false};
 	void InjectEvent(int32 Index);
 	void RestoreEvent(int32 Index);
 	void AdvanceSupplyDelivery(int32 Index);
