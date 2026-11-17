@@ -85,6 +85,42 @@ struct FFactoryNameDraft
     FString English;
 };
 
+// Read-only presentation: phase transitions remain owned by WheelAssemblyCell.
+FString DemoRecoveryText(const AWheelAssemblyCell* W)
+{
+    if(!IsValid(W))return TEXT("조립 라인 연결 대기");
+    switch(W->SlipRecoveryPhase)
+    {
+    case 1:return TEXT("낙하 감지 · 로봇 대기 / 충돌면 확인");
+    case 2:return TEXT("작업자 호출 · 낙하 휠로 이동 중");
+    case 3:return TEXT("작업자 회수 · 불량 휠 격리 중");
+    case 4:return TEXT("대체 휠 공급 중 · 로봇 대기");
+    default:
+        if(W->SlipFailureMassKg>0)return W->MountedCount==4?TEXT("복구 후 휠 4개 조립 완료"):TEXT("재공급 후 조립 공정 · 진행/중단은 아래 상태 참조");
+        const TCHAR* Stages[]={TEXT("작업 대기"),TEXT("부품 접근"),TEXT("파지 확인"),TEXT("부품 들어 올리기"),TEXT("운반"),TEXT("장착 위치 접근"),TEXT("정렬 검사"),TEXT("체결"),TEXT("그리퍼 해제"),TEXT("로봇 후퇴"),TEXT("다음 작업 위치 이동"),TEXT("부품 공급 대기"),TEXT("위치 측정 대기"),TEXT("휠 공정 완료"),TEXT("문제 감지 · 중단"),TEXT("사용자 정지")};
+        const int32 Index=static_cast<int32>(W->GetLeftStage());
+        return Index>=0&&Index<UE_ARRAY_COUNT(Stages)?FString(Stages[Index]):W->GetLaneStage(true);
+    }
+}
+FString DemoEvidenceText(const AWheelAssemblyCell* W)
+{
+    if(!IsValid(W))return TEXT("측정 데이터 없음");
+    FString S=TEXT("대상: 왼쪽 앞 휠 · 가상 센서/간소화 물리 모델\n");
+    if(W->bPhysicalLeftGrip)
+    {
+        const auto& G=W->GetLeftGripState();
+        S+=FString::Printf(TEXT("현재 질량 %.1f kg\n"),W->FrontLeftWheelMassKg);
+        if(W->LeftGripMeasuredAt>=0)
+            S+=FString::Printf(TEXT("마지막 파지 표본 %.2f초\n필요 힘 %.1f N / 유지 한계 %.1f N\n미끄러짐 %.1f mm · 힘 여유 %+.1f N\n"),W->LeftGripMeasuredAt,G.DemandN,G.CapacityN,G.SlipMm,G.CapacityN-G.DemandN);
+        else S+=TEXT("파지 측정 대기 — 힘/미끄러짐 표본 없음\n");
+        if(W->SlipFailureMassKg>0)S+=FString::Printf(TEXT("사건 당시: %s · %.1f kg\n"),W->bSlipFailureLowFriction?TEXT("저마찰"):TEXT("과중량"),W->SlipFailureMassKg);
+    }
+    if(W->FrontLeftWheelSizeMeasuredAt>=0)
+        S+=FString::Printf(TEXT("휠 지름 %.1f cm / 허용 65–67 cm\n규격 판정: %s · 표본 %.2f초"),W->FrontLeftWheelMeasuredDiameterCm,W->bFrontLeftWheelSizePassed?TEXT("합격"):TEXT("불합격"),W->FrontLeftWheelSizeMeasuredAt);
+    else S+=TEXT("휠 지름 측정 대기");
+    return S;
+}
+
 FString FactoryRoleLabel(const FString& Role)
 {
     if (Role == TEXT("work")) return TEXT("작업 구역 (Work)");
@@ -206,12 +242,19 @@ void AFactoryRuntime::CreatePanel()
             auto DemoButton=[this,&Button,&Editing,Names](int32 Kind)->TSharedRef<SWidget>{
                 const FString Caption=(IsValid(TestAssemblyLine)&&TestAssemblyLine->GetFactoryCheck()==Kind?TEXT("● "):TEXT(""))+FString(Names[Kind]);
                 return Button(Caption,[this,Kind](){if(IsValid(TestAssemblyLine)){TestAssemblyLine->SetFactoryCheck(Kind);ResetCycle();}},Editing);};
-            Label(TEXT("센서·공급"),true);
-            Pair(DemoButton(0),DemoButton(1));Pair(DemoButton(2),DemoButton(3));Pair(DemoButton(4),DemoButton(5));
-            Label(TEXT("파지·낙하"),true);
-            Pair(DemoButton(6),DemoButton(7));Rows->AddSlot().AutoHeight().Padding(0,4)[DemoButton(8)];
-            Label(TEXT("규격·차체 이송"),true);
-            Pair(DemoButton(9),DemoButton(10));Pair(DemoButton(11),DemoButton(12));Rows->AddSlot().AutoHeight().Padding(0,4)[DemoButton(13)];
+            Label(TEXT("발표용 시연 선택"),true);
+            Pair(DemoButton(6),DemoButton(7));Pair(DemoButton(8),DemoButton(9));
+            Rows->AddSlot().AutoHeight()[Button(Model.ShowAllDemoCases?TEXT("추가 시연 접기"):TEXT("추가 시연 펼치기"),[this](){Inspection().ShowAllDemoCases=!Inspection().ShowAllDemoCases;bNeedsPanel=true;})];
+            if(Model.ShowAllDemoCases)
+            {
+                Pair(DemoButton(0),DemoButton(1));Pair(DemoButton(2),DemoButton(3));Pair(DemoButton(4),DemoButton(5));
+                Pair(DemoButton(10),DemoButton(11));Pair(DemoButton(12),DemoButton(13));
+            }
+            Label(TEXT("판단 근거 · 현재 값과 마지막 표본"),true);
+            Dynamic([this](){return DemoEvidenceText(IsValid(TestAssemblyLine)?TestAssemblyLine->WheelCell.Get():nullptr);});
+            Label(TEXT("레이저 3단계 · 왼쪽 앞 휠"),true);
+            Dynamic([this](){return IsValid(TestAssemblyLine)&&IsValid(TestAssemblyLine->WheelCell)?TestAssemblyLine->WheelCell->GetLaserInspectionSummary().Replace(TEXT("통과"),TEXT("스캔 유효")):TEXT("연결 대기");});
+            Label(TEXT("스캔 유효는 측정 성공입니다. 장착 품질은 최종 중심 오차와 공정 결과를 함께 확인하세요."));
             Label(TEXT("저마찰·과중량은 휠 낙하 → 작업자 표시 이동 → 격리·대체 휠 공급 → 재검사·조립을 보여줍니다. 휠 규격 과대/과소는 공급 위치에서 측정 후 격리합니다."));
         }
         else
@@ -248,7 +291,7 @@ void AFactoryRuntime::CreatePanel()
         }
         Pair(Button(TEXT("모든 센서"),[this](){Inspection().ShowAllSensors=true;bNeedsPanel=true;}),Button(TEXT("선택 대상만"),[this](){Inspection().ShowAllSensors=false;bNeedsPanel=true;}));
         auto ValueText=[this](const FString& Id){const auto* C=Inspection().Sensors.Find(Id);if(!C)return FString(TEXT("연결 정보 없음"));const auto& V=C->Latest;
-            const TCHAR* State=V.State()==EFactorySampleState::Disconnected?TEXT("미연결"):V.State()==EFactorySampleState::Invalid?TEXT("측정 무효"):V.State()==EFactorySampleState::Stale?TEXT("오래된 측정"):TEXT("정상");
+            const TCHAR* State=V.State()==EFactorySampleState::Disconnected?TEXT("미연결"):V.State()==EFactorySampleState::Invalid?TEXT("측정 무효"):V.State()==EFactorySampleState::Stale?TEXT("오래된 측정"):TEXT("측정 유효");
             return V.Label+TEXT(" · ")+State+(V.State()==EFactorySampleState::Valid?FString::Printf(TEXT("  %.3f %s"),V.Value,*V.Unit):TEXT("  —"));};
         Dynamic([this,ValueText](){const auto* C=Inspection().Sensors.Find(Inspection().SelectedChannel);return ValueText(Inspection().SelectedChannel)+(C?TEXT("\n출처: ")+C->Latest.Source+TEXT("\n대상: ")+ObjectName(C->Latest.ObjectId):FString());});
         Rows->AddSlot().AutoHeight().Padding(0,5)[SNew(SFactorySensorChart).Model(InspectionState)];
@@ -293,11 +336,18 @@ void AFactoryRuntime::CreatePanel()
     Chip->AddSlot().AutoHeight().Padding(0,5)[SNew(STextBlock).Font(Small).ColorAndOpacity(Muted).Text(FText::FromString(TEXT("파랑: 선택  /  주황: 문제  /  빨강: 확인 중")))];
     Chip->AddSlot().AutoHeight()[SNew(SButton).IsFocusable(false).OnClicked_Lambda([this](){OpenDetails(EFactoryDetailTab::Problems);return FReply::Handled();})[
         SNew(STextBlock).Font(Font).ColorAndOpacity(Orange).Text_Lambda([this](){return FText::FromString(FString::Printf(TEXT("문제 %d건 · 상세 보기"),Inspection().Issues.Num()));})]];
+    if(bUseAssemblyIntegration)
+    {
+        Chip->AddSlot().AutoHeight().Padding(0,12,0,5)[SNew(STextBlock).Font(HeadingFont).ColorAndOpacity(Blue).Text(FText::FromString(TEXT("현재 작업 · 휠 공정")))];
+        Chip->AddSlot().AutoHeight()[SNew(STextBlock).Font(Font).AutoWrapText(true).ColorAndOpacity(Orange).Text_Lambda([this](){return FText::FromString(DemoRecoveryText(IsValid(TestAssemblyLine)?TestAssemblyLine->WheelCell.Get():nullptr));})];
+        Chip->AddSlot().AutoHeight().Padding(0,7)[SNew(STextBlock).Font(Font).AutoWrapText(true).Text_Lambda([this](){return FText::FromString(IsValid(TestAssemblyLine)&&IsValid(TestAssemblyLine->WheelCell)?(TestAssemblyLine->WheelCell->GetLeftStage()==EWheelStage::Idle?FString(TEXT("시연 항목을 선택하고 상단 실행을 누르세요.")):TestAssemblyLine->WheelCell->Status):TEXT("연결 대기"));})];
+        Chip->AddSlot().AutoHeight()[Button(TEXT("판단 수치·시연 보기"),[this](){OpenDetails(EFactoryDetailTab::Demo);})];
+    }
     if(!ViewportSurface)ViewportSurface=SNew(SFactoryViewport).Runtime(this);const bool NewPanel=!Panel;
     if(NewPanel)Panel=SNew(SOverlay).Visibility(EVisibility::SelfHitTestInvisible)+SOverlay::Slot()[ViewportSurface.ToSharedRef()];
     auto Overlay=StaticCastSharedRef<SOverlay>(Panel.ToSharedRef());while(Overlay->GetNumWidgets()>1)Overlay->RemoveSlot(Overlay->GetChildren()->GetChildAt(1));
     Overlay->AddSlot().HAlign(HAlign_Fill).VAlign(VAlign_Top).Padding(10)[Card(Top)];
-    Overlay->AddSlot().HAlign(HAlign_Left).VAlign(VAlign_Top).Padding(10,76,0,0)[SNew(SBox).WidthOverride(260)[Card(Chip)]];
+    Overlay->AddSlot().HAlign(HAlign_Left).VAlign(VAlign_Top).Padding(10,76,0,0)[SNew(SBox).WidthOverride(330)[Card(Chip)]];
     Overlay->AddSlot().HAlign(HAlign_Fill).VAlign(VAlign_Bottom).Padding(10)[Card(Palette)];
     if(Model.PanelOpen)
     {
