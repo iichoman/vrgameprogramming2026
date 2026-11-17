@@ -183,6 +183,8 @@ FTransform AWheelAssemblyCell::GetMountTargetWorld(int32 Index) const
 void AWheelAssemblyCell::SetRunIdentity(const FString& InRequestId, const FString& InProductInstanceId, int32 InRunEpoch)
 {
     RequestId=InRequestId; ProductInstanceId=InProductInstanceId; RunEpoch=InRunEpoch;
+    FrontLeftActiveWheelInstanceId=ProductInstanceId+TEXT("/part_wheel_fl/initial");
+    RejectedWheelInstanceId.Reset(); SpareWheelInstanceId.Reset();
 }
 
 void AWheelAssemblyCell::OpenIncident(const TCHAR* Kind, int32 WheelIndex, EWheelStage Stage, const TCHAR* Quantity,
@@ -196,6 +198,7 @@ void AWheelAssemblyCell::OpenIncident(const TCHAR* Kind, int32 WheelIndex, EWhee
 	Row.RequestId=RequestId; Row.ProductInstanceId=ProductInstanceId; Row.RunEpoch=RunEpoch;
 	Row.PartId = Part>=0 && Part<4 ? PartIds[Part] : TEXT("");
 	Row.PartInstanceId=!Row.PartId.IsEmpty()&&!ProductInstanceId.IsEmpty()?ProductInstanceId+TEXT("/")+Row.PartId:TEXT("");
+	if (Part==0 && !FrontLeftActiveWheelInstanceId.IsEmpty()) Row.PartInstanceId=FrontLeftActiveWheelInstanceId;
 	Row.Stage = StaticEnum<EWheelStage>()->GetNameStringByValue(int64(Stage));
 	Row.DetectedAt = SimulationTimeSeconds;
 	Row.Quantity = Quantity; Row.Unit = Unit; Row.Measured = Measured; Row.Limit = Limit;
@@ -562,6 +565,8 @@ bool AWheelAssemblyCell::ResetCycle()
 	WheelRejectElapsedSeconds = 0;
 	Incidents.Reset();
 	WheelReplacePhase = 0; WheelReplacements = 0; WheelReplaceSeconds = 0; RejectedWheelDiameterCm = 0;
+	RejectedWheelInstanceId.Reset(); SpareWheelInstanceId.Reset();
+	FrontLeftActiveWheelInstanceId=ProductInstanceId.IsEmpty()?TEXT(""):ProductInstanceId+TEXT("/part_wheel_fl/initial");
 	WheelSpareStartWorld = FVector::ZeroVector;
 	DroppedTireVisual->SetRelativeScale3D(FVector(0.66,0.66,0.16));
 	DroppedHubVisual->SetRelativeScale3D(FVector(0.37,0.37,0.025));
@@ -806,6 +811,7 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
 		CloseIncidents(TEXT("supply_missing"),TEXT("recovered"));
 		CloseIncidents(TEXT("pickup_pose_stale"),TEXT("recovered"));
 		CloseIncidents(TEXT("wheel_size_reject"),TEXT("recovered"));
+		CloseIncidents(TEXT("spare_supplied"),TEXT("recovered"));
 		MoveTo(Side, EWheelStage::ApproachPickup, OffsetOutward(Measured, Side, 25));
 		return;
 	}
@@ -1308,12 +1314,15 @@ void AWheelAssemblyCell::AdvanceWheelReplacement(double DeltaSeconds)
 		Pose.SetLocation(FMath::Lerp(WheelRejectStartWorld, WheelRejectTargetWorld, Smooth));
 		WheelRoots[PartIndex(0)]->SetWorldTransform(Pose);
 		if (Alpha < 1.0) return;
-		// Leave a stand-in for the rejected wheel at the hold point, at its rejected size.
+		// Leave a distinct visual proxy for the rejected part at its rejected size.
 		DroppedWheelCollision->SetWorldTransform(Pose);
 		DroppedTireVisual->SetRelativeScale3D(FVector(0.66,0.66,0.16)*FrontLeftWheelSizeScale);
 		DroppedHubVisual->SetRelativeScale3D(FVector(0.37,0.37,0.025)*FrontLeftWheelSizeScale);
 		DroppedTireVisual->SetVisibility(true); DroppedHubVisual->SetVisibility(true);
 		bFrontLeftWheelRejecting = false; bFrontLeftWheelRejected = true;
+		RejectedWheelInstanceId=FrontLeftActiveWheelInstanceId;
+		SpareWheelInstanceId=ProductInstanceId+TEXT("/part_wheel_fl/spare_1");
+		FrontLeftActiveWheelInstanceId=SpareWheelInstanceId;
 		// The spare is a nominal wheel. Until the next scenario selection this cell supplies nominal wheels.
 		FrontLeftWheelSizeScale = 1.0;
 		TireVisuals[PartIndex(0)]->SetRelativeScale3D(FVector(0.66,0.66,0.16));
@@ -1330,6 +1339,8 @@ void AWheelAssemblyCell::AdvanceWheelReplacement(double DeltaSeconds)
 	WheelRoots[PartIndex(0)]->SetWorldTransform(Pose);
 	if (Alpha < 1.0) return;
 	WheelReplacePhase = 0; WheelReplaceSeconds = 0; ++WheelReplacements;
+	OpenIncident(TEXT("spare_supplied"),0,EWheelStage::WaitSupply,TEXT("대체 휠 도착"),TEXT("개"),
+		1,1,TEXT("공급 센서와 레이저 규격 재검사 대기"));
 	Status = TEXT("대체 휠 도착 · 공급 센서 확인 후 규격 재검사");
 }
 void AWheelAssemblyCell::BeginPlay() { Super::BeginPlay(); if (!bExternallyDriven) ResetCycle(); }
@@ -1339,6 +1350,16 @@ void AWheelAssemblyCell::Tick(float DeltaSeconds)
 	AdvanceFrontLeftWheelReject(DeltaSeconds);
 	if(GetWorld()&&(GetWorld()->WorldType==EWorldType::PIE||GetWorld()->WorldType==EWorldType::Game))
 	{
+		if (bFrontLeftWheelRejected && !RejectedWheelInstanceId.IsEmpty())
+		{
+			DrawDebugString(GetWorld(),DroppedWheelCollision->GetComponentLocation()+FVector(0,0,95),
+				FString::Printf(TEXT("REJECTED WHEEL / %.1f cm\n%s"),RejectedWheelDiameterCm,*RejectedWheelInstanceId),
+				nullptr,FColor::Red,0.08f,false,1.f);
+			if (WheelReplacePhase==2)
+				DrawDebugString(GetWorld(),GetWheelWorld(0).GetLocation()+FVector(0,0,95),
+					FString::Printf(TEXT("SPARE WHEEL / %s"),*SpareWheelInstanceId),
+					nullptr,FColor::Green,0.08f,false,1.f);
+		}
 		if(SlipRecoveryPhase>0)
 		{
 			const FVector Fallen=GetDroppedWheelLocation();

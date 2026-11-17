@@ -234,7 +234,7 @@ bool AFactoryRuntime::RunModularEditorChecks()
                 &&Event->RunEpoch==Line->RunNumber-1
                 &&Event->RequestId==Cell->RequestId
                 &&Event->ProductInstanceId==Cell->ProductInstanceId
-                &&Event->PartInstanceId==Event->ProductInstanceId+TEXT("/")+Event->PartId
+                &&Event->PartInstanceId==Event->ProductInstanceId+TEXT("/")+Event->PartId+TEXT("/initial")
                 &&Event->PartId==TEXT("part_wheel_fl"));
         }
         if(Kind==0)
@@ -362,9 +362,21 @@ bool AFactoryRuntime::RunModularEditorChecks()
             &&FVector::Distance(RepCell->WheelRejectStartWorld,RepCell->WheelRejectTargetWorld)>170.0
             &&RunState==EFactoryRunState::Complete&&RepCell->MountedCount==4);
         if(Kind==9)
+        {
+            const FWheelIncidentRecord* Reject=RepCell->Incidents.FindByPredicate([](const FWheelIncidentRecord& R){return R.Kind==TEXT("wheel_size_reject");});
+            const FWheelIncidentRecord* Spare=RepCell->Incidents.FindByPredicate([](const FWheelIncidentRecord& R){return R.Kind==TEXT("spare_supplied");});
+            Check(TEXT("rejected_and_spare_wheels_have_distinct_demo_identities"),Reject
+                &&Spare&&Spare->Outcome==TEXT("recovered")
+                &&!RepCell->RejectedWheelInstanceId.IsEmpty()
+                &&RepCell->RejectedWheelInstanceId==Reject->PartInstanceId
+                &&RepCell->SpareWheelInstanceId==Spare->PartInstanceId
+                &&RepCell->SpareWheelInstanceId==RepCell->FrontLeftActiveWheelInstanceId
+                &&RepCell->SpareWheelInstanceId!=RepCell->RejectedWheelInstanceId
+                &&RepCell->GetIncidentCsv().Contains(RepCell->RejectedWheelInstanceId));
             Check(TEXT("incident_log_closes_replaced_size_reject_as_recovered"),
                 RepCell->CountIncidents(TEXT("wheel_size_reject"),TEXT("recovered"))==1
                 &&RepCell->CountIncidents(TEXT("safety_stop"),TEXT("stopped"))==0);
+        }
         TestAssemblyLine->WheelCell->bReplaceRejectedWheel=false;
     }
     {

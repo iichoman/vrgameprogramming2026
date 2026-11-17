@@ -184,19 +184,23 @@ public:
     /** Sensor-driven left lane only. A size-rejected front-left wheel is moved to the hold point,
      * a nominal spare travels from reserve to the pickup zone, and the lane resumes only after the
      * supply sensor sees it and the size scan passes. Off: reject stops the line (previous behaviour).
-     * Demo: the spare reuses the same wheel object; there is no separate part ID or stock count. */
+     * Demo: the rejected proxy and active spare have separate logical IDs and visuals.
+     * The active spare still reuses the wheel component; there is no stock count or physical inventory. */
     UPROPERTY(EditAnywhere, Category="Wheel Cell|Laser") bool bReplaceRejectedWheel = false;
     /** 0 idle, 1 rejected wheel moving to hold point, 2 spare moving to pickup zone. */
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") int32 WheelReplacePhase = 0;
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") int32 WheelReplacements = 0;
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser", meta=(Units="cm")) double RejectedWheelDiameterCm = 0;
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") FVector WheelSpareStartWorld = FVector::ZeroVector;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") FString RejectedWheelInstanceId;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") FString SpareWheelInstanceId;
     double WheelReplaceSeconds = 0;
     void AdvanceWheelReplacement(double DeltaSeconds);
     /** Incident rows of the current cycle, oldest first. Cleared by ResetCycle. */
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Incidents") TArray<FWheelIncidentRecord> Incidents;
     // Logical demo identity; it does not imply a separate physical product or spare.
     FString RequestId, ProductInstanceId;
+    FString FrontLeftActiveWheelInstanceId;
     int32 RunEpoch = INDEX_NONE;
     void SetRunIdentity(const FString& InRequestId, const FString& InProductInstanceId, int32 InRunEpoch);
     int32 CountIncidents(const TCHAR* Kind, const TCHAR* IncidentOutcome) const;
