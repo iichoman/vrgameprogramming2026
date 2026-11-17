@@ -20,6 +20,13 @@ public:
 	UPROPERTY(VisibleAnywhere, Transient, Category="Autonomous Demo") int32 InjectedEvents = 0;
 	UPROPERTY(VisibleAnywhere, Transient, Category="Autonomous Demo") int32 RecoveredEvents = 0;
 	UPROPERTY(VisibleAnywhere, Transient, Category="Autonomous Demo") FString ActiveEvent;
+	/** Seeded mode (factory check 5) only. Adds one seeded line-level event per run:
+	 * none, overweight front-left wheel, grip degrading in transit, or dock overshoot.
+	 * Only events with an implemented recovery are in the pool; size rejects are not. */
+	UPROPERTY(EditAnywhere, Category="Autonomous Demo") bool bExtendedRandomEvents = false;
+	/** 0 none, 1 overweight wheel, 2 grip degrades in transit, 3 dock overshoot. */
+	UPROPERTY(VisibleAnywhere, Transient, Category="Autonomous Demo") int32 ExtendedEvent = 0;
+	static const TCHAR* ExtendedEventName(int32 Kind);
 	virtual bool SelectDemo(EArrivalDemo Selection) override;
 	virtual bool ResetLine() override;
 	virtual FString GetSummary() const override;

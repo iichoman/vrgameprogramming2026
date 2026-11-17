@@ -120,6 +120,31 @@ bool AFactoryRuntime::RunModularEditorChecks()
         &&!TestAssemblyLine->WheelCell->FrontLeftHubScan.bValid
         &&TestAssemblyLine->WheelCell->MountedCount==0);
     TestAssemblyLine->WheelCell->bBlockFrontLeftLaser=false;
+    // Transient occlusion: two blocked attempts, then the third measurement is accepted.
+    TestAssemblyLine->WheelCell->LaserTransientBlockScans=2;
+    ResetCycle();
+    for(int32 I=0;I<24;++I)StepSimulation(1./120);
+    const bool RescanStarted=StartCycle();
+    for(int32 I=0;I<120*300&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)StepSimulation(1./120);
+    Check(TEXT("laser_transient_block_rescans_then_completes"),RescanStarted&&RunState==EFactoryRunState::Complete
+        &&TestAssemblyLine->WheelCell->FrontLeftDockScan.bValid
+        &&TestAssemblyLine->WheelCell->FrontLeftDockScan.Attempts==3
+        &&TestAssemblyLine->WheelCell->LaserScanRetries==2
+        &&TestAssemblyLine->WheelCell->MountedCount==4);
+    // Occlusion outlasting the attempt limit still blocks pickup.
+    Check(TEXT("incident_log_records_laser_rescan_as_recovered"),
+        TestAssemblyLine->WheelCell->CountIncidents(TEXT("laser_rescan"),TEXT("recovered"))==1
+        &&TestAssemblyLine->WheelCell->CountIncidents(TEXT("safety_stop"),TEXT("stopped"))==0);
+    TestAssemblyLine->WheelCell->LaserTransientBlockScans=3;
+    ResetCycle();
+    for(int32 I=0;I<24;++I)StepSimulation(1./120);
+    StartCycle();
+    for(int32 I=0;I<120*20&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)StepSimulation(1./120);
+    Check(TEXT("laser_rescan_limit_blocks_pickup"),RunState==EFactoryRunState::Fault
+        &&!TestAssemblyLine->WheelCell->FrontLeftHubScan.bValid
+        &&TestAssemblyLine->WheelCell->FrontLeftHubScan.Attempts==3
+        &&TestAssemblyLine->WheelCell->MountedCount==0);
+    TestAssemblyLine->WheelCell->LaserTransientBlockScans=0;
     TestAssemblyLine->WheelCell->bLaserScanFrontLeftHub=false;
     for(int32 Kind : {0,1,2,3,4,6,7,8,9,10})
     {
@@ -255,6 +280,86 @@ bool AFactoryRuntime::RunModularEditorChecks()
             &&(Kind==11?Door->MeasuredDoorWidthCm>Door->NominalDoorWidthCm+1:Door->MeasuredDoorWidthCm<Door->NominalDoorWidthCm-1)
             &&!Door->bDoorHeld);
     }
+    for(int32 Kind : {1,2,3,4,9})
+    {
+        // Incident rows: each recoverable event is logged and closed as recovered with no stop row;
+        // a size reject without replacement is closed as stopped together with one stop row.
+        TestAssemblyLine->SetFactoryCheck(Kind);
+        ResetCycle();
+        for(int32 I=0;I<24;++I)StepSimulation(1./120);
+        StartCycle();
+        for(int32 I=0;I<120*300&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)StepSimulation(1./120);
+        const auto* LogCell=TestAssemblyLine->WheelCell.Get();
+        const TCHAR* Expected=Kind==1?TEXT("supply_missing"):Kind==2?TEXT("pickup_pose_stale")
+            :Kind==3?TEXT("grip_unconfirmed"):Kind==4?TEXT("pickup_displaced"):TEXT("wheel_size_reject");
+        const bool Stops=Kind==9;
+        Check(*FString::Printf(TEXT("incident_log_case_%d_%s"),Kind,Expected),
+            LogCell->CountIncidents(Expected,Stops?TEXT("stopped"):TEXT("recovered"))>=1
+            &&LogCell->CountIncidents(Expected,TEXT("pending"))==0
+            &&LogCell->CountIncidents(TEXT("safety_stop"),TEXT("stopped"))==(Stops?1:0)
+            &&!LogCell->GetIncidentCsv().IsEmpty());
+    }
+    for(int32 Kind : {9,10})
+    {
+        // Size reject with replacement: hold-point move, spare delivery, re-scan, full cycle.
+        TestAssemblyLine->SetFactoryCheck(Kind);
+        TestAssemblyLine->WheelCell->bReplaceRejectedWheel=true;
+        ResetCycle();
+        for(int32 I=0;I<24;++I)StepSimulation(1./120);
+        const bool ReplaceBegan=StartCycle();
+        bool WaitedWhileReplacing=false;
+        bool SpareTransitUnseen=false;
+        for(int32 I=0;I<120*300&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)
+        {
+            StepSimulation(1./120);
+            const auto* RepCell=TestAssemblyLine->WheelCell.Get();
+            WaitedWhileReplacing|=RepCell->WheelReplacePhase>0&&RepCell->GetLeftStage()==EWheelStage::WaitSupply
+                &&!RepCell->GetLeftGripState().bHeld;
+            SpareTransitUnseen|=RepCell->WheelReplacePhase==2&&!RepCell->LeftSensors->Presence.bDetected;
+        }
+        const auto* RepCell=TestAssemblyLine->WheelCell.Get();
+        Check(Kind==9?TEXT("oversized_wheel_replaced_rescanned_and_cycle_completes"):TEXT("undersized_wheel_replaced_rescanned_and_cycle_completes"),
+            ReplaceBegan&&WaitedWhileReplacing&&SpareTransitUnseen
+            &&RepCell->WheelReplacements==1&&RepCell->WheelReplacePhase==0&&RepCell->bFrontLeftWheelRejected
+            &&(Kind==9?RepCell->RejectedWheelDiameterCm>67:(RepCell->RejectedWheelDiameterCm>0&&RepCell->RejectedWheelDiameterCm<65))
+            &&RepCell->bFrontLeftWheelSizePassed
+            &&FMath::IsNearlyEqual(RepCell->FrontLeftWheelMeasuredDiameterCm,66.0,1.0)
+            &&FVector::Distance(RepCell->WheelRejectStartWorld,RepCell->WheelRejectTargetWorld)>170.0
+            &&RunState==EFactoryRunState::Complete&&RepCell->MountedCount==4);
+        if(Kind==9)
+            Check(TEXT("incident_log_closes_replaced_size_reject_as_recovered"),
+                RepCell->CountIncidents(TEXT("wheel_size_reject"),TEXT("recovered"))==1
+                &&RepCell->CountIncidents(TEXT("safety_stop"),TEXT("stopped"))==0);
+        TestAssemblyLine->WheelCell->bReplaceRejectedWheel=false;
+    }
+    {
+        // Grip degrades in transit: the wheel is held through Lift, slips only after
+        // Transfer begins, then the existing drop recovery finishes the cycle.
+        TestAssemblyLine->SetFactoryCheck(6);
+        TestAssemblyLine->WheelCell->bGripDegradesInTransit=true;
+        ResetCycle();
+        for(int32 I=0;I<24;++I)StepSimulation(1./120);
+        const bool DegradeBegan=StartCycle();
+        bool HeldInTransfer=false;
+        for(int32 I=0;I<120*300&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)
+        {
+            StepSimulation(1./120);
+            const auto* DegCell=TestAssemblyLine->WheelCell.Get();
+            const auto& DegGrip=DegCell->GetLeftGripState();
+            HeldInTransfer|=DegCell->GetLeftStage()==EWheelStage::Transfer&&DegGrip.WheelIndex==0&&DegGrip.bHeld&&DegCell->SlipRecoveryPhase==0;
+        }
+        const auto* DegCell=TestAssemblyLine->WheelCell.Get();
+        Check(TEXT("grip_degrades_in_transit_slips_after_lift_and_recovers"),DegradeBegan&&HeldInTransfer
+            &&DegCell->bSlipFailureGripDegraded&&!DegCell->bSlipFailureLowFriction&&DegCell->SlipFailureMassKg==18.0
+            &&DegCell->SlipFailureStage!=EWheelStage::Grip&&DegCell->SlipFailureStage!=EWheelStage::Lift
+            &&DegCell->SlipFailureTravelCm>20.0
+            &&DegCell->bDroppedWheelHitSurface&&DegCell->SlipRecoveryPhase==0
+            &&RunState==EFactoryRunState::Complete&&DegCell->MountedCount==4);
+        Check(TEXT("incident_log_closes_transit_slip_as_recovered"),
+            DegCell->CountIncidents(TEXT("grip_slip"),TEXT("recovered"))==1
+            &&DegCell->CountIncidents(TEXT("grip_slip"),TEXT("pending"))==0);
+        TestAssemblyLine->WheelCell->bGripDegradesInTransit=false;
+    }
     TestAssemblyLine->SetFactoryCheck(13);
     ResetCycle();
     for(int32 I=0;I<24;++I)StepSimulation(1./120);
@@ -263,6 +368,30 @@ bool AFactoryRuntime::RunModularEditorChecks()
     Check(TEXT("dock_overshoot_reverses_and_full_cycle_completes"),DockBegan&&RunState==EFactoryRunState::Complete
         &&TestAssemblyLine->bDockOvershootRecovered
         &&TestAssemblyLine->MaxDockOvershootCm>=34.0);
+    {
+        // Extended seeded pool: whatever line-level event the seed plans must actually
+        // occur, be the only physical event, and end in a complete four-wheel cycle.
+        TestAssemblyLine->SetFactoryCheck(5);
+        TestAssemblyLine->bExtendedRandomEvents=true;
+        bool ExtendedConsistent=true;
+        for(int32 Run=0;Run<4;++Run)
+        {
+            ResetCycle();
+            for(int32 I=0;I<24;++I)StepSimulation(1./120);
+            const int32 Planned=TestAssemblyLine->ExtendedEvent;
+            const bool ExtendedBegan=StartCycle();
+            for(int32 I=0;I<120*300&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)StepSimulation(1./120);
+            const auto* ExtCell=TestAssemblyLine->WheelCell.Get();
+            const bool SlipSeen=ExtCell->SlipFailureMassKg>0&&ExtCell->bDroppedWheelHitSurface;
+            const bool PlanMatched=Planned==1 ? (SlipSeen&&ExtCell->SlipFailureMassKg==90.0&&!ExtCell->bSlipFailureGripDegraded)
+                : Planned==2 ? (SlipSeen&&ExtCell->bSlipFailureGripDegraded) : !SlipSeen;
+            ExtendedConsistent&=ExtendedBegan&&Planned>=0&&Planned<=3&&PlanMatched
+                &&(Planned==3)==TestAssemblyLine->bDockOvershootRecovered
+                &&RunState==EFactoryRunState::Complete&&ExtCell->MountedCount==4;
+        }
+        Check(TEXT("extended_random_line_events_match_plan_and_recover"),ExtendedConsistent);
+        TestAssemblyLine->bExtendedRandomEvents=false;
+    }
     TestAssemblyLine->SetFactoryCheck(5);
     ResetCycle();Layout=Original;Rebuild();History.Clear();
     auto Report=MakeShared<FJsonObject>();Report->SetBoolField(TEXT("success"),Pass);Report->SetArrayField(TEXT("checks"),Checks);

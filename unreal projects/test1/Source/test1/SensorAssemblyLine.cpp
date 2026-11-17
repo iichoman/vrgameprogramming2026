@@ -311,7 +311,7 @@ void ASensorAssemblyLine::DrawSensorVisualization() const
 			DrawDebugSphere(GetWorld(),Fallen,34,16,FColor::Red,false,.08f,0,3.f);
 			DrawDebugString(GetWorld(),Fallen+FVector(0,0,125),
 				FString::Printf(TEXT("%s | phase %d: fall / worker / quarantine / resupply"),
-					WheelCell->bSlipFailureLowFriction?TEXT("LOW FRICTION"):TEXT("OVERWEIGHT"),WheelCell->SlipRecoveryPhase),
+					WheelCell->GetSlipFailureLabel(),WheelCell->SlipRecoveryPhase),
 				nullptr,FColor::Yellow,.08f,false,1.f);
 		}
 	}

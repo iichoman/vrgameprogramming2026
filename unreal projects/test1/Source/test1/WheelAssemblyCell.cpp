@@ -180,12 +180,104 @@ FTransform AWheelAssemblyCell::GetMountTargetWorld(int32 Index) const
 		? FrontLeftHubScan.MeasuredWorld : GetMountWorld(Index);
 }
 
+void AWheelAssemblyCell::OpenIncident(const TCHAR* Kind, int32 WheelIndex, EWheelStage Stage, const TCHAR* Quantity,
+	const TCHAR* Unit, double Measured, double Limit, const FString& Response, const TCHAR* Outcome)
+{
+	if (Incidents.Num() >= 64) return;
+	static const TCHAR* PartIds[]={TEXT("part_wheel_fl"),TEXT("part_wheel_rl"),TEXT("part_wheel_fr"),TEXT("part_wheel_rr")};
+	const int32 Part = WheelIndex>=0 && WheelIndex<4 ? PartIndex(WheelIndex) : INDEX_NONE;
+	FWheelIncidentRecord Row;
+	Row.Kind = Kind;
+	Row.PartId = Part>=0 && Part<4 ? PartIds[Part] : TEXT("");
+	Row.Stage = StaticEnum<EWheelStage>()->GetNameStringByValue(int64(Stage));
+	Row.DetectedAt = SimulationTimeSeconds;
+	Row.Quantity = Quantity; Row.Unit = Unit; Row.Measured = Measured; Row.Limit = Limit;
+	Row.Response = Response; Row.Outcome = Outcome;
+	if (Row.Outcome != TEXT("pending")) Row.ResolvedAt = SimulationTimeSeconds;
+	Incidents.Add(MoveTemp(Row));
+}
+
+void AWheelAssemblyCell::CloseIncidents(const TCHAR* Kind, const TCHAR* Outcome)
+{
+	for (FWheelIncidentRecord& Row : Incidents)
+		if (Row.Outcome == TEXT("pending") && (!Kind || Row.Kind == Kind))
+		{ Row.Outcome = Outcome; Row.ResolvedAt = SimulationTimeSeconds; }
+}
+
+int32 AWheelAssemblyCell::CountIncidents(const TCHAR* Kind, const TCHAR* Outcome) const
+{
+	int32 Count = 0;
+	for (const FWheelIncidentRecord& Row : Incidents)
+		if (Row.Kind == Kind && Row.Outcome == Outcome) ++Count;
+	return Count;
+}
+
+FString AWheelAssemblyCell::GetIncidentSummary(int32 MaxRows) const
+{
+	if (Incidents.IsEmpty()) return TEXT("기록된 사건 없음");
+	FString Text;
+	for (int32 Index = FMath::Max(0, Incidents.Num()-FMath::Max(1,MaxRows)); Index < Incidents.Num(); ++Index)
+	{
+		const FWheelIncidentRecord& Row = Incidents[Index];
+		const TCHAR* Result = Row.Outcome == TEXT("recovered") ? TEXT("복구 완료")
+			: Row.Outcome == TEXT("stopped") ? TEXT("안전 중단") : TEXT("진행 중");
+		Text += FString::Printf(TEXT("%.2fs %s"), Row.DetectedAt, *Row.Kind);
+		if (!Row.Quantity.IsEmpty())
+			Text += FString::Printf(TEXT(" · %s %.2f%s / 기준 %.2f%s"), *Row.Quantity, Row.Measured, *Row.Unit, Row.Limit, *Row.Unit);
+		Text += FString::Printf(TEXT(" · %s → %s\n"), *Row.Response, Result);
+	}
+	return Text;
+}
+
+FString AWheelAssemblyCell::GetIncidentCsv() const
+{
+	FString Csv = TEXT("detected_s,kind,part_id,stage,quantity,unit,measured,limit,response,outcome,resolved_s\n");
+	for (const FWheelIncidentRecord& Row : Incidents)
+		Csv += FString::Printf(TEXT("%.4f,%s,%s,%s,%s,%s,%.4f,%.4f,%s,%s,%.4f\n"), Row.DetectedAt, *Row.Kind, *Row.PartId, *Row.Stage,
+			*Row.Quantity.Replace(TEXT(","),TEXT(";")), *Row.Unit, Row.Measured, Row.Limit,
+			*Row.Response.Replace(TEXT(","),TEXT(";")), *Row.Outcome, Row.ResolvedAt);
+	return Csv;
+}
+
+const TCHAR* AWheelAssemblyCell::GetSlipFailureLabel() const
+{
+	return bSlipFailureGripDegraded ? TEXT("GRIP DEGRADED IN TRANSIT")
+		: bSlipFailureLowFriction ? TEXT("LOW FRICTION") : TEXT("OVERWEIGHT");
+}
+
+// Bounded re-scan. Each attempt is a fresh measurement; a transient occlusion can
+// clear, while a permanent fault (blocked beam, outlier, missing proxy) still fails.
+// Attempts run within one fixed step: scanner cycle time is not modelled.
 bool AWheelAssemblyCell::ScanFrontLeftHub(bool bScanWheel)
+{
+	const int32 MaxAttempts=FMath::Clamp(MaxLaserScanAttempts,1,5);
+	FWheelHubScanReading& Reading=bScanWheel?FrontLeftFinalWheelScan:FrontLeftHubScan;
+	for (int32 Attempt=1; Attempt<=MaxAttempts; ++Attempt)
+	{
+		const bool bAccepted=ScanFrontLeftHubOnce(bScanWheel);
+		Reading.Attempts=Attempt;
+		if (bAccepted)
+		{
+			if (Attempt>1) OpenIncident(TEXT("laser_rescan"),0,Lanes[0].Stage,TEXT("레이저 측정 시도"),TEXT("회"),
+				Attempt,MaxAttempts,TEXT("재스캔한 측정값 채택"),TEXT("recovered"));
+			return true;
+		}
+		if (Attempt<MaxAttempts) ++LaserScanRetries;
+	}
+	if (MaxAttempts>1) Reading.FailureReason+=FString::Printf(TEXT(" (%d회 시도)"),MaxAttempts);
+	OpenIncident(TEXT("laser_scan_failed"),0,Lanes[0].Stage,TEXT("레이저 측정 시도"),TEXT("회"),
+		MaxAttempts,MaxAttempts,TEXT("측정 무효 · 작업 차단: ")+Reading.FailureReason);
+	return false;
+}
+
+bool AWheelAssemblyCell::ScanFrontLeftHubOnce(bool bScanWheel)
 {
 	FWheelHubScanReading& Reading=bScanWheel?FrontLeftFinalWheelScan:FrontLeftHubScan;
 	Reading = FWheelHubScanReading();
 	Reading.TargetPort=bScanWheel?TEXT("wheel_fl_seated"):TEXT("hub_fl");
 	if (bBlockFrontLeftLaser) { Reading.FailureReason=TEXT("광선 차단"); return false; }
+	if (LaserTransientBlocksRemaining>0)
+	{ --LaserTransientBlocksRemaining; Reading.FailureReason=TEXT("광선 일시 가림"); return false; }
 	if (!IsValid(Assembly) || !IsValid(RobotForWheel(0)) || !IsValid(FrontLeftHubProxy))
 	{ Reading.FailureReason=TEXT("스캐너 또는 허브 연결 누락"); return false; }
 	if (!FMath::IsFinite(LaserOutlierMm) || FrontLeftHubOffsetCm.ContainsNaN())
@@ -430,6 +522,9 @@ bool AWheelAssemblyCell::ResetCycle()
 	bLeftWheelSlipFall = false; LeftWheelSlipFallSeconds = 0; LeftWheelSlipVelocityCmps = FVector::ZeroVector;
 	SlipRecoveryPhase=0;SlipRecoveryPhaseSeconds=0;SlipFailureMassKg=0;bSlipFailureLowFriction=false;
 	bDroppedWheelHitSurface=false;SlipRecoveryWorkerLocation=FVector::ZeroVector;
+	bSlipFailureGripDegraded=false;SlipFailureTravelCm=0;SlipFailureStage=EWheelStage::Idle;
+	GripDegradeStartedAt=-1;bGripDegradeSpent=false;LeftGripFriction=WheelGrip::NormalFriction;
+	LaserScanRetries=0;LaserTransientBlocksRemaining=FMath::Max(0,LaserTransientBlockScans);
 	DroppedWheelCollision->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	DroppedTireVisual->SetVisibility(false);DroppedHubVisual->SetVisibility(false);
 	RecoveryWorkerVisual->SetVisibility(false);
@@ -442,6 +537,11 @@ bool AWheelAssemblyCell::ResetCycle()
 	WheelSizeNearHitWorld = WheelSizeFarHitWorld = FVector::ZeroVector;
 	bFrontLeftWheelRejecting = bFrontLeftWheelRejected = false;
 	WheelRejectElapsedSeconds = 0;
+	Incidents.Reset();
+	WheelReplacePhase = 0; WheelReplacements = 0; WheelReplaceSeconds = 0; RejectedWheelDiameterCm = 0;
+	WheelSpareStartWorld = FVector::ZeroVector;
+	DroppedTireVisual->SetRelativeScale3D(FVector(0.66,0.66,0.16));
+	DroppedHubVisual->SetRelativeScale3D(FVector(0.37,0.37,0.025));
 	WheelRejectStartWorld = WheelRejectTargetWorld = FVector::ZeroVector;
 	PreviousPickupWorld = ReplannedPickupWorld = FVector::ZeroVector;
 	LeftPickupReplans = LeftGripRetries = 0;
@@ -549,10 +649,25 @@ bool AWheelAssemblyCell::BeginWheel(int32 Side)
 			WheelRejectStartWorld=GetWheelWorld(0).GetLocation();
 			WheelRejectTargetWorld=WheelRejectStartWorld
 				+BodyAtStart.TransformVectorNoScale(FVector(-80,-160,0));
+			if (bReplaceRejectedWheel && bAutoRecoverLeftRobot && SensorDrivenLane(Side) && WheelReplacements==0)
+			{
+				// One replacement per cycle. The lane waits in WaitSupply; it is released only by
+				// the supply sensor and a passing size scan of the spare, not by this sequence.
+				RejectedWheelDiameterCm=FrontLeftWheelMeasuredDiameterCm;
+				OpenIncident(TEXT("wheel_size_reject"),0,Lane.Stage,TEXT("휠 지름"),TEXT("cm"),
+					FrontLeftWheelMeasuredDiameterCm,66.0,TEXT("파지 금지 · 격리 후 대체 휠 공급"));
+				bFrontLeftWheelRejecting=true; bFrontLeftWheelRejected=false;
+				WheelReplacePhase=1; WheelReplaceSeconds=0;
+				WaitForLeftSensor(Side,EWheelStage::WaitSupply,
+					FString::Printf(TEXT("휠 규격 불합격 %.1fcm / 기준 66.0cm ± 1.0cm · 격리 후 대체품 대기"),RejectedWheelDiameterCm));
+				return true;
+			}
 			bFrontLeftWheelRejecting=true;
 			bFrontLeftWheelRejected=false;
 			WheelRejectElapsedSeconds=0;
 		}
+		OpenIncident(TEXT("wheel_size_reject"),0,Lane.Stage,TEXT("휠 지름"),TEXT("cm"),
+			FrontLeftWheelMeasuredDiameterCm,66.0,TEXT("파지 금지 · 격리 · 라인 중단"));
 		Fail(FString::Printf(TEXT("휠 규격 검사 실패 · 레이저 측정 지름 %.1fcm / 기준 66.0cm ± 1.0cm · 불합격품 격리"),FrontLeftWheelMeasuredDiameterCm));
 		return false;
 	}
@@ -585,6 +700,20 @@ void AWheelAssemblyCell::WaitForLeftSensor(int32 Side,EWheelStage WaitStage, con
 	RobotFor(Side)->Halt();
 	SensorsFor(Side)->CommandGrip(false);
 	Lanes[Side].bGripCommanded = false;
+	if (WheelReplacePhase == 0)
+	{
+		// The size-reject path records its own row before waiting.
+		if (WaitStage == EWheelStage::WaitSupply)
+			OpenIncident(TEXT("supply_missing"),Lanes[Side].WheelIndex,Lanes[Side].Stage,TEXT("공급 위치 휠 검출"),TEXT(""),
+				0,1,TEXT("로봇 대기 · 보충 후 도착 센서 확인"));
+		else
+		{
+			const auto* Bank = SensorsFor(Side);
+			const double Age = Bank->PickupPose.MeasuredAt >= 0 ? SimulationTimeSeconds - Bank->PickupPose.MeasuredAt : 0;
+			OpenIncident(TEXT("pickup_pose_stale"),Lanes[Side].WheelIndex,Lanes[Side].Stage,TEXT("위치 측정값 나이"),TEXT("s"),
+				Age,Bank->MaxAge,TEXT("로봇 대기 · 새 측정값 수신 후 재개"));
+		}
+	}
 	SetStage(Side, WaitStage, Message);
 }
 
@@ -598,6 +727,8 @@ void AWheelAssemblyCell::Fail(const FString& Reason)
 	if (RightRobot) RightRobot->Halt();
     for(auto R:TaskRobots)if(IsValid(R))R->Halt();
 	for (FWheelLane& Lane : Lanes) if (Lane.Stage != EWheelStage::Complete) Lane.Stage = EWheelStage::Fault;
+	CloseIncidents(nullptr,TEXT("stopped"));
+	OpenIncident(TEXT("safety_stop"),INDEX_NONE,EWheelStage::Fault,TEXT(""),TEXT(""),0,0,Saved,TEXT("stopped"));
 	Status = Saved;
 }
 
@@ -631,6 +762,9 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
     auto* Sensors=SensorsFor(Side);
 	if (SensorDriven && (Lane.Stage == EWheelStage::WaitSupply || Lane.Stage == EWheelStage::WaitPose))
 	{
+		// While the cell's own reject/replace sequence runs, the rejected wheel may still be inside
+		// the pickup zone. Hold the lane; the recovery timeout starts once the spare is delivered.
+		if (WheelReplacePhase > 0 && Lane.WheelIndex == 0) { Lane.StageTime = 0; Lane.StableTime = 0; return; }
 		Lane.StageTime += Dt;
 		if (Lane.StageTime > LeftRecoveryTimeoutSeconds)
 		{ Fail(TEXT("Left robot: supply or sensor recovery timed out.")); return; }
@@ -646,6 +780,9 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
 		Lane.Pickup = Measured;
 		if (Lane.Stage==EWheelStage::WaitSupply && Lane.WheelIndex==0 && !ScanFrontLeftWheelSize())
 		{ Fail(FString::Printf(TEXT("보충 휠 규격 검사 실패 · 측정 지름 %.1fcm / 기준 66.0cm ± 1.0cm"),FrontLeftWheelMeasuredDiameterCm)); return; }
+		CloseIncidents(TEXT("supply_missing"),TEXT("recovered"));
+		CloseIncidents(TEXT("pickup_pose_stale"),TEXT("recovered"));
+		CloseIncidents(TEXT("wheel_size_reject"),TEXT("recovered"));
 		MoveTo(Side, EWheelStage::ApproachPickup, OffsetOutward(Measured, Side, 25));
 		return;
 	}
@@ -677,6 +814,8 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
 			PreviousPickupWorld = Lane.Pickup.GetLocation();
 			ReplannedPickupWorld = Measured.GetLocation();
 			Lane.Pickup = Measured; Lane.bGripCommanded = false; Sensors->CommandGrip(false); ++LeftPickupReplans;
+			OpenIncident(TEXT("pickup_displaced"),Lane.WheelIndex,Lane.Stage,TEXT("공급 위치 변화"),TEXT("mm"),
+				OffsetMm,MaxPickupDisplacementMm,TEXT("측정 위치로 접근 경로 재계산"),TEXT("recovered"));
 			MoveTo(Side, EWheelStage::ApproachPickup, OffsetOutward(Measured, Side, 25));
 			return;
 		}
@@ -705,7 +844,18 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
         const bool Physical = bPhysicalLeftGrip && Lane.WheelIndex == 0;
         if (Physical)
         {
-            Target.SetLocation(StepWheelGrip(Lane.LastCarried.GetLocation(), Target.GetLocation(), Dt, bLowFrictionGrip, FrontLeftWheelMassKg,
+
+            double Friction = bLowFrictionGrip ? WheelGrip::LowFriction : WheelGrip::NormalFriction;
+            const bool Degrading = bGripDegradesInTransit && !bGripDegradeSpent && !bLowFrictionGrip;
+            if (Degrading)
+            {
+                // Onset is the Transfer stage, so the wheel is already lifted and moving between stations.
+                if (GripDegradeStartedAt < 0 && Lane.Stage == EWheelStage::Transfer) GripDegradeStartedAt = SimulationTimeSeconds;
+                if (GripDegradeStartedAt >= 0)
+                    Friction = WheelGrip::DegradedFriction(SimulationTimeSeconds - GripDegradeStartedAt, GripDegradeSeconds);
+            }
+            LeftGripFriction = Friction;
+            Target.SetLocation(StepWheelGrip(Lane.LastCarried.GetLocation(), Target.GetLocation(), Dt, Friction, FrontLeftWheelMassKg,
                 Lane.GripVelocity, Lane.DemandN, Lane.CapacityN, Lane.SlipMm, Lane.AppliedForceN));
             LeftGripMeasuredAt=SimulationTimeSeconds;
         }
@@ -718,7 +868,12 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
             Lane.bHeld = false;
             if (Sensors) Sensors->CommandGrip(false);
 			SlipFailureMassKg=FrontLeftWheelMassKg;bSlipFailureLowFriction=bLowFrictionGrip;
+			bSlipFailureGripDegraded=bGripDegradesInTransit&&!bGripDegradeSpent&&!bLowFrictionGrip&&GripDegradeStartedAt>=0;
+			SlipFailureStage=Lane.Stage;
+			SlipFailureTravelCm=FVector::Distance(Target.GetLocation(),Lane.Pickup.GetLocation());
 			SlipRecoveryPhase=1;SlipRecoveryPhaseSeconds=0;
+			OpenIncident(TEXT("grip_slip"),Lane.WheelIndex,Lane.Stage,TEXT("파지 미끄러짐"),TEXT("mm"),
+				Lane.SlipMm,3.0,TEXT("파지 해제 · 로봇 정지 · 작업자 회수 · 대체 휠 공급"));
 			DroppedWheelCollision->SetWorldTransform(Target);
 			DroppedWheelCollision->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
 			DroppedTireVisual->SetVisibility(true);DroppedHubVisual->SetVisibility(true);
@@ -732,7 +887,7 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
 				if(IsValid(RobotFor(RecoverySide)))
 				{RobotFor(RecoverySide)->Halt();RobotFor(RecoverySide)->SetDroppedWheelCollision(true);}
 			Status=FString::Printf(TEXT("%s · %.0fkg · 필요 %.0fN / 한계 %.0fN · 휠 낙하, 로봇 안전정지, 작업자 호출"),
-				bLowFrictionGrip?TEXT("저마찰"):TEXT("과중량"),FrontLeftWheelMassKg,Lane.DemandN,Lane.CapacityN);
+				bSlipFailureGripDegraded?TEXT("운반 중 마찰 저하"):bLowFrictionGrip?TEXT("저마찰"):TEXT("과중량"),FrontLeftWheelMassKg,Lane.DemandN,Lane.CapacityN);
             return;
         }
     }
@@ -801,6 +956,8 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
 						Sensors->CommandGrip(false);
 						Lane.bGripCommanded = false;
 						++LeftGripRetries;
+						OpenIncident(TEXT("grip_unconfirmed"),Lane.WheelIndex,Lane.Stage,TEXT("파지 시도"),TEXT("회"),
+							Lane.GripAttempts,bAutoRecoverLeftRobot ? MaxAutoGripAttempts : 2,TEXT("그리퍼 열고 후퇴 후 재접근"));
 						if (MoveTo(Side,EWheelStage::ApproachPickup,OffsetOutward(Lane.Pickup,Side,25)))
 							Status=TEXT("파지 미확인 · 그리퍼 열고 후퇴 후 재접근");
 					}
@@ -814,6 +971,7 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
 		{ Fail(TEXT("Gripper contact mismatch.")); break; }
 		Lane.WheelInTCP = Lane.Pickup.GetRelativeTransform(CurrentTCP);
 		Lane.bHeld = true; Lane.LastCarried = Lane.Pickup;
+		if (SensorDriven) CloseIncidents(TEXT("grip_unconfirmed"),TEXT("recovered"));
 		FTransform Lift = Lane.Pickup;
 		Lift.AddToTranslation(BodyAtStart.TransformVectorNoScale(FVector(0, 0, 25)));
 		MoveTo(Side, EWheelStage::Lift, Lift);
@@ -928,6 +1086,7 @@ bool AWheelAssemblyCell::AdvanceSimulation(double DeltaSeconds)
 			|| (!UsesTaskBindings()&&!LeftRobot->GetActorTransform().Equals(RobotAtStart[0], 1.e-6))
 			|| (!UsesTaskBindings()&&!RightRobot->GetActorTransform().Equals(RobotAtStart[1], 1.e-6)))
 		{ Fail(TEXT("Vehicle or robot base moved during assembly.")); break; }
+        if(WheelReplacePhase>0)AdvanceWheelReplacement(FixedStepSeconds);
         for(int32 S=0;S<LaneCount()&&bRunning&&SlipRecoveryPhase==0;++S)if(LaneEnabled(S))
         {
             if(!IsValid(RobotFor(S))||!RobotFor(S)->GetActorTransform().Equals(RobotAtStart[S],1.e-6))
@@ -1078,7 +1237,10 @@ void AWheelAssemblyCell::AdvanceSlipRecovery(double DeltaSeconds)
 		RecoveryWorkerHeadVisual->SetVisibility(false);
 		for(int32 Side=0;Side<LaneCount();++Side)if(IsValid(RobotFor(Side)))RobotFor(Side)->SetDroppedWheelCollision(false);
 		bLowFrictionGrip=false;FrontLeftWheelMassKg=18.0;
+		// The replacement wheel is gripped with a clean pad for the rest of this cycle.
+		bGripDegradeSpent=true;GripDegradeStartedAt=-1;LeftGripFriction=WheelGrip::NormalFriction;
 		if(SensorsFor(0))SensorsFor(0)->Reset();
+		CloseIncidents(TEXT("grip_slip"),TEXT("recovered"));
 		Status=TEXT("대체 휠 공급 완료 · 센서 재검사 · 조립 재시도");
 		if(!BeginWheel(0))return;
 		for(int32 Side=1;Side<LaneCount();++Side)
@@ -1093,6 +1255,8 @@ void AWheelAssemblyCell::AdvanceSlipRecovery(double DeltaSeconds)
 }
 void AWheelAssemblyCell::AdvanceFrontLeftWheelReject(double DeltaSeconds)
 {
+	// The replacement sequence moves the wheel on the simulation clock instead.
+	if (WheelReplacePhase > 0) return;
 	if (!bFrontLeftWheelRejecting || !WheelRoots.IsValidIndex(PartIndex(0)) || !WheelRoots[PartIndex(0)]) return;
 	const double Dt=FMath::Clamp(DeltaSeconds,0.0,0.05);
 	if (Dt<=0) return;
@@ -1108,6 +1272,43 @@ void AWheelAssemblyCell::AdvanceFrontLeftWheelReject(double DeltaSeconds)
 		bFrontLeftWheelRejected=true;
 	}
 }
+void AWheelAssemblyCell::AdvanceWheelReplacement(double DeltaSeconds)
+{
+	if (WheelReplacePhase <= 0 || !WheelRoots.IsValidIndex(PartIndex(0)) || !WheelRoots[PartIndex(0)]) return;
+	constexpr double MoveSeconds = 1.8;
+	WheelReplaceSeconds += DeltaSeconds;
+	const double Alpha = FMath::Clamp(WheelReplaceSeconds / MoveSeconds, 0.0, 1.0);
+	const double Smooth = Alpha*Alpha*(3.0-2.0*Alpha);
+	FTransform Pose = GetWheelWorld(0);
+	if (WheelReplacePhase == 1)
+	{
+		Pose.SetLocation(FMath::Lerp(WheelRejectStartWorld, WheelRejectTargetWorld, Smooth));
+		WheelRoots[PartIndex(0)]->SetWorldTransform(Pose);
+		if (Alpha < 1.0) return;
+		// Leave a stand-in for the rejected wheel at the hold point, at its rejected size.
+		DroppedWheelCollision->SetWorldTransform(Pose);
+		DroppedTireVisual->SetRelativeScale3D(FVector(0.66,0.66,0.16)*FrontLeftWheelSizeScale);
+		DroppedHubVisual->SetRelativeScale3D(FVector(0.37,0.37,0.025)*FrontLeftWheelSizeScale);
+		DroppedTireVisual->SetVisibility(true); DroppedHubVisual->SetVisibility(true);
+		bFrontLeftWheelRejecting = false; bFrontLeftWheelRejected = true;
+		// The spare is a nominal wheel. Until the next scenario selection this cell supplies nominal wheels.
+		FrontLeftWheelSizeScale = 1.0;
+		TireVisuals[PartIndex(0)]->SetRelativeScale3D(FVector(0.66,0.66,0.16));
+		HubVisuals[PartIndex(0)]->SetRelativeScale3D(FVector(0.37,0.37,0.025));
+		WheelSpareStartWorld = GetPickupWorld(0).GetLocation() + BodyAtStart.TransformVectorNoScale(FVector(0,-160,0));
+		Pose = GetPickupWorld(0); Pose.SetLocation(WheelSpareStartWorld);
+		WheelRoots[PartIndex(0)]->SetWorldTransform(Pose);
+		WheelReplacePhase = 2; WheelReplaceSeconds = 0;
+		Status = TEXT("불합격 휠 격리 완료 · 대체 휠 공급 이송 · 로봇 대기");
+		return;
+	}
+	Pose = GetPickupWorld(0);
+	Pose.SetLocation(FMath::Lerp(WheelSpareStartWorld, GetPickupWorld(0).GetLocation(), Smooth));
+	WheelRoots[PartIndex(0)]->SetWorldTransform(Pose);
+	if (Alpha < 1.0) return;
+	WheelReplacePhase = 0; WheelReplaceSeconds = 0; ++WheelReplacements;
+	Status = TEXT("대체 휠 도착 · 공급 센서 확인 후 규격 재검사");
+}
 void AWheelAssemblyCell::BeginPlay() { Super::BeginPlay(); if (!bExternallyDriven) ResetCycle(); }
 void AWheelAssemblyCell::Tick(float DeltaSeconds)
 {
@@ -1121,7 +1322,7 @@ void AWheelAssemblyCell::Tick(float DeltaSeconds)
 			DrawDebugSphere(GetWorld(),Fallen,35,16,FColor::Red,false,0.08f,0,3.f);
 			DrawDebugString(GetWorld(),Fallen+FVector(0,0,115),
 				FString::Printf(TEXT("%s / %s / %.0f kg / operator recovery %d/4"),
-					bSlipFailureLowFriction?TEXT("LOW FRICTION"):TEXT("OVERWEIGHT"),
+					GetSlipFailureLabel(),
 					bDroppedWheelHitSurface?TEXT("SURFACE CONTACT"):TEXT("FALLING"),
 					SlipFailureMassKg,SlipRecoveryPhase),nullptr,FColor::Yellow,0.08f,false,1.f);
 			{

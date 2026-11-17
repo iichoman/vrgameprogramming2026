@@ -33,8 +33,44 @@ bool AAutonomousAssemblyLine::ResetLine()
 		if (FactoryCheck == 0 || FactoryCheck >= 6) bInjected[0] = bRestored[0] = true;
 		else Planned[0] = static_cast<ERandomWheelEvent>(FactoryCheck-1);
 	}
+	// Drawn after the per-wheel plan so existing seeds keep their original wheel events.
+	ExtendedEvent = 0;
+	if (FactoryCheck == 5 && WheelCell)
+	{
+		WheelCell->bPhysicalLeftGrip = false;
+		WheelCell->bLowFrictionGrip = false;
+		WheelCell->bGripDegradesInTransit = false;
+		WheelCell->FrontLeftWheelMassKg = 18.0;
+		bDemoDockOvershoot = false;
+		if (bExtendedRandomEvents)
+		{
+			ExtendedEvent = Random.RandRange(0,3);
+			if (ExtendedEvent == 1 || ExtendedEvent == 2)
+			{
+				// One event per wheel: the front-left wheel carries the physical event,
+				// the rear-left wheel keeps its seeded supply/sensor/grip event.
+				WheelCell->bPhysicalLeftGrip = true;
+				WheelCell->FrontLeftWheelMassKg = ExtendedEvent == 1 ? 90.0 : 18.0;
+				WheelCell->bGripDegradesInTransit = ExtendedEvent == 2;
+				bInjected[0] = bRestored[0] = true;
+			}
+			bDemoDockOvershoot = ExtendedEvent == 3;
+		}
+	}
 	Record(TEXT("RANDOM_SEED"),FString::FromInt(CurrentSeed));
+	if (bExtendedRandomEvents && FactoryCheck == 5) Record(TEXT("RANDOM_LINE_EVENT"),ExtendedEventName(ExtendedEvent));
 	return true;
+}
+
+const TCHAR* AAutonomousAssemblyLine::ExtendedEventName(int32 Kind)
+{
+	switch (Kind)
+	{
+	case 1: return TEXT("overweight front-left wheel");
+	case 2: return TEXT("grip degrades in transit");
+	case 3: return TEXT("dock overshoot");
+	default: return TEXT("none");
+	}
 }
 
 void AAutonomousAssemblyLine::SetFactoryCheck(int32 Kind)
@@ -44,6 +80,7 @@ void AAutonomousAssemblyLine::SetFactoryCheck(int32 Kind)
     {
         WheelCell->bPhysicalLeftGrip = FactoryCheck >= 6 && FactoryCheck <= 8;
         WheelCell->bLowFrictionGrip = FactoryCheck == 7;
+        WheelCell->bGripDegradesInTransit = false;
         WheelCell->FrontLeftWheelMassKg = FactoryCheck == 8 ? 90.0 : 18.0;
         WheelCell->FrontLeftWheelSizeScale = FactoryCheck == 9 ? 1.12 : FactoryCheck == 10 ? 0.88 : 1.0;
     }
