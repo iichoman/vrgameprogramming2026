@@ -269,6 +269,9 @@ void ASensorAssemblyLine::DrawSensorVisualization() const
 		DrawDebugString(GetWorld(),(WheelCell->WheelSizeNearHitWorld+WheelCell->WheelSizeFarHitWorld)*.5+FVector(0,0,65),
 			FString::Printf(TEXT("WHEEL SIZE: %.1fcm / 66.0 +/- 1.0cm: %s"),WheelCell->FrontLeftWheelMeasuredDiameterCm,
 				WheelCell->bFrontLeftWheelSizePassed?TEXT("PASS"):TEXT("REJECT")),nullptr,SizeColor,.08f,false,1.f);
+		const FVector SizeCenter=WheelCell->GetWheelWorld(0).GetLocation();
+		DrawDebugSphere(GetWorld(),SizeCenter,33,24,FColor::Green,false,.08f,0,1.5f);
+		DrawDebugSphere(GetWorld(),SizeCenter,33*WheelCell->FrontLeftWheelSizeScale,24,SizeColor,false,.08f,0,3.f);
 	}
 	if (WheelCell && (WheelCell->bFrontLeftWheelRejecting || WheelCell->bFrontLeftWheelRejected))
 	{
@@ -295,13 +298,22 @@ void ASensorAssemblyLine::DrawSensorVisualization() const
 	{
 		const FVector Wheel=WheelCell->GetWheelWorld(0).GetLocation();
 		const auto& Grip=WheelCell->GetLeftGripState();
-		const bool Released=WheelCell->Outcome==EWheelOutcome::Blocked && Grip.SlipMm>=3;
+		const bool Released=WheelCell->SlipRecoveryPhase>0 || Grip.SlipMm>=3;
 		const FColor GripColor=Released?FColor::Red:FColor::Green;
 		DrawDebugSphere(GetWorld(),Wheel,22,16,GripColor,false,.08f,0,3.f);
 		DrawDebugString(GetWorld(),Wheel+FVector(0,0,80),
 			FString::Printf(TEXT("GRIP %s | mass %.0fkg | need %.0fN / applied %.0fN / limit %.0fN | slip %.1fmm"),
 				Released?TEXT("RELEASED"):TEXT("ACTIVE"),WheelCell->FrontLeftWheelMassKg,Grip.DemandN,Grip.AppliedForceN,Grip.CapacityN,Grip.SlipMm),
 			nullptr,GripColor,.08f,false,1.f);
+		if(WheelCell->SlipRecoveryPhase>0)
+		{
+			const FVector Fallen=WheelCell->GetDroppedWheelLocation();
+			DrawDebugSphere(GetWorld(),Fallen,34,16,FColor::Red,false,.08f,0,3.f);
+			DrawDebugString(GetWorld(),Fallen+FVector(0,0,125),
+				FString::Printf(TEXT("%s | phase %d: fall / worker / quarantine / resupply"),
+					WheelCell->bSlipFailureLowFriction?TEXT("LOW FRICTION"):TEXT("OVERWEIGHT"),WheelCell->SlipRecoveryPhase),
+				nullptr,FColor::Yellow,.08f,false,1.f);
+		}
 	}
 	if (WheelCell && WheelCell->bLaserScanFrontLeftHub)
 	{

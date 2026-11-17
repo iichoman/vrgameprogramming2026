@@ -60,6 +60,8 @@ public:
 	UFUNCTION() void Halt();
 	UFUNCTION() bool IsAtJointTarget(double ToleranceDegrees = 0.1) const;
 	UFUNCTION() bool SetInitialAngles(const TArray<double>& AnglesDegrees);
+	/** Kinematic link bounds used by the dropped-wheel collision sweep. */
+	void SetDroppedWheelCollision(bool bEnabled);
 	virtual void OnConstruction(const FTransform& Transform) override;
 	virtual void BeginPlay() override;
 	const TArray<FRobotJointDefinition>& GetDefinitions() const { return Definitions; }
@@ -69,6 +71,7 @@ private:
 	UPROPERTY() TObjectPtr<USceneComponent> ArmRoot;
 	UPROPERTY() TArray<TObjectPtr<USceneComponent>> JointNodes;
 	UPROPERTY() TArray<TObjectPtr<UStaticMeshComponent>> Visuals;
+	UPROPERTY() TArray<TObjectPtr<class UBoxComponent>> DropCollisionBoxes;
 	TArray<FRobotJointDefinition> Definitions;
 	TArray<FRobotJointState> Controllers;
 	TArray<double> Angles;

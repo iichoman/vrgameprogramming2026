@@ -6,6 +6,8 @@
 #include "Components/StaticMeshComponent.h"
 #include "Components/SphereComponent.h"
 #include "UObject/ConstructorHelpers.h"
+#include "Engine/World.h"
+#include "DrawDebugHelpers.h"
 
 void UWheelRobotSensorBank::Reset()
 {
@@ -69,8 +71,44 @@ AWheelAssemblyCell::AWheelAssemblyCell()
 	FrontLeftHubProxy->SetCollisionResponseToAllChannels(ECR_Ignore);
 	FrontLeftHubProxy->SetCollisionResponseToChannel(ECC_Visibility,ECR_Block);
 	FrontLeftHubProxy->SetHiddenInGame(true);
+	DroppedWheelCollision = CreateDefaultSubobject<USphereComponent>(TEXT("DroppedWheelCollision"));
+	DroppedWheelCollision->SetupAttachment(CellRoot);
+	DroppedWheelCollision->SetMobility(EComponentMobility::Movable);
+	DroppedWheelCollision->InitSphereRadius(30.0);
+	DroppedWheelCollision->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	DroppedWheelCollision->SetCollisionResponseToAllChannels(ECR_Ignore);
+	DroppedWheelCollision->SetCollisionResponseToChannel(ECC_PhysicsBody,ECR_Block);
+	DroppedWheelCollision->SetGenerateOverlapEvents(false);
 	LeftSensors = CreateDefaultSubobject<UWheelRobotSensorBank>(TEXT("LeftRobotSensors"));
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> Cylinder(TEXT("/Engine/BasicShapes/Cylinder.Cylinder"));
+	DroppedTireVisual = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("DroppedTireVisual"));
+	DroppedTireVisual->SetupAttachment(DroppedWheelCollision);
+	DroppedTireVisual->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	DroppedTireVisual->SetRelativeRotation(FRotator(0,0,90));
+	DroppedTireVisual->SetRelativeScale3D(FVector(0.66,0.66,0.16));
+	if(Cylinder.Succeeded())DroppedTireVisual->SetStaticMesh(Cylinder.Object);
+	DroppedTireVisual->SetVisibility(false);
+	DroppedHubVisual = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("DroppedHubVisual"));
+	DroppedHubVisual->SetupAttachment(DroppedWheelCollision);
+	DroppedHubVisual->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	DroppedHubVisual->SetRelativeRotation(FRotator(0,0,90));
+	DroppedHubVisual->SetRelativeLocation(FVector(0,-8.5,0));
+	DroppedHubVisual->SetRelativeScale3D(FVector(0.37,0.37,0.025));
+	if(Cylinder.Succeeded())DroppedHubVisual->SetStaticMesh(Cylinder.Object);
+	DroppedHubVisual->SetVisibility(false);
+	RecoveryWorkerVisual = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("RecoveryWorkerMarker"));
+	RecoveryWorkerVisual->SetupAttachment(CellRoot);
+	RecoveryWorkerVisual->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	RecoveryWorkerVisual->SetRelativeScale3D(FVector(0.32,0.32,1.25));
+	if(Cylinder.Succeeded())RecoveryWorkerVisual->SetStaticMesh(Cylinder.Object);
+	RecoveryWorkerVisual->SetVisibility(false);
+	RecoveryWorkerHeadVisual = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("RecoveryWorkerHead"));
+	RecoveryWorkerHeadVisual->SetupAttachment(CellRoot);
+	RecoveryWorkerHeadVisual->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	RecoveryWorkerHeadVisual->SetRelativeScale3D(FVector(0.23));
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> Sphere(TEXT("/Engine/BasicShapes/Sphere.Sphere"));
+	if(Sphere.Succeeded())RecoveryWorkerHeadVisual->SetStaticMesh(Sphere.Object);
+	RecoveryWorkerHeadVisual->SetVisibility(false);
 	for (int32 Index = 0; Index < 4; ++Index)
 	{
 		USceneComponent* Wheel = CreateDefaultSubobject<USceneComponent>(FName(*FString::Printf(TEXT("Wheel%d"), Index)));
@@ -233,6 +271,13 @@ FTransform AWheelAssemblyCell::GetWheelWorld(int32 Index) const
 	return GetPhysicalPartWorld(PartIndex(Index));
 }
 
+FVector AWheelAssemblyCell::GetDroppedWheelLocation() const
+{return DroppedWheelCollision?DroppedWheelCollision->GetComponentLocation():FVector::ZeroVector;}
+
+bool AWheelAssemblyCell::IsRecoveryWorkerVisible() const
+{return RecoveryWorkerVisual&&RecoveryWorkerHeadVisual&&RecoveryWorkerVisual->GetStaticMesh()
+	&&RecoveryWorkerHeadVisual->GetStaticMesh()&&RecoveryWorkerVisual->IsVisible()&&RecoveryWorkerHeadVisual->IsVisible();}
+
 FTransform AWheelAssemblyCell::GetPhysicalPartWorld(int32 Index) const
 {return WheelRoots.IsValidIndex(Index)&&WheelRoots[Index]?WheelRoots[Index]->GetComponentTransform():FTransform::Identity;}
 bool AWheelAssemblyCell::SetPhysicalPartWorld(int32 Index,const FTransform& Pose)
@@ -382,6 +427,13 @@ bool AWheelAssemblyCell::ResetCycle()
 	}
 	MountedCount = 0; SimulationTimeSeconds = 0; Accumulator = 0;
 	bLeftWheelSlipFall = false; LeftWheelSlipFallSeconds = 0; LeftWheelSlipVelocityCmps = FVector::ZeroVector;
+	SlipRecoveryPhase=0;SlipRecoveryPhaseSeconds=0;SlipFailureMassKg=0;bSlipFailureLowFriction=false;
+	bDroppedWheelHitSurface=false;SlipRecoveryWorkerLocation=FVector::ZeroVector;
+	DroppedWheelCollision->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	DroppedTireVisual->SetVisibility(false);DroppedHubVisual->SetVisibility(false);
+	RecoveryWorkerVisual->SetVisibility(false);
+	RecoveryWorkerHeadVisual->SetVisibility(false);
+	for(int32 Side=0;Side<LaneCount();++Side)if(IsValid(RobotFor(Side)))RobotFor(Side)->SetDroppedWheelCollision(false);
 	FrontLeftHubScan = FWheelHubScanReading();
 	FrontLeftDockScan = FrontLeftPreMountScan = FrontLeftFinalWheelScan = FWheelHubScanReading();
 	FrontLeftWheelMeasuredDiameterCm = 0; bFrontLeftWheelSizePassed = false;
@@ -404,6 +456,7 @@ bool AWheelAssemblyCell::ResetCycle()
 		}
 		WheelRoots[PartIndex(Index)]->SetWorldTransform(Initial);
 		TireVisuals[PartIndex(Index)]->SetRelativeScale3D(FVector(0.66,0.66,0.16)*(Index==0?FrontLeftWheelSizeScale:1.0));
+		HubVisuals[PartIndex(Index)]->SetRelativeScale3D(FVector(0.37,0.37,0.025)*(Index==0?FrontLeftWheelSizeScale:1.0));
 		const bool Visible = Index != FaultWheelIndex || bWheelPresent;
 		TireVisuals[PartIndex(Index)]->SetVisibility(Visible); HubVisuals[PartIndex(Index)]->SetVisibility(Visible);
 	}
@@ -656,8 +709,22 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
             LeftWheelSlipVelocityCmps = BodyAtStart.TransformVectorNoScale(FVector(0,-100,0));
             Lane.bHeld = false;
             if (Sensors) Sensors->CommandGrip(false);
-            Fail(FString::Printf(TEXT("%s · 휠 질량 %.0fkg · 미끄러짐 %.1fmm · 필요 %.0fN > 마찰 한계 %.0fN · 파지 해제/낙하"),
-                bLowFrictionGrip?TEXT("저마찰"):TEXT("과중량"),FrontLeftWheelMassKg,Lane.SlipMm,Lane.DemandN,Lane.CapacityN));
+			SlipFailureMassKg=FrontLeftWheelMassKg;bSlipFailureLowFriction=bLowFrictionGrip;
+			SlipRecoveryPhase=1;SlipRecoveryPhaseSeconds=0;
+			DroppedWheelCollision->SetWorldTransform(Target);
+			DroppedWheelCollision->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+			DroppedTireVisual->SetVisibility(true);DroppedHubVisual->SetVisibility(true);
+			TireVisuals[PartIndex(0)]->SetVisibility(false);HubVisuals[PartIndex(0)]->SetVisibility(false);
+			SlipRecoveryWorkerLocation=Target.GetLocation()+BodyAtStart.TransformVectorNoScale(FVector(-250,-200,0));
+			SlipRecoveryWorkerLocation.Z=90;
+			RecoveryWorkerVisual->SetWorldLocation(SlipRecoveryWorkerLocation);
+			RecoveryWorkerHeadVisual->SetWorldLocation(SlipRecoveryWorkerLocation+FVector(0,0,85));
+			RecoveryWorkerVisual->SetVisibility(true);RecoveryWorkerHeadVisual->SetVisibility(true);
+			for(int32 RecoverySide=0;RecoverySide<LaneCount();++RecoverySide)
+				if(IsValid(RobotFor(RecoverySide)))
+				{RobotFor(RecoverySide)->Halt();RobotFor(RecoverySide)->SetDroppedWheelCollision(true);}
+			Status=FString::Printf(TEXT("%s · %.0fkg · 필요 %.0fN / 한계 %.0fN · 휠 낙하, 로봇 안전정지, 작업자 호출"),
+				bLowFrictionGrip?TEXT("저마찰"):TEXT("과중량"),FrontLeftWheelMassKg,Lane.DemandN,Lane.CapacityN);
             return;
         }
     }
@@ -816,6 +883,12 @@ bool AWheelAssemblyCell::AdvanceSimulation(double DeltaSeconds)
 	while (bRunning && Accumulator + 1.e-10 >= FixedStepSeconds)
 	{
 		Accumulator -= FixedStepSeconds; SimulationTimeSeconds += FixedStepSeconds;
+		if(SlipRecoveryPhase>0)
+		{
+			AdvanceSlipRecovery(FixedStepSeconds);
+			RefreshQuality();
+			continue;
+		}
 		if (bSensorDrivenLeftRobot && LeftSensors && !bTransporting && Lanes[0].WheelIndex >= 0)
 			LeftSensors->Sample(SimulationTimeSeconds, this, Lanes[0].WheelIndex);
 		if (bTransporting)
@@ -847,7 +920,7 @@ bool AWheelAssemblyCell::AdvanceSimulation(double DeltaSeconds)
 			|| (!UsesTaskBindings()&&!LeftRobot->GetActorTransform().Equals(RobotAtStart[0], 1.e-6))
 			|| (!UsesTaskBindings()&&!RightRobot->GetActorTransform().Equals(RobotAtStart[1], 1.e-6)))
 		{ Fail(TEXT("Vehicle or robot base moved during assembly.")); break; }
-        for(int32 S=0;S<LaneCount()&&bRunning;++S)if(LaneEnabled(S))
+        for(int32 S=0;S<LaneCount()&&bRunning&&SlipRecoveryPhase==0;++S)if(LaneEnabled(S))
         {
             if(!IsValid(RobotFor(S))||!RobotFor(S)->GetActorTransform().Equals(RobotAtStart[S],1.e-6))
             {Fail(TEXT("작업 로봇이 삭제되거나 실행 중 이동했습니다."));break;}
@@ -913,25 +986,102 @@ void AWheelAssemblyCell::UpdateFastenedWheels()
 }
 void AWheelAssemblyCell::AdvanceLeftWheelSlipFall(double DeltaSeconds)
 {
-	if (!bLeftWheelSlipFall || !WheelRoots.IsValidIndex(PartIndex(0)) || !WheelRoots[PartIndex(0)]) return;
-	const double Dt=FMath::Clamp(DeltaSeconds,0.0,0.05);
-	if (Dt<=0) return;
+	if(!bLeftWheelSlipFall||!DroppedWheelCollision||!GetWorld())return;
+	const double Dt=FMath::Clamp(DeltaSeconds,0.0,0.02);
 	LeftWheelSlipFallSeconds+=Dt;
-	const double GroundCenterZ=FMath::Min(GetPickupWorld(0).GetLocation().Z,GetMountWorld(0).GetLocation().Z)-25.0;
-	FTransform Pose=GetWheelWorld(0);
-	FVector Position=Pose.GetLocation();
 	LeftWheelSlipVelocityCmps.Z-=981.0*Dt;
-	Position+=LeftWheelSlipVelocityCmps*Dt;
-	if (Position.Z<=GroundCenterZ)
+	const FVector Start=DroppedWheelCollision->GetComponentLocation();
+	const FVector End=Start+LeftWheelSlipVelocityCmps*Dt;
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(DroppedWheelSweep),false,this);
+	if(LeftWheelSlipFallSeconds<0.12)Params.AddIgnoredActor(RobotForWheel(0));
+	FHitResult Hit;
+	if(GetWorld()->SweepSingleByChannel(Hit,Start,End,FQuat::Identity,ECC_PhysicsBody,
+		FCollisionShape::MakeSphere(30.0),Params))
 	{
-		Position.Z=GroundCenterZ;
-		LeftWheelSlipVelocityCmps.Z=0;
-		LeftWheelSlipVelocityCmps.X*=FMath::Exp(-2.0*Dt);
-		LeftWheelSlipVelocityCmps.Y*=FMath::Exp(-2.0*Dt);
+		const FVector Normal=Hit.ImpactNormal.GetSafeNormal();
+		DroppedWheelCollision->SetWorldLocation(Hit.Location+Normal*0.5);
+		const double Into=FVector::DotProduct(LeftWheelSlipVelocityCmps,Normal);
+		if(Into<0)LeftWheelSlipVelocityCmps-=Normal*Into*1.15;
+		LeftWheelSlipVelocityCmps*=Normal.Z>0.5?0.65:0.8;
+		if(Normal.Z>0.5 && Hit.GetActor()!=RobotForWheel(0))bDroppedWheelHitSurface=true;
 	}
-	Pose.SetLocation(Position);
-	WheelRoots[PartIndex(0)]->SetWorldTransform(Pose);
-	if (LeftWheelSlipFallSeconds>=2.0) bLeftWheelSlipFall=false;
+	else DroppedWheelCollision->SetWorldLocation(End);
+	if(LeftWheelSlipFallSeconds>=2.0 && bDroppedWheelHitSurface)
+	{bLeftWheelSlipFall=false;LeftWheelSlipVelocityCmps=FVector::ZeroVector;}
+}
+void AWheelAssemblyCell::AdvanceSlipRecovery(double DeltaSeconds)
+{
+	SlipRecoveryPhaseSeconds+=DeltaSeconds;
+	if(SlipRecoveryPhase==1)
+	{
+		AdvanceLeftWheelSlipFall(DeltaSeconds);
+		if(LeftWheelSlipFallSeconds<2.0)return;
+		if(!bDroppedWheelHitSurface){Fail(TEXT("낙하 휠 충돌면 미검출 · 작업자 수동 확인 필요"));return;}
+		SlipRecoveryPhase=2;SlipRecoveryPhaseSeconds=0;
+		SlipRecoveryTarget=DroppedWheelCollision->GetComponentLocation();
+		SlipWorkerStart=SlipRecoveryTarget+BodyAtStart.TransformVectorNoScale(FVector(-250,-200,0));
+		SlipWorkerStart.Z=SlipRecoveryTarget.Z+90;
+		SlipRecoveryWorkerLocation=SlipWorkerStart;
+		RecoveryWorkerVisual->SetWorldLocation(SlipWorkerStart);
+		RecoveryWorkerVisual->SetVisibility(true);
+		RecoveryWorkerHeadVisual->SetWorldLocation(SlipWorkerStart+FVector(0,0,85));
+		RecoveryWorkerHeadVisual->SetVisibility(true);
+		Status=TEXT("작업자 호출 완료 · 낙하 휠 회수 접근 · 로봇 대기");
+		return;
+	}
+	if(SlipRecoveryPhase==2)
+	{
+		const double Alpha=FMath::Clamp(SlipRecoveryPhaseSeconds/1.5,0.0,1.0);
+		SlipRecoveryWorkerLocation=FMath::Lerp(SlipWorkerStart,SlipRecoveryTarget+FVector(0,0,90),Alpha);
+		RecoveryWorkerVisual->SetWorldLocation(SlipRecoveryWorkerLocation);
+		RecoveryWorkerHeadVisual->SetWorldLocation(SlipRecoveryWorkerLocation+FVector(0,0,85));
+		if(Alpha<1)return;
+		SlipRecoveryPhase=3;SlipRecoveryPhaseSeconds=0;
+		SlipRecoveryStart=DroppedWheelCollision->GetComponentLocation();
+		SlipRecoveryTarget=SlipRecoveryStart+BodyAtStart.TransformVectorNoScale(FVector(-220,-180,0));
+		DroppedWheelCollision->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Status=TEXT("작업자가 낙하 휠을 격리 장소로 운반 · 로봇 대기");
+		return;
+	}
+	if(SlipRecoveryPhase==3)
+	{
+		const double Alpha=FMath::Clamp(SlipRecoveryPhaseSeconds/1.6,0.0,1.0);
+		const FVector Position=FMath::Lerp(SlipRecoveryStart,SlipRecoveryTarget,Alpha);
+		DroppedWheelCollision->SetWorldLocation(Position);
+		SlipRecoveryWorkerLocation=Position+FVector(0,0,90);
+		RecoveryWorkerVisual->SetWorldLocation(SlipRecoveryWorkerLocation);
+		RecoveryWorkerHeadVisual->SetWorldLocation(SlipRecoveryWorkerLocation+FVector(0,0,85));
+		if(Alpha<1)return;
+		SlipRecoveryPhase=4;SlipRecoveryPhaseSeconds=0;
+		SlipRecoveryTarget=GetPickupWorld(0).GetLocation();
+		SlipRecoveryStart=SlipRecoveryTarget+BodyAtStart.TransformVectorNoScale(FVector(-200,-160,0));
+		WheelRoots[PartIndex(0)]->SetWorldLocation(SlipRecoveryStart);
+		TireVisuals[PartIndex(0)]->SetVisibility(true);HubVisuals[PartIndex(0)]->SetVisibility(true);
+		Status=TEXT("낙하 휠 격리 완료 · 규격품 재공급 이동 · 로봇 대기");
+		return;
+	}
+	if(SlipRecoveryPhase==4)
+	{
+		const double Alpha=FMath::Clamp(SlipRecoveryPhaseSeconds/1.8,0.0,1.0);
+		WheelRoots[PartIndex(0)]->SetWorldLocation(FMath::Lerp(SlipRecoveryStart,SlipRecoveryTarget,Alpha));
+		if(Alpha<1)return;
+		SlipRecoveryPhase=0;SlipRecoveryPhaseSeconds=0;
+		RecoveryWorkerVisual->SetVisibility(false);
+		RecoveryWorkerHeadVisual->SetVisibility(false);
+		for(int32 Side=0;Side<LaneCount();++Side)if(IsValid(RobotFor(Side)))RobotFor(Side)->SetDroppedWheelCollision(false);
+		bLowFrictionGrip=false;FrontLeftWheelMassKg=18.0;
+		if(SensorsFor(0))SensorsFor(0)->Reset();
+		Status=TEXT("대체 휠 공급 완료 · 센서 재검사 · 조립 재시도");
+		if(!BeginWheel(0))return;
+		for(int32 Side=1;Side<LaneCount();++Side)
+		{
+			if(!LaneEnabled(Side)||Lanes[Side].Stage==EWheelStage::Complete)continue;
+			const bool Commanded=Lanes[Side].Stage==EWheelStage::Reposition
+				? RobotFor(Side)->CommandJointDegrees(RearTransit[Lanes[Side].WheelIndex])
+				: RobotFor(Side)->CommandTCPWorld(Lanes[Side].TargetTCP);
+			if(!Commanded){Fail(TEXT("회수 후 로봇 작업 재개 실패 · ")+RobotFor(Side)->LastStatus);return;}
+		}
+	}
 }
 void AWheelAssemblyCell::AdvanceFrontLeftWheelReject(double DeltaSeconds)
 {
@@ -954,8 +1104,35 @@ void AWheelAssemblyCell::BeginPlay() { Super::BeginPlay(); if (!bExternallyDrive
 void AWheelAssemblyCell::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
-	AdvanceLeftWheelSlipFall(DeltaSeconds);
 	AdvanceFrontLeftWheelReject(DeltaSeconds);
+	if(GetWorld()&&(GetWorld()->WorldType==EWorldType::PIE||GetWorld()->WorldType==EWorldType::Game))
+	{
+		if(SlipRecoveryPhase>0)
+		{
+			const FVector Fallen=GetDroppedWheelLocation();
+			DrawDebugSphere(GetWorld(),Fallen,35,16,FColor::Red,false,0.08f,0,3.f);
+			DrawDebugString(GetWorld(),Fallen+FVector(0,0,115),
+				FString::Printf(TEXT("%s / %s / %.0f kg / operator recovery %d/4"),
+					bSlipFailureLowFriction?TEXT("LOW FRICTION"):TEXT("OVERWEIGHT"),
+					bDroppedWheelHitSurface?TEXT("SURFACE CONTACT"):TEXT("FALLING"),
+					SlipFailureMassKg,SlipRecoveryPhase),nullptr,FColor::Yellow,0.08f,false,1.f);
+			{
+				DrawDebugCapsule(GetWorld(),SlipRecoveryWorkerLocation+FVector(0,0,35),100,28,FQuat::Identity,
+					FColor::Yellow,false,0.08f,0,3.f);
+				DrawDebugString(GetWorld(),SlipRecoveryWorkerLocation+FVector(0,0,150),TEXT("OPERATOR: COLLECT / RESUPPLY"),
+					nullptr,FColor::Yellow,0.08f,false,1.f);
+			}
+		}
+		if(FrontLeftWheelMeasuredDiameterCm>0&&!bFrontLeftWheelSizePassed)
+		{
+			const FVector Center=GetWheelWorld(0).GetLocation();
+			DrawDebugSphere(GetWorld(),Center,33,24,FColor::Green,false,0.08f,0,1.5f);
+			DrawDebugSphere(GetWorld(),Center,33*FrontLeftWheelSizeScale,24,FColor::Red,false,0.08f,0,3.f);
+			DrawDebugString(GetWorld(),Center+FVector(0,0,120),
+				FString::Printf(TEXT("SIZE REJECT: %.1f cm / 66.0 +/- 1.0 cm"),FrontLeftWheelMeasuredDiameterCm),
+				nullptr,FColor::Red,0.08f,false,1.f);
+		}
+	}
 	if (bExternallyDriven) return;
 	if (DeltaSeconds > 1 && bRunning) { StopCycle(); Status = TEXT("Large frame stall; reset required."); return; }
 	AdvanceSimulation(DeltaSeconds);

@@ -130,8 +130,16 @@ public:
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Sensors") FVector ReplannedPickupWorld = FVector::ZeroVector;
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Grip") bool bLeftWheelSlipFall = false;
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Grip") double LeftWheelSlipFallSeconds = 0;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Grip") int32 SlipRecoveryPhase = 0;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Grip") double SlipFailureMassKg = 0;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Grip") bool bSlipFailureLowFriction = false;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Grip") bool bDroppedWheelHitSurface = false;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Grip") FVector SlipRecoveryWorkerLocation = FVector::ZeroVector;
+    FVector GetDroppedWheelLocation() const;
+    bool IsRecoveryWorkerVisible() const;
     FVector LeftWheelSlipVelocityCmps = FVector::ZeroVector;
     void AdvanceLeftWheelSlipFall(double DeltaSeconds);
+    void AdvanceSlipRecovery(double DeltaSeconds);
     const FWheelLane& GetLeftGripState() const { return Lanes[0]; }
     // Runtime adapter bindings, ordered LF/LR/RF/RR. Empty preserves standalone demos.
     UPROPERTY(Transient) TArray<TObjectPtr<ARobotArm>> TaskRobots;
@@ -238,6 +246,11 @@ public:
 private:
 	UPROPERTY() TObjectPtr<USceneComponent> CellRoot;
 	UPROPERTY() TObjectPtr<USphereComponent> FrontLeftHubProxy;
+	UPROPERTY() TObjectPtr<USphereComponent> DroppedWheelCollision;
+	UPROPERTY() TObjectPtr<UStaticMeshComponent> DroppedTireVisual;
+	UPROPERTY() TObjectPtr<UStaticMeshComponent> DroppedHubVisual;
+	UPROPERTY() TObjectPtr<UStaticMeshComponent> RecoveryWorkerVisual;
+	UPROPERTY() TObjectPtr<UStaticMeshComponent> RecoveryWorkerHeadVisual;
 	UPROPERTY() TArray<TObjectPtr<USceneComponent>> WheelRoots;
 	UPROPERTY() TArray<TObjectPtr<UStaticMeshComponent>> TireVisuals;
 	UPROPERTY() TArray<TObjectPtr<UStaticMeshComponent>> HubVisuals;
@@ -246,6 +259,10 @@ private:
 	FTransform BodyAtStart;
 	FTransform RobotAtStart[4];
 	double Accumulator = 0;
+	double SlipRecoveryPhaseSeconds = 0;
+	FVector SlipRecoveryStart = FVector::ZeroVector;
+	FVector SlipRecoveryTarget = FVector::ZeroVector;
+	FVector SlipWorkerStart = FVector::ZeroVector;
 	bool bRunning = false;
 	bool bStationCaptured = false;
 	FTransform VehicleAtStation;

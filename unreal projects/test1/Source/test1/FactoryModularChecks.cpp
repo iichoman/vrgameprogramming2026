@@ -137,6 +137,9 @@ bool AFactoryRuntime::RunModularEditorChecks()
         TOptional<FVector> GripRetryFirstTcp;
         bool StalePickupPoseObserved=false;
         bool FreshPickupPoseAfterRecovery=false;
+        bool SlipFallObserved=false;
+        bool SlipWorkerObserved=false;
+        bool SlipResupplyObserved=false;
         for(int32 I=0;I<120*300&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)
         {
             StepSimulation(1./120);
@@ -153,6 +156,14 @@ bool AFactoryRuntime::RunModularEditorChecks()
                     &&Stage!=EWheelStage::WaitPose&&PoseSensor->PickupPose.Fresh(Now,PoseSensor->MaxAge);
             }
             const auto& Grip=TestAssemblyLine->WheelCell->GetLeftGripState();
+            if(Kind==7||Kind==8)
+            {
+                const auto* SlipCell=TestAssemblyLine->WheelCell.Get();
+                SlipFallObserved|=SlipCell->SlipRecoveryPhase==1&&SlipCell->LeftWheelSlipFallSeconds>0.2;
+                SlipWorkerObserved|=(SlipCell->SlipRecoveryPhase==2||SlipCell->SlipRecoveryPhase==3)
+                    &&SlipCell->IsRecoveryWorkerVisible();
+                SlipResupplyObserved|=SlipCell->SlipRecoveryPhase==4;
+            }
             if(Kind==3&&TestAssemblyLine->WheelCell->LeftGripRetries>0)
             {
                 const FVector CurrentTcp=TestAssemblyLine->WheelCell->LeftRobot->GetTCPWorld().GetLocation();
@@ -191,15 +202,12 @@ bool AFactoryRuntime::RunModularEditorChecks()
         }
         if(Kind==7||Kind==8)
         {
-            Check(Kind==7?TEXT("integrated_low_friction_stops_left_wheel"):TEXT("overweight_wheel_exceeds_normal_friction_grip"),
-                Began && Cell->Outcome==EWheelOutcome::Blocked && Cell->Status.Contains(TEXT("미끄러짐"))
-                &&(Kind==7||(!Cell->bLowFrictionGrip&&Cell->FrontLeftWheelMassKg==90.0
-                    &&Cell->GetLeftGripState().DemandN>Cell->GetLeftGripState().CapacityN)));
-            const FVector BeforeFall=Cell->GetWheelWorld(0).GetLocation();
-            Cell->Tick(0.25f);
-            Check(Kind==7?TEXT("low_friction_releases_and_moves_wheel_after_stop"):TEXT("overweight_wheel_releases_and_moves_after_stop"),Cell->GetLeftGripState().bHeld==false
-                &&Cell->LeftWheelSlipFallSeconds>0
-                &&FVector::Distance(BeforeFall,Cell->GetWheelWorld(0).GetLocation())>1.0);
+            Check(Kind==7?TEXT("low_friction_dropped_wheel_collides_and_recovers"):TEXT("overweight_dropped_wheel_collides_and_recovers"),
+                Began&&SlipFallObserved&&SlipWorkerObserved&&SlipResupplyObserved
+                &&Cell->bDroppedWheelHitSurface&&Cell->SlipRecoveryPhase==0
+                &&Cell->SlipFailureMassKg==(Kind==7?18.0:90.0)
+                &&Cell->bSlipFailureLowFriction==(Kind==7)
+                &&RunState==EFactoryRunState::Complete&&Cell->MountedCount==4);
             continue;
         }
         const bool EventObserved=Kind==0 || Kind==6 ? Line->InjectedEvents==0 :

@@ -1,6 +1,7 @@
 #include "RobotArm.h"
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Components/BoxComponent.h"
 
 ARobotArm::ARobotArm()
 {
@@ -24,6 +25,13 @@ ARobotArm::ARobotArm()
 		Mesh->SetGenerateOverlapEvents(false);
 		Mesh->SetVisibility(false);
 		Visuals.Add(Mesh);
+		auto* Box = CreateDefaultSubobject<UBoxComponent>(FName(*FString::Printf(TEXT("DropCollision%02d"),i)));
+		Box->SetupAttachment(Mesh);
+		Box->SetMobility(EComponentMobility::Movable);
+		Box->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Box->SetCollisionResponseToAllChannels(ECR_Ignore);
+		Box->SetCollisionResponseToChannel(ECC_PhysicsBody,ECR_Block);
+		DropCollisionBoxes.Add(Box);
 	}
 }
 
@@ -67,9 +75,19 @@ bool ARobotArm::InitializeArm()
 		{ LastStatus=TEXT("Invalid mesh-to-joint binding."); return false; }
 		Visuals[i]->AttachToComponent(B.JointIndex<0 ? ArmRoot.Get() : JointNodes[B.JointIndex].Get(),FAttachmentTransformRules::KeepRelativeTransform);
 		Visuals[i]->SetStaticMesh(B.Mesh); Visuals[i]->SetRelativeTransform(B.RelativePoseCm);
+		const FBox Bounds=B.Mesh->GetBoundingBox();
+		DropCollisionBoxes[i]->SetBoxExtent(Bounds.GetExtent()*0.85);
+		DropCollisionBoxes[i]->SetRelativeLocation(Bounds.GetCenter());
 	}
 	SegmentDuration=0; SegmentElapsed=0; bInitialized=true; UpdateVisuals();
 	LastStatus=TEXT("Calibrated. PID velocity servo with simplified motor response."); return true;
+}
+
+void ARobotArm::SetDroppedWheelCollision(bool bEnabled)
+{
+	for(int32 I=0;I<DropCollisionBoxes.Num();++I)
+		DropCollisionBoxes[I]->SetCollisionEnabled(bEnabled && MeshBindings.IsValidIndex(I) && MeshBindings[I].Mesh
+			? ECollisionEnabled::QueryOnly : ECollisionEnabled::NoCollision);
 }
 
 bool ARobotArm::SetInitialAngles(const TArray<double>& Values)
