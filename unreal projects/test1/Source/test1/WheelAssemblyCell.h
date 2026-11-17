@@ -50,6 +50,10 @@ struct FWheelIncidentRecord
 {
 	GENERATED_BODY()
 	UPROPERTY(VisibleAnywhere) FString Kind;
+	UPROPERTY(VisibleAnywhere) FString RequestId;
+	UPROPERTY(VisibleAnywhere) FString ProductInstanceId;
+	UPROPERTY(VisibleAnywhere) FString PartInstanceId;
+	UPROPERTY(VisibleAnywhere) int32 RunEpoch = INDEX_NONE;
 	UPROPERTY(VisibleAnywhere) FString PartId;
 	UPROPERTY(VisibleAnywhere) FString Stage;
 	UPROPERTY(VisibleAnywhere) double DetectedAt = -1;
@@ -191,6 +195,10 @@ public:
     void AdvanceWheelReplacement(double DeltaSeconds);
     /** Incident rows of the current cycle, oldest first. Cleared by ResetCycle. */
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Incidents") TArray<FWheelIncidentRecord> Incidents;
+    // Logical demo identity; it does not imply a separate physical product or spare.
+    FString RequestId, ProductInstanceId;
+    int32 RunEpoch = INDEX_NONE;
+    void SetRunIdentity(const FString& InRequestId, const FString& InProductInstanceId, int32 InRunEpoch);
     int32 CountIncidents(const TCHAR* Kind, const TCHAR* IncidentOutcome) const;
     FString GetIncidentSummary(int32 MaxRows = 6) const;
     FString GetIncidentCsv() const;

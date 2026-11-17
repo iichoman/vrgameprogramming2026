@@ -227,6 +227,16 @@ bool AFactoryRuntime::RunModularEditorChecks()
         }
         const auto* Line=TestAssemblyLine.Get();
         auto* Cell=Line->WheelCell.Get();
+        if(Kind==1)
+        {
+            const FWheelIncidentRecord* Event=Cell->Incidents.FindByPredicate([](const FWheelIncidentRecord& R){return R.Kind==TEXT("supply_missing");});
+            Check(TEXT("incident_identifies_demo_request_product_and_part"),Event
+                &&Event->RunEpoch==Line->RunNumber-1
+                &&Event->RequestId==Cell->RequestId
+                &&Event->ProductInstanceId==Cell->ProductInstanceId
+                &&Event->PartInstanceId==Event->ProductInstanceId+TEXT("/")+Event->PartId
+                &&Event->PartId==TEXT("part_wheel_fl"));
+        }
         if(Kind==0)
         {
             const auto Assessment=Cell->GetEvaluationSnapshot();

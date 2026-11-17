@@ -15,7 +15,9 @@ bool AAutonomousAssemblyLine::ResetLine()
 	Demo = EArrivalDemo::Normal;
 	if (WheelCell) { WheelCell->bSensorDrivenLeftRobot = true; WheelCell->bAutoRecoverLeftRobot = true; }
 	if (!Super::ResetLine()) return false;
-	CurrentSeed = BaseSeed + RunNumber++;
+	const int32 ThisRun=RunNumber++;
+	CurrentSeed=BaseSeed+ThisRun;
+	WheelCell->SetRunIdentity(FString::Printf(TEXT("demo_request_%d"),ThisRun),FString::Printf(TEXT("demo_vehicle_%d"),ThisRun),ThisRun);
 	Random.Initialize(CurrentSeed);
 	InjectedEvents = RecoveredEvents = 0;
 	ActiveEvent = TEXT("첫 타이어 공급 측정 대기");

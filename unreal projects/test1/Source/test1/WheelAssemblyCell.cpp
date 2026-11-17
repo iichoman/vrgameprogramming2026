@@ -180,6 +180,11 @@ FTransform AWheelAssemblyCell::GetMountTargetWorld(int32 Index) const
 		? FrontLeftHubScan.MeasuredWorld : GetMountWorld(Index);
 }
 
+void AWheelAssemblyCell::SetRunIdentity(const FString& InRequestId, const FString& InProductInstanceId, int32 InRunEpoch)
+{
+    RequestId=InRequestId; ProductInstanceId=InProductInstanceId; RunEpoch=InRunEpoch;
+}
+
 void AWheelAssemblyCell::OpenIncident(const TCHAR* Kind, int32 WheelIndex, EWheelStage Stage, const TCHAR* Quantity,
 	const TCHAR* Unit, double Measured, double Limit, const FString& Response, const TCHAR* IncidentOutcome)
 {
@@ -188,7 +193,9 @@ void AWheelAssemblyCell::OpenIncident(const TCHAR* Kind, int32 WheelIndex, EWhee
 	const int32 Part = WheelIndex>=0 && WheelIndex<4 ? PartIndex(WheelIndex) : INDEX_NONE;
 	FWheelIncidentRecord Row;
 	Row.Kind = Kind;
+	Row.RequestId=RequestId; Row.ProductInstanceId=ProductInstanceId; Row.RunEpoch=RunEpoch;
 	Row.PartId = Part>=0 && Part<4 ? PartIds[Part] : TEXT("");
+	Row.PartInstanceId=!Row.PartId.IsEmpty()&&!ProductInstanceId.IsEmpty()?ProductInstanceId+TEXT("/")+Row.PartId:TEXT("");
 	Row.Stage = StaticEnum<EWheelStage>()->GetNameStringByValue(int64(Stage));
 	Row.DetectedAt = SimulationTimeSeconds;
 	Row.Quantity = Quantity; Row.Unit = Unit; Row.Measured = Measured; Row.Limit = Limit;
@@ -247,9 +254,9 @@ FString AWheelAssemblyCell::GetIncidentSummary(int32 MaxRows) const
 
 FString AWheelAssemblyCell::GetIncidentCsv() const
 {
-	FString Csv = TEXT("detected_s,kind,part_id,stage,quantity,unit,measured,limit,response,outcome,resolved_s\n");
+	FString Csv = TEXT("request_id,product_instance_id,part_instance_id,run_epoch,detected_s,kind,part_id,stage,quantity,unit,measured,limit,response,outcome,resolved_s\n");
 	for (const FWheelIncidentRecord& Row : Incidents)
-		Csv += FString::Printf(TEXT("%.4f,%s,%s,%s,%s,%s,%.4f,%.4f,%s,%s,%.4f\n"), Row.DetectedAt, *Row.Kind, *Row.PartId, *Row.Stage,
+		Csv += FString::Printf(TEXT("%s,%s,%s,%d,%.4f,%s,%s,%s,%s,%s,%.4f,%.4f,%s,%s,%.4f\n"), *Row.RequestId, *Row.ProductInstanceId, *Row.PartInstanceId, Row.RunEpoch, Row.DetectedAt, *Row.Kind, *Row.PartId, *Row.Stage,
 			*Row.Quantity.Replace(TEXT(","),TEXT(";")), *Row.Unit, Row.Measured, Row.Limit,
 			*Row.Response.Replace(TEXT(","),TEXT(";")), *Row.Outcome, Row.ResolvedAt);
 	return Csv;
