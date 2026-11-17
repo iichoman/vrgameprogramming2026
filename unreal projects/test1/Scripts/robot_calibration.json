@@ -8,8 +8,9 @@
     "manufacturer_model_verified": false,
     "units": "cm, degrees; quaternion x/y/z/w",
     "axis_evidence": "SetJointAngle(i, +10 degrees) rotates J_Ai local yaw to -10 degrees for all six 1-based indices.",
-    "joint_range_status": "Engineering assumptions for initial cell only; manufacturer joint limits unverified.",
-    "tcp_status": "Existing asset TCP_Estimate; tool contact calibration unverified."
+    "joint_range_status": "Legacy +/-170 degree values below are initial demo assumptions, not manufacturer limits. Native RobotArm loads Config/RobotMotionReference.json for active comparison limits and axis speeds. Asymmetric A2/A3 position ranges remain legacy assumptions until native axis mastering is measured. Imported geometry and TCP remain unverified.",
+    "tcp_status": "Existing asset TCP_Estimate; tool contact calibration unverified.",
+    "runtime_motion_reference": "Config/RobotMotionReference.json"
   },
   "joints": [
     {

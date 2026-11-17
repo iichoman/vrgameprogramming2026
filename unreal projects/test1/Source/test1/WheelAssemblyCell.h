@@ -87,6 +87,8 @@ struct FWheelLane
 	FTransform LastCarried;
     FVector GripVelocity = FVector::ZeroVector;
     double DemandN = 0, AppliedForceN = 0, CapacityN = 0, SlipMm = 0;
+	double NextPickupStartedAt = -1;
+	double NextPickupSeconds = 0;
 	double StageTime = 0;
 	double StableTime = 0;
 	int32 Corrections = 0;
@@ -114,6 +116,10 @@ public:
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") FWheelHubScanReading FrontLeftFinalWheelScan;
     bool bPhysicalLeftGrip = false;
     bool bLowFrictionGrip = false;
+    // Legacy recovery animation is opt-in; physical experiments wait for intervention.
+    bool bDemoRecoveryEnabled = false;
+    double DroppedContactStableSeconds = 0;
+    bool HasPassiveWork() const { return bLeftWheelSlipFall || bFrontLeftWheelRejecting; }
     double FrontLeftWheelMassKg = 18.0;
     double FrontLeftWheelSizeScale = 1.0;
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") double FrontLeftWheelMeasuredDiameterCm = 0;
@@ -227,6 +233,9 @@ public:
 	UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|State") TArray<double> MountOrientationErrorDeg;
 	UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|State") TArray<bool> FastenedWheels;
 	UFUNCTION(CallInEditor, Category="Wheel Cell|Actions") bool ResetCycle();
+    // A line-owned placement replaces the previous station cache explicitly.
+    bool ResetAtStation(const FTransform& Vehicle,const FTransform& Carriage)
+    {VehicleAtStation=Vehicle;CarriageAtStation=Carriage;bStationCaptured=true;return ResetCycle();}
 	UFUNCTION(CallInEditor, Category="Wheel Cell|Actions") bool StartCycle();
 	UFUNCTION(CallInEditor, Category="Wheel Cell|Actions") void StopCycle();
 	UFUNCTION() bool SelectScenario(EWheelScenario Preset, EWheelControlMode Mode);

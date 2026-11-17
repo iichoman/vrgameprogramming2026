@@ -81,8 +81,8 @@ bool ASensorAssemblyLine::ResetLine()
     MaxDockOvershootCm=0;bDockOvershootRecovered=false;bOvershootOutbound=bOvershootReturning=false;
     bInjected=bStopRecorded=bLoggedComplete=false; LastLeftRobotState.Reset();
     ArrivalPhase=EArrivalPhase::Ready;
-    Sensors->Reset(WheelCell->Assembly,VehicleAtWheelStation);
-    Conveyor->Reset(WheelCell->Assembly,WheelCell->TransportCarriage,VehicleAtWheelStation.GetLocation());
+    Sensors->Reset(WheelCell->Assembly,WheelStationPose());
+    Conveyor->Reset(WheelCell->Assembly,WheelCell->TransportCarriage,WheelStationPose().GetLocation());
     // Initial velocity requires two samples; Start waits for valid measurements.
     EventLog=FPaths::Combine(FPaths::ProjectSavedDir(),TEXT("SensorLineRuns"),FGuid::NewGuid().ToString(EGuidFormats::Digits)+TEXT(".csv"));
     IFileManager::Get().MakeDirectory(*FPaths::GetPath(EventLog),true);
@@ -144,6 +144,7 @@ void ASensorAssemblyLine::FixedStep(double Dt)
     if (ArrivalPhase!=EArrivalPhase::Released)
     {
         Conveyor->Step(Dt);
+        UpdateLiftSupports();
         if (WheelCell && WheelCell->Assembly){WheelCell->Assembly->GetLeftDoor()->SetWorldTransform(DoorSupplyWorld);if(SecondDoorCell)WheelCell->Assembly->GetRightDoor()->SetWorldTransform(SecondDoorSupplyWorld);}
     }
     const double PreviousSample=Sensors->Arrival.MeasuredAt;
@@ -151,6 +152,8 @@ void ASensorAssemblyLine::FixedStep(double Dt)
     if (Sensors->Arrival.MeasuredAt!=PreviousSample && ArrivalPhase!=EArrivalPhase::Released) Record(TEXT("SAMPLE"),TEXT("sensor update"));
     if (ArrivalPhase==EArrivalPhase::Stopped || ArrivalPhase==EArrivalPhase::Fault)
     {
+        if(WheelCell)WheelCell->AdvanceSimulation(Dt);
+        if(DoorCell)DoorCell->AdvanceSimulation(Dt);if(SecondDoorCell)SecondDoorCell->AdvanceSimulation(Dt);
         if (!bStopRecorded && Sensors->Speed.Fresh(SensorTime,Sensors->MaxAge) && Sensors->Speed.Value.Size()<=StopSpeedCmS)
         { bStopRecorded=true; Record(TEXT("STOP_CONFIRMED"),TEXT("measured speed settled")); }
         return;
@@ -186,10 +189,10 @@ void ASensorAssemblyLine::FixedStep(double Dt)
         else if (bOvershootOutbound && !bOvershootReturning)
         {
             MaxDockOvershootCm=FMath::Max(MaxDockOvershootCm,
-                FMath::Max(0.0,FVector::DotProduct(WheelCell->Assembly->GetActorLocation()-VehicleAtWheelStation.GetLocation(),OvershootDirectionWorld)));
+                FMath::Max(0.0,FVector::DotProduct(WheelCell->Assembly->GetActorLocation()-WheelStationPose().GetLocation(),OvershootDirectionWorld)));
             Status=FString::Printf(TEXT("도킹 초과 %.1fcm · 후진 준비"),MaxDockOvershootCm);
             if(FVector::Distance(WheelCell->Assembly->GetActorLocation(),OvershootTarget)<0.5 && Speed<=StopSpeedCmS)
-            {Conveyor->Target=VehicleAtWheelStation.GetLocation();bOvershootReturning=true;Record(TEXT("REVERSE_COMMAND"),TEXT("return to dock"));}
+            {Conveyor->Target=WheelStationPose().GetLocation();bOvershootReturning=true;Record(TEXT("REVERSE_COMMAND"),TEXT("return to dock"));}
         }
         else if(bOvershootReturning)
         {
@@ -346,7 +349,7 @@ void ASensorAssemblyLine::DrawSensorVisualization() const
     DrawDebugString(GetWorld(),Station+FVector(0,0,205),Fresh ? TEXT("DOCK SENSOR: LIVE") : TEXT("DOCK SENSOR: STALE"),nullptr,Color,.08f,false,1.f);
     if (bDemoDockOvershoot && bOvershootOutbound && IsValid(WheelCell) && IsValid(WheelCell->Assembly))
     {
-        const FVector Stop=VehicleAtWheelStation.GetLocation();
+        const FVector Stop=WheelStationPose().GetLocation();
         const FVector Actual=WheelCell->Assembly->GetActorLocation();
         const FColor ActualColor=bDockOvershootRecovered?FColor::Green:FColor::Yellow;
         DrawDebugSphere(GetWorld(),Stop,17,12,FColor::Green,false,.08f,0,3.f);

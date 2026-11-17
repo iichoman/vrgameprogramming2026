@@ -31,7 +31,8 @@ bool Finite(const FVector& V)
 {
     return FMath::IsFinite(V.X) && FMath::IsFinite(V.Y) && FMath::IsFinite(V.Z);
 }
-bool Rigid(const FTransform& T)
+// Unity builds combine this file with DoorFixture.cpp; keep local helper names distinct.
+bool IsRigidVehicleModulePose(const FTransform& T)
 {
     return !T.ContainsNaN() && T.GetRotation().IsNormalized()
         && T.GetScale3D().Equals(FVector::OneVector, 1.e-6);
@@ -77,8 +78,8 @@ void AVehicleProcessModule::RebuildVisuals()
 
 bool AVehicleProcessModule::ValidFrame() const
 {
-    return IsValid(VehicleFrame) && VehicleFrame != this && Rigid(VehicleFrame->GetActorTransform())
-        && Rigid(GetActorTransform());
+    return IsValid(VehicleFrame) && VehicleFrame != this && IsRigidVehicleModulePose(VehicleFrame->GetActorTransform())
+        && IsRigidVehicleModulePose(GetActorTransform());
 }
 
 bool AVehicleProcessModule::CaptureReferencePose()

@@ -38,8 +38,6 @@ bool UFactoryAssemblyProcessRunner::Start()
     R->CancelEdit();FString Error;
     if(!Validate(Error)){R->Status=Error;return false;}
     auto* L=R->TestAssemblyLine.Get();
-    if(L->WheelCell->LeftRearApproachAnglesDegrees.Num()!=6||L->WheelCell->RightRearApproachAnglesDegrees.Num()!=6)
-    {R->Status=TEXT("휠 로봇이 후방 작업 자세에 도달할 수 없습니다. 배치를 조정하세요.");return false;}
     L->SetActorTickEnabled(false);
     if(!L->StartLine()){R->Status=L->Status;return false;}
     R->SimulationSeconds=R->TravelCm=R->AlignmentMm=R->SimRemainder=0;

@@ -3,10 +3,14 @@
 #include "AutonomousAssemblyLine.h"
 #include "WheelAssemblyCell.h"
 #include "DoorAssemblyCell.h"
+#include "DoorPoseComponent.h"
 #include "CamryAssembly.h"
 #include "RobotArm.h"
 #include "VehicleProcessTest.h"
 #include "Components/SceneComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
+#include "UObject/ConstructorHelpers.h"
 #include "Components/InputComponent.h"
 #include "Camera/CameraActor.h"
 #include "Engine/Engine.h"
@@ -126,6 +130,29 @@ AIntegratedAssemblyLine::AIntegratedAssemblyLine()
 {
     PrimaryActorTick.bCanEverTick = true;
     RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("LineRoot"));
+    static ConstructorHelpers::FObjectFinder<UStaticMesh> Cube(TEXT("/Engine/BasicShapes/Cube"));
+    for(int I=0;I<4;++I)
+    {
+        auto* Post=CreateDefaultSubobject<UStaticMeshComponent>(*FString::Printf(TEXT("VehicleLiftSupport%d"),I));
+        Post->SetupAttachment(RootComponent);Post->SetMobility(EComponentMobility::Movable);
+        if(Cube.Succeeded())Post->SetStaticMesh(Cube.Object);
+        Post->SetCollisionProfileName(TEXT("BlockAll"));Post->SetVisibility(false);LiftSupports.Add(Post);
+    }
+}
+void AIntegratedAssemblyLine::UpdateLiftSupports()
+{
+    if(!WheelCell||!WheelCell->Assembly||!WheelCell->TransportCarriage)return;
+    FVector Center=FVector::ZeroVector;for(int I=0;I<4;++I)Center+=WheelCell->GetMountWorld(I).GetLocation()/4.;
+    const double Bottom=WheelCell->TransportCarriage->GetActorLocation().Z+8,Top=Center.Z-15;
+    const FQuat Rotation=WheelCell->Assembly->GetActorQuat();
+    for(int I=0;I<LiftSupports.Num();++I)
+    {
+        auto* Post=LiftSupports[I].Get();const bool Visible=WheelStationLiftCm>0&&Top>Bottom;
+        Post->SetVisibility(Visible);Post->SetCollisionEnabled(Visible?ECollisionEnabled::QueryAndPhysics:ECollisionEnabled::NoCollision);
+        if(!Visible)continue;
+        FVector P=Center+Rotation.RotateVector(FVector(I<2?-75:75,I%2?-45:45,0));P.Z=(Top+Bottom)/2;
+        Post->SetWorldTransform(FTransform(Rotation,P,FVector(.16,.16,(Top-Bottom)/100.)));
+    }
 }
 void AIntegratedAssemblyLine::Fail(const FString& Reason)
 {
@@ -137,6 +164,35 @@ void AIntegratedAssemblyLine::Fail(const FString& Reason)
     Status = Saved;
     bReady = false;
 }
+ADoorAssemblyCell* AIntegratedAssemblyLine::ActiveDoorCell(const FString& TaskId) const
+{
+    if(DoorCell && DoorCell->GetOperationTaskId()==TaskId) return DoorCell;
+    if(SecondDoorCell && SecondDoorCell->GetOperationTaskId()==TaskId) return SecondDoorCell;
+    return nullptr;
+}
+bool AIntegratedAssemblyLine::DoorSnapshot(const FString& TaskId, FDoorOperationSnapshot& Out) const
+{
+    if(const auto* Saved=CompletedDoorOperations.Find(TaskId)){Out=*Saved;return true;}
+    const auto* D=ActiveDoorCell(TaskId);if(!D)return false;
+    Out.TaskId=TaskId;Out.AlignmentMm=D->AlignmentPositionErrorMm;Out.WidthCm=D->MeasuredDoorWidthCm;
+    Out.SampleTime=D->LastAlignmentSampleTime;Out.WidthSampleTime=D->DoorSizeMeasuredAt;Out.SimulationTime=D->SimulationTimeSeconds;
+    Out.bAlignmentValid=D->bAlignmentSensorValid&&D->bLastAlignmentSampleValid;
+    Out.bComplete=D->bDoorFastened;Out.QualitySummary=D->GetQualitySummary();return true;
+}
+void AIntegratedAssemblyLine::CaptureDoorResult(ADoorAssemblyCell* Cell)
+{
+    if(!Cell)return;
+    FDoorOperationSnapshot Result;
+    if(DoorSnapshot(Cell->GetOperationTaskId(),Result))CompletedDoorOperations.Add(Result.TaskId,Result);
+}
+
+bool AIntegratedAssemblyLine::StartDoorOperation(ADoorAssemblyCell* Cell)
+{
+    if(!Cell)return false;
+    if(const auto* Binding=DoorRequests.Find(Cell->GetOperationTaskId()))Cell->RequestBinding=*Binding;
+    else Cell->RequestBinding=FAssemblyOperationRequest();
+    return Cell->StartCycle();
+}
 bool AIntegratedAssemblyLine::PrepareDoor(int32 Index)
 {
     if (!bFourDoorMode || !DoorModules.IsValidIndex(Index) || !IsValid(DoorModules[Index])) return false;
@@ -144,32 +200,53 @@ bool AIntegratedAssemblyLine::PrepareDoor(int32 Index)
     const bool bRight = Index >= 2;
     DoorCell->TargetModule=DoorModules[Index];
     DoorCell->Robot=bRight ? RightDoorRobot.Get() : LeftDoorRobot.Get();
-    const FTransform OldMount=WheelCell->Assembly->GetLeftDoor()->GetComponentTransform();
+    const auto* Car=WheelCell->Assembly.Get();
+    const FTransform BodyWorld=Car->GetBodyFrame()->GetComponentTransform();
+    const FTransform OldMount=Car->GetDoorPoseController(ECamryDoorSide::Left)->GetReferencePoseInBody()*BodyWorld;
     const FTransform NewMount=DoorModules[Index]->ReferencePoseInVehicle*WheelCell->Assembly->GetActorTransform();
     FTransform GraspWorld=BaselineTCPInLeftDoor*OldMount;
     GraspWorld.AddToTranslation(NewMount.GetLocation()-OldMount.GetLocation());
     if (bRight && SecondDoorCell && SecondDoorCell->Robot)
     {
-        // Door module pivots can be at the vehicle origin. Transfer the calibrated
-        // front grip using the mounted panel centers, in the same vehicle frame.
-        auto MountedCenter=[&](int32 DoorIndex)
+        // Transfer the front calibration in the nominal mounting frame. A
+        // completed front door can sag on its support; that is not calibration.
+        // Accumulate visible mesh bounds in module coordinates before taking
+        // their center. Inverting a world AABB depends on the current panel yaw
+        // and can include non-physical proxies/pivots in the grasp offset.
+        auto MountedCenter=[&](int32 DoorIndex,FVector& Center)
         {
             auto* Module=DoorModules[DoorIndex].Get();
-            FVector Center,Extent;
-            Module->GetActorBounds(false,Center,Extent);
-            const auto LocalCenter=Module->GetActorTransform().InverseTransformPosition(Center);
-            return (Module->ReferencePoseInVehicle*WheelCell->Assembly->GetActorTransform()).TransformPosition(LocalCenter);
+            if(!IsValid(Module)||!Module->GetRootComponent())return false;
+            TArray<USceneComponent*> Parts;
+            Module->GetRootComponent()->GetChildrenComponents(true,Parts);
+            Parts.Add(Module->GetRootComponent());
+            FBox LocalBounds(ForceInit);
+            for(auto* Part:Parts)if(auto* Mesh=Cast<UStaticMeshComponent>(Part))
+                if(Mesh->GetStaticMesh()&&Mesh->IsVisible()&&!Mesh->bHiddenInGame)
+                    LocalBounds+=Mesh->GetStaticMesh()->GetBoundingBox().TransformBy(
+                        Mesh->GetComponentTransform().ToMatrixWithScale()*Module->GetActorTransform().ToInverseMatrixWithScale());
+            if(!LocalBounds.IsValid)return false;
+            Center=(Module->ReferencePoseInVehicle*Car->GetActorTransform()).TransformPosition(LocalBounds.GetCenter());
+            return true;
         };
-        GraspWorld=SecondDoorCell->TCPInDoorCm*WheelCell->Assembly->GetRightDoor()->GetComponentTransform();
-        GraspWorld.AddToTranslation(MountedCenter(Index)-MountedCenter(2));
+        FVector RearCenter,FrontCenter;
+        if(!MountedCenter(Index,RearCenter)||!MountedCenter(2,FrontCenter))
+        {DoorCell->Status=Status=TEXT("도어 파지 보정 실패 · 기준 메시 형상 없음");return false;}
+        const FTransform FrontMount=Car->GetDoorPoseController(ECamryDoorSide::Right)->GetReferencePoseInBody()*BodyWorld;
+        GraspWorld=SecondDoorCell->TCPInDoorCm*FrontMount;
+        GraspWorld.AddToTranslation(RearCenter-FrontCenter);
         DoorCell->Robot=SecondDoorCell->Robot;
     }
     else if (bRight) GraspWorld.SetRotation((FQuat(FVector::UpVector,PI)*GraspWorld.GetRotation()).GetNormalized());
+    if(DoorTaskRobots.Num()==4) DoorCell->Robot=DoorTaskRobots[Index];
+    if(!IsValid(DoorCell->Robot)){Status=TEXT("도어 작업 로봇 미할당");return false;}
+    DoorCell->OperationTaskId=DoorModules[Index]->ModuleId.ToString().ToLower();
     DoorCell->TCPInDoorCm=GraspWorld.GetRelativeTransform(NewMount);
-    DoorCell->PickupOffsetBodyCm=FVector(0,bRight ? 100 : -100,20);
+    DoorCell->PickupOffsetBodyCm=FVector(0,bRight ? 100 : -100,20)
+        +WheelCell->Assembly->GetBodyFrame()->GetComponentTransform().InverseTransformVectorNoScale(DoorSupplyOffsetsWorldCm.FindRef(Index));
     DoorCell->ApproachOffsetBodyCm=FVector(0,bRight ? 25 : -25,0);
     DoorCell->TransferOffsetBodyCm=FVector(0,bRight ? 50 : -50,25);
-    return DoorCell->ResetCycle();
+    return DoorCell->PrepareNextOperation();
 }
 bool AIntegratedAssemblyLine::ResetLine()
 {
@@ -177,11 +254,13 @@ bool AIntegratedAssemblyLine::ResetLine()
     if (!IsValid(WheelCell) || !IsValid(DoorCell) || !IsValid(WheelCell->Assembly)
         || DoorCell->Assembly != WheelCell->Assembly || !IsValid(WheelCell->TransportCarriage)
         || !WheelCell->bEnableTransport || !FMath::IsFinite(TransferSeconds) || TransferSeconds <= 0
-        || !FMath::IsFinite(DockSeconds) || DockSeconds < 0 || DoorStationOffsetCm.ContainsNaN())
+        || !FMath::IsFinite(DockSeconds) || DockSeconds < 0 || DoorStationOffsetCm.ContainsNaN()
+        || !FMath::IsFinite(WheelStationLiftCm)||WheelStationLiftCm<0||WheelStationLiftCm>80)
     { Fail(TEXT("Invalid line references or transport configuration.")); return false; }
     WheelCell->bExternallyDriven = DoorCell->bExternallyDriven = true;
     WheelCell->StopCycle(); DoorCell->StopCycle(); if(SecondDoorCell)SecondDoorCell->StopCycle();
-    MountedDoorCount=0;
+    MountedDoorCount=0;CompletedDoorOperations.Reset();
+    DoorCell->OperationTaskId=TEXT("door_fl");
     if (!DoorCell->TargetModule || !IsValid(LeftDoorRobot)) LeftDoorRobot=DoorCell->Robot;
     if (!bFourDoorMode || DoorCell->TargetModule==nullptr) BaselineTCPInLeftDoor=DoorCell->TCPInDoorCm;
     DoorModules.Reset();
@@ -212,6 +291,7 @@ bool AIntegratedAssemblyLine::ResetLine()
             Module->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
             auto Supply=Module->ReferencePoseInVehicle*Car->GetActorTransform();
             Supply.AddToTranslation(Car->GetBodyFrame()->GetComponentTransform().TransformVectorNoScale(FVector(0,Index==3?100:-100,20)));
+            Supply.AddToTranslation(DoorSupplyOffsetsWorldCm.FindRef(Index));
             Module->SetActorTransform(Supply);
         }
     }
@@ -220,9 +300,10 @@ bool AIntegratedAssemblyLine::ResetLine()
     if(SecondDoorCell){SecondDoorCell->bExternallyDriven=true;
         if(!SecondDoorCell->ResetCycle()){Fail(SecondDoorCell->Status);return false;}
         SecondDoorSupplyWorld=Car->GetRightDoor()->GetComponentTransform();}
-    Car->SetActorTransform(VehicleAtWheelStation);
+    Car->SetActorTransform(WheelStationPose());
     WheelCell->TransportCarriage->SetActorTransform(CarriageAtWheelStation);
-    if (!WheelCell->ResetCycle()) { Fail(WheelCell->Status); return false; }
+    if (!WheelCell->ResetAtStation(WheelStationPose(),CarriageAtWheelStation)) { Fail(WheelCell->Status); return false; }
+    UpdateLiftSupports();
     Car->GetLeftDoor()->SetWorldTransform(DoorSupplyWorld);
     if(SecondDoorCell)Car->GetRightDoor()->SetWorldTransform(SecondDoorSupplyWorld);
     ElapsedSeconds = TransferTime = TransferProgress = 0;
@@ -249,6 +330,10 @@ void AIntegratedAssemblyLine::StopLine()
 bool AIntegratedAssemblyLine::AdvanceLine(double Seconds)
 {
     if (!FMath::IsFinite(Seconds) || Seconds < 0 || Seconds > 1) { StopLine(); return false; }
+    if((Stage==EAssemblyLineStage::Fault || Stage==EAssemblyLineStage::Stopped) && WheelCell)
+        WheelCell->AdvanceSimulation(Seconds);
+    if(Stage==EAssemblyLineStage::Fault||Stage==EAssemblyLineStage::Stopped)
+    {if(DoorCell)DoorCell->AdvanceSimulation(Seconds);if(SecondDoorCell)SecondDoorCell->AdvanceSimulation(Seconds);}
     if (Stage == EAssemblyLineStage::Fault) return false;
     if (Stage == EAssemblyLineStage::Idle || Stage == EAssemblyLineStage::Stopped || Stage == EAssemblyLineStage::Complete) return true;
     if (!IsValid(WheelCell) || !IsValid(DoorCell) || !IsValid(WheelCell->Assembly) || !IsValid(WheelCell->TransportCarriage))
@@ -278,20 +363,21 @@ bool AIntegratedAssemblyLine::AdvanceLine(double Seconds)
         TransferTime += Seconds;
         const double T = FMath::Clamp(TransferTime / TransferSeconds,0.,1.);
         TransferProgress = T*T*T*(10 + T*(-15 + 6*T));
-        ExpectedVehicle = VehicleAtWheelStation;
-        ExpectedVehicle.AddToTranslation(DoorStationOffsetCm * TransferProgress);
+        ExpectedVehicle = WheelStationPose();
+        ExpectedVehicle.AddToTranslation((DoorStationOffsetCm-FVector(0,0,WheelStationLiftCm))*TransferProgress);
         ExpectedCarriage = CarriageAtWheelStation;
         ExpectedCarriage.AddToTranslation(DoorStationOffsetCm * TransferProgress);
         Car->SetActorTransform(ExpectedVehicle);
         Carriage->SetActorTransform(ExpectedCarriage);
+        UpdateLiftSupports();
         WheelCell->UpdateFastenedWheels();
         Car->GetLeftDoor()->SetWorldTransform(DoorSupplyWorld);
     if(SecondDoorCell)Car->GetRightDoor()->SetWorldTransform(SecondDoorSupplyWorld);
         Status = T < 1 ? TEXT("3/4 타이어 장착 차체를 문 작업 구역으로 이송") : TEXT("문 작업 구역 도킹 확인");
         if (TransferTime + 1.e-9 >= TransferSeconds + DockSeconds)
         {
-            if (!DoorCell->StartCycle()) { Fail(DoorCell->Status); return false; }
-            if(SecondDoorCell&&!SecondDoorCell->StartCycle()){Fail(SecondDoorCell->Status);return false;}
+            if (!StartDoorOperation(DoorCell)) { Fail(DoorCell->Status); return false; }
+            if(SecondDoorCell&&!StartDoorOperation(SecondDoorCell)){Fail(SecondDoorCell->Status);return false;}
             Stage = EAssemblyLineStage::Door;
         }
     }
@@ -307,12 +393,14 @@ bool AIntegratedAssemblyLine::AdvanceLine(double Seconds)
         if (DoorCell->State == EDoorAssemblyState::Complete&&(!SecondDoorCell||SecondDoorCell->State==EDoorAssemblyState::Complete))
         {
             if (DoorCell->Outcome != EDoorCellOutcome::Pass||(SecondDoorCell&&SecondDoorCell->Outcome!=EDoorCellOutcome::Pass)) { Fail(DoorCell->Status); return false; }
+            CaptureDoorResult(DoorCell);
+            if(MountedDoorCount==0)CaptureDoorResult(SecondDoorCell);
             if(bFourDoorMode)
             {
                 MountedDoorCount=MountedDoorCount==0?2:MountedDoorCount+1;
                 if(MountedDoorCount<4)
                 {
-                    if(!PrepareDoor(MountedDoorCount==2?1:3)||!DoorCell->StartCycle()){Fail(DoorCell->Status);return false;}
+                    if(!PrepareDoor(MountedDoorCount==2?1:3)||!StartDoorOperation(DoorCell)){Fail(DoorCell->Status);return false;}
                     return true;
                 }
             }

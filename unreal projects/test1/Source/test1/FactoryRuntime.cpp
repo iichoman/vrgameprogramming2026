@@ -171,11 +171,18 @@ void AFactoryRuntime::BeginPlay()
 }
 void AFactoryRuntime::EndPlay(const EEndPlayReason::Type Reason)
 {
-    if(InspectionState)InspectionState->RestoreOverlays();
     if(GEngine && GEngine->GameViewport && Panel.IsValid())GEngine->GameViewport->RemoveViewportWidgetContent(Panel.ToSharedRef());
     Panel.Reset();PanelScroll.Reset();
     if(bInputConfigured)if(auto* PC=UGameplayStatics::GetPlayerController(this,0))
     {PC->SetIgnoreMoveInput(false);PC->SetIgnoreLookInput(false);PC->bShowMouseCursor=false;PC->SetInputMode(FInputModeGameOnly());}
+    if(InspectionState)
+    {
+        InspectionState->RestoreOverlays();
+        // Strong material references otherwise keep their Outer (this actor)
+        // and the old PIE world alive until GC can never destroy this state.
+        InspectionState->SelectedMaterial.Reset();InspectionState->IssueMaterial.Reset();
+        InspectionState.Reset();
+    }
     Super::EndPlay(Reason);
 }
 void AFactoryRuntime::Tick(float Dt)
@@ -202,8 +209,10 @@ void AFactoryRuntime::Tick(float Dt)
     */
     if(Active(RunState)||bUseAssemblyIntegration)
     {
-        SimRemainder+=Dt;
-        int32 Budget=120;
+        // A slow geometry/render frame must not cause 120 expensive servo
+        // updates in the next frame. Retain a bounded backlog, never enlarge Dt.
+        SimRemainder=FMath::Min(SimRemainder+Dt,.1);
+        int32 Budget=8;
         while(SimRemainder>=FixedStep && Budget-->0 && (Active(RunState)||bUseAssemblyIntegration))
         {SimRemainder-=FixedStep;StepSimulation(FixedStep);}
     }

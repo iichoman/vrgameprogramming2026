@@ -60,7 +60,12 @@ void AFactoryRuntime::ConfigurePartPlacement()
 {
     auto* L=TestAssemblyLine.Get();if(!L||!L->WheelCell||!L->DoorCell)return;
     auto* W=L->WheelCell.Get();W->SupplyOffsetsCm.Reset();
-    for(const auto& S:FactoryTasks::Catalog())if(S.WheelIndex!=INDEX_NONE)W->SupplyOffsetsCm.Add(S.WheelIndex,Layout.PartOffsetsCm.FindRef(TEXT("part_")+S.Id));
+    L->DoorSupplyOffsetsWorldCm.Reset();
+    const FVector RearRackClearance=L->VehicleAtWheelStation.TransformVectorNoScale(FVector(-60,0,0));
+    L->DoorSupplyOffsetsWorldCm.Add(1,RearRackClearance+Layout.PartOffsetsCm.FindRef(TEXT("part_door_rl")));
+    L->DoorSupplyOffsetsWorldCm.Add(3,RearRackClearance+Layout.PartOffsetsCm.FindRef(TEXT("part_door_rr")));
+    // The body rises on the lift; supply racks keep their original world height.
+    for(const auto& S:FactoryTasks::Catalog())if(S.WheelIndex!=INDEX_NONE)W->SupplyOffsetsCm.Add(S.WheelIndex,Layout.PartOffsetsCm.FindRef(TEXT("part_")+S.Id)-FVector(0,0,L->WheelStationLiftCm));
     if(L->DoorCell->Assembly)
     {
         const auto Body=L->DoorCell->Assembly->GetBodyFrame()->GetComponentTransform();
@@ -74,6 +79,8 @@ bool AFactoryRuntime::PartWorld(const FString& Id,FTransform& Pose) const
     const auto* S=Id.StartsWith(TEXT("part_"))?FactoryTasks::Find(Id.Mid(5)):nullptr;
     auto* L=TestAssemblyLine.Get();if(!S||!L||!L->WheelCell||!L->WheelCell->Assembly)return false;
     if(S->WheelIndex!=INDEX_NONE){Pose=L->WheelCell->GetPhysicalPartWorld(S->WheelIndex);return true;}
+    if(Id==TEXT("part_door_rl")||Id==TEXT("part_door_rr"))
+    {const int I=Id==TEXT("part_door_rl")?1:3;if(!L->DoorModules.IsValidIndex(I)||!L->DoorModules[I])return false;Pose=L->DoorModules[I]->GetActorTransform();return true;}
     auto* Door=Id==TEXT("part_door_fr")?L->WheelCell->Assembly->GetRightDoor():L->WheelCell->Assembly->GetLeftDoor();
     if(!Door)return false;Pose=Door->GetComponentTransform();return true;
 }
@@ -82,12 +89,16 @@ bool AFactoryRuntime::SetPartWorld(const FString& Id,const FTransform& Pose)
     const auto* S=Id.StartsWith(TEXT("part_"))?FactoryTasks::Find(Id.Mid(5)):nullptr;
     auto* L=TestAssemblyLine.Get();if(!S||!L||!L->WheelCell||!L->WheelCell->Assembly||!Pose.IsValid())return false;
     if(S->WheelIndex!=INDEX_NONE)return L->WheelCell->SetPhysicalPartWorld(S->WheelIndex,Pose);
+    if(Id==TEXT("part_door_rl")||Id==TEXT("part_door_rr"))
+    {const int I=Id==TEXT("part_door_rl")?1:3;return L->DoorModules.IsValidIndex(I)&&L->DoorModules[I]&&L->DoorModules[I]->SetActorTransform(Pose);}
     return L->WheelCell->Assembly->GetDoorPoseController(Id==TEXT("part_door_fr")?ECamryDoorSide::Right:ECamryDoorSide::Left)->SetDoorWorldPose(Pose);
 }
 FBox AFactoryRuntime::PartBounds(const FString& Id) const
 {
     FTransform P;if(!PartWorld(Id,P))return FBox(ForceInit);
     if(!Id.StartsWith(TEXT("part_door")))return FBox(P.GetLocation()-FVector(38),P.GetLocation()+FVector(38));
+    if(Id==TEXT("part_door_rl")||Id==TEXT("part_door_rr"))
+    {const int I=Id==TEXT("part_door_rl")?1:3;return TestAssemblyLine->DoorModules[I]->GetComponentsBoundingBox(true);}
     auto* Car=TestAssemblyLine->WheelCell->Assembly.Get();
     auto* Door=Id==TEXT("part_door_fr")?Car->GetRightDoor():Car->GetLeftDoor();
     TArray<USceneComponent*> DoorComponents;Door->GetChildrenComponents(true,DoorComponents);

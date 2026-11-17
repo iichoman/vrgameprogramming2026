@@ -143,6 +143,18 @@ bool FRobotJointServoTest::RunTest(const FString& Parameters)
 	TestFalse(TEXT("Out-of-range angle command is rejected"), FRobotJointController::Step(Joint, Settings, 2.0, 0.0, Dt, State));
 	TestEqual(TEXT("Rejected input leaves angle unchanged"), State.AngleRadians, PreviousAngle);
 	TestFalse(TEXT("Zero dt is rejected"), FRobotJointController::Step(Joint, Settings, 0.0, 0.0, 0.0, State));
+    FRobotJointState Tracking;double PeakAfterArrival=0;bool Bounded=true;
+    for(int I=1;I<=720;++I)
+    {
+        const double T=I*Dt,S=FMath::Clamp(T/3.,0.,1.);
+        const double Ref=S*S*S*(10+S*(-15+6*S)),Rate=S<1?10*S*S*(1-S)*(1-S):0;
+        const double V=Tracking.VelocityRadians;
+        Bounded&=FRobotJointController::Step(Joint,Settings,Ref,Rate,Dt,Tracking);
+        Bounded&=FMath::Abs(Tracking.VelocityRadians-V)<=Joint.MaxAccelerationRadians*Dt+1.e-9;
+        if(T>=3)PeakAfterArrival=FMath::Max(PeakAfterArrival,Tracking.AngleRadians-1.);
+    }
+    TestTrue(TEXT("moving reference respects acceleration limit"),Bounded);
+    TestTrue(TEXT("trajectory settles without accumulated integral bias"),FMath::Abs(Tracking.AngleRadians-1.)<.002&&PeakAfterArrival<.01);
 	return true;
 }
 

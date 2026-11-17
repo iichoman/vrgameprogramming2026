@@ -83,7 +83,7 @@ TArray<UStaticMeshComponent*> AFactoryRuntime::ObjectMeshes(const FString& Id) c
     if(Id==TEXT("line_conveyor")){AddActor(L->WheelCell->TransportCarriage);return Out;}
     FString Module;
     if(Id.StartsWith(TEXT("module:")))Module=Id.Mid(7);
-    const TMap<FString,FString> PartModules={{TEXT("part_wheel_fl"),TEXT("Wheel_FL")},{TEXT("part_wheel_rl"),TEXT("Wheel_RL")},{TEXT("part_wheel_fr"),TEXT("Wheel_FR")},{TEXT("part_wheel_rr"),TEXT("Wheel_RR")},{TEXT("part_door_fl"),TEXT("Door_FL")},{TEXT("part_door_fr"),TEXT("Door_FR")}};
+    const TMap<FString,FString> PartModules={{TEXT("part_wheel_fl"),TEXT("Wheel_FL")},{TEXT("part_wheel_rl"),TEXT("Wheel_RL")},{TEXT("part_wheel_fr"),TEXT("Wheel_FR")},{TEXT("part_wheel_rr"),TEXT("Wheel_RR")},{TEXT("part_door_fl"),TEXT("Door_FL")},{TEXT("part_door_fr"),TEXT("Door_FR")},{TEXT("part_door_rl"),TEXT("Door_RL")},{TEXT("part_door_rr"),TEXT("Door_RR")}};
     if(const auto* N=PartModules.Find(Id))Module=*N;
     for(TActorIterator<AVehicleProcessModule> It(GetWorld());It;++It)if(It->VehicleFrame==Car)
         if((!Module.IsEmpty()&&It->ModuleId==FName(*Module))||(Id==TEXT("vehicle_1")&&It->ModuleId.ToString().StartsWith(TEXT("Body_"))))AddActor(*It);
@@ -141,8 +141,6 @@ void AFactoryRuntime::RefreshInspection()
             if(!R)Issue(TEXT("unassigned:")+T.Id,TEXT("작업 로봇 미할당"),S?S->Label:T.Id,TEXT("호환 로봇을 선택한 뒤 차체 작업 지점과 실제 부품을 차례로 클릭하세요."),{},Part,T.Id,{TEXT("vehicle_1")});
             else if(!S||!FactoryTasks::Supports(R->EffectiveTypeId(),*S))Issue(TEXT("tool:")+T.Id,TEXT("로봇 툴과 작업 불일치"),ObjectName(R->Id),TEXT("휠 작업은 휠 로봇, 도어 작업은 도어 로봇에 연결하세요."),R->Id,Part,T.Id,{});
             if(Parts.Contains(Part))Issue(TEXT("duplicate:")+T.Id,TEXT("동일 부품 중복 연결"),ObjectName(Part),TEXT("기존 연결을 해제하고 작업마다 서로 다른 부품을 지정하세요."),T.RobotId,Part,T.Id,{});Parts.Add(Part);
-            if(W&&S&&S->WheelIndex>=0&&S->WheelIndex%2==1&&R&&W->RearTransit[S->WheelIndex].Num()!=6)
-                Issue(TEXT("reach:")+T.Id,TEXT("후방 작업 자세에 도달할 수 없음"),S->Label,TEXT("강조된 로봇의 위치·방향을 조정하세요. 전체 경로의 충돌 검사를 대신하지 않습니다."),T.RobotId,Part,T.Id,{});
         }
         const auto* RightTask=Layout.Tasks.FindByPredicate([](const auto& T){return T.Id==TEXT("door_fr");});
         if(RightTask&&L&&L->DoorCell&&RightDoorCell&&RightDoorCell->Robot&&RightDoorCell->Robot==L->DoorCell->Robot)
@@ -159,9 +157,9 @@ void AFactoryRuntime::RefreshInspection()
             const auto* T=Layout.Tasks.FindByPredicate([&](const auto& X){const auto* S=FactoryTasks::Find(X.Id);return S&&S->WheelIndex==W->FailedWheelIndex;});
             Issue(TEXT("wheel_fault"),TEXT("휠 공정 중단 · ")+WheelStageLabel(W->FailedStage),W->Status,TEXT("강조된 로봇·부품을 확인한 뒤 편집 복귀로 초기화하세요."),T?T->RobotId:FString(),T?T->PartId:FString(),T?T->Id:FString(),T?TArray<FString>{}:TArray<FString>{TEXT("vehicle_1")});
         }
-        for(const TCHAR* Id:{TEXT("door_fl"),TEXT("door_fr")})
+        for(const TCHAR* Id:{TEXT("door_fl"),TEXT("door_fr"),TEXT("door_rl"),TEXT("door_rr")})
         {
-            auto* D=FString(Id)==TEXT("door_fr")?RightDoorCell.Get():L?L->DoorCell.Get():nullptr;
+            auto* D=L?L->ActiveDoorCell(Id):nullptr;
             const auto* T=Layout.Tasks.FindByPredicate([&](const auto& X){return X.Id==Id;});
             if(D&&T&&D->State==EDoorAssemblyState::Fault)Issue(FString(TEXT("door_fault:"))+Id,TEXT("도어 공정 중단"),D->Status,TEXT("로봇 도달 범위, 부품 자세와 정렬·검사 센서를 확인하세요."),T->RobotId,T->PartId,Id,{});
         }
@@ -211,18 +209,23 @@ void AFactoryRuntime::RefreshInspection()
             Publish(ScanIds[I],ScanLabels[I],TEXT("part_wheel_fl"),TEXT("mm"),Scans[I]->ResidualMm,
                 Scans[I]->MeasuredAt,Now,Scans[I]->bValid,TEXT("가상 레이저"),TEXT("wheel_fl"));
     }
-    for(const TCHAR* Id:{TEXT("door_fl"),TEXT("door_fr")})
+    for(const TCHAR* Id:{TEXT("door_fl"),TEXT("door_fr"),TEXT("door_rl"),TEXT("door_rr")})
     {
-        const auto* D=FString(Id)==TEXT("door_fr")?RightDoorCell.Get():L?L->DoorCell.Get():nullptr;if(!D)continue;
-        Publish(FString(Id)+TEXT(".alignment"),TEXT("도어 정렬 오차"),TEXT("part_")+FString(Id),TEXT("mm"),D->AlignmentPositionErrorMm,D->LastAlignmentSampleTime,D->SimulationTimeSeconds,D->bAlignmentSensorValid&&D->bLastAlignmentSampleValid,TEXT("가상 자세 센서"),Id);
-        if(D->DoorSizeMeasuredAt>=0)
-            Publish(FString(Id)+TEXT(".width"),TEXT("도어 실측 폭"),TEXT("part_")+FString(Id),TEXT("cm"),D->MeasuredDoorWidthCm,
-                D->DoorSizeMeasuredAt,D->SimulationTimeSeconds,D->MeasuredDoorWidthCm>0,TEXT("가상 레이저"),Id);
+        FDoorOperationSnapshot D;if(!L||!L->DoorSnapshot(Id,D))continue;
+        Publish(FString(Id)+TEXT(".alignment"),TEXT("도어 정렬 오차"),TEXT("part_")+FString(Id),TEXT("mm"),D.AlignmentMm,D.SampleTime,D.SimulationTime,D.bAlignmentValid,TEXT("가상 자세 센서"),Id);
+        if(D.WidthCm>0)Publish(FString(Id)+TEXT(".width"),TEXT("도어 측정 폭"),TEXT("part_")+FString(Id),TEXT("cm"),D.WidthCm,
+            D.WidthSampleTime,D.SimulationTime,true,D.bComplete?TEXT("완료 작업의 보관 측정"):TEXT("형상 프록시 센서"),Id);
+    }
+    if(L&&L->DoorCell&&L->DoorCell->bUsePhysicalDynamics)
+    {
+        const auto* D=L->DoorCell.Get();const FString Id=D->GetOperationTaskId();const auto& P=D->PhysicalDoor;
+        Publish(Id+TEXT(".grip_force"),TEXT("도어 파지력"),TEXT("part_")+Id,TEXT("N"),P.GripForceN.Size(),D->SimulationTimeSeconds,D->SimulationTimeSeconds,P.bActive&&P.bValid,TEXT("도어 축소 물리 모델"),Id);
+        Publish(Id+TEXT(".support_load"),TEXT("받침 지지 하중"),TEXT("part_")+Id,TEXT("N"),P.SupportForceN.Size(),D->SimulationTimeSeconds,D->SimulationTimeSeconds,P.bActive&&P.bValid,TEXT("강성/감쇠 받침 모델"),Id);
     }
     for(const auto& Entry:TArray<TPair<FString,FString>>{{TEXT("extension.camera"),TEXT("카메라 센서")},{TEXT("extension.pressure"),TEXT("압력 센서")}})
         if(!M.Sensors.Contains(Entry.Key)){FFactorySensorValue V;V.Id=Entry.Key;V.Label=Entry.Value;V.Source=TEXT("센서 어댑터 미연결");M.Publish(V);}
     for(auto It=M.Sensors.CreateIterator();It;++It)
-        if((It.Key().StartsWith(TEXT("arrival."))||It.Key().StartsWith(TEXT("wheel."))||It.Key().StartsWith(TEXT("door_fl."))||It.Key().StartsWith(TEXT("door_fr.")))&&!NativeChannels.Contains(It.Key()))It.RemoveCurrent();
+        if((It.Key().StartsWith(TEXT("arrival."))||It.Key().StartsWith(TEXT("wheel."))||It.Key().StartsWith(TEXT("door_fl."))||It.Key().StartsWith(TEXT("door_fr."))||It.Key().StartsWith(TEXT("door_rl."))||It.Key().StartsWith(TEXT("door_rr.")))&&!NativeChannels.Contains(It.Key()))It.RemoveCurrent();
     if(ChannelsBefore!=M.Sensors.Num())bNeedsPanel=true;
 }
 void AFactoryRuntime::UpdateObjectHighlights()
@@ -265,7 +268,7 @@ FString AFactoryRuntime::ProcessDetails() const
         else if(S&&W&&S->WheelIndex>=0)
         {if(W->FastenedWheels.IsValidIndex(S->WheelIndex)&&W->FastenedWheels[S->WheelIndex])State=TEXT("장착 완료");
             else for(int I=0;I<W->LaneCount();++I)if(const auto* Lane=W->LaneSnapshot(I))if(Lane->WheelIndex==S->WheelIndex)State=WheelStageLabel(Lane->Stage);}
-        else if(S){const auto* D=T.Id==TEXT("door_fr")?RightDoorCell.Get():TestAssemblyLine?TestAssemblyLine->DoorCell.Get():nullptr;if(D)State=D->bDoorFastened?TEXT("장착 완료"):D->State==EDoorAssemblyState::Fault?TEXT("이상 중단"):D->State==EDoorAssemblyState::Idle?TEXT("대기"):TEXT("진행 중");}
+        else if(S){const auto* D=TestAssemblyLine?TestAssemblyLine->ActiveDoorCell(T.Id):nullptr;FDoorOperationSnapshot Result;if(TestAssemblyLine&&TestAssemblyLine->DoorSnapshot(T.Id,Result)&&Result.bComplete)State=TEXT("시연 장착 완료");else if(D)State=D->State==EDoorAssemblyState::Fault?TEXT("이상 중단"):D->State==EDoorAssemblyState::Idle?TEXT("대기"):TEXT("진행 중");}
         Out+=(S?S->Label:T.Id)+TEXT(" · ")+State+TEXT("\n담당: ")+(T.RobotId.IsEmpty()?TEXT("없음"):ObjectName(T.RobotId))+TEXT("\n부품: ")+ObjectName(T.PartId)+TEXT("\n\n");
     }
     return Out+TEXT("상세 상태\n")+Status;
@@ -279,7 +282,7 @@ FString AFactoryRuntime::ResultDetails() const
     if(W)for(const auto& S:FactoryTasks::Catalog())if(S.WheelIndex>=0)
     {const int I=S.WheelIndex;const bool Done=W->FastenedWheels.IsValidIndex(I)&&W->FastenedWheels[I];
         Out+=S.Label+(Done&&W->MountPositionErrorMm.IsValidIndex(I)?FString::Printf(TEXT(" · 장착 / %.2fmm\n"),W->MountPositionErrorMm[I]):TEXT(" · 아직 장착되지 않음\n"));}
-    for(const TCHAR* Id:{TEXT("door_fl"),TEXT("door_fr")}){const auto* D=FString(Id)==TEXT("door_fr")?RightDoorCell.Get():TestAssemblyLine?TestAssemblyLine->DoorCell.Get():nullptr;
-        if(D)Out+=FactoryTasks::Find(Id)->Label+TEXT(" · ")+(D->bDoorFastened?D->GetQualitySummary():TEXT("아직 검사 완료되지 않음"))+TEXT("\n");}
-    return Out+TEXT("\n가상 공정 결과입니다. 휠 파지는 간소화 힘·마찰 모델과 충돌 스윕을 사용합니다. 실제 접촉력·체결 토크 검증은 포함하지 않습니다.");
+    for(const TCHAR* Id:{TEXT("door_fl"),TEXT("door_fr"),TEXT("door_rl"),TEXT("door_rr")}){FDoorOperationSnapshot D;if(TestAssemblyLine&&TestAssemblyLine->DoorSnapshot(Id,D))
+        Out+=FactoryTasks::Find(Id)->Label+TEXT(" · ")+(D.bComplete?D.QualitySummary:TEXT("아직 검사 완료되지 않음"))+TEXT("\n");}
+    return Out+TEXT("\n가상 공정 결과입니다. 휠 파지는 간소화 힘·마찰 모델과 충돌 스윕을 사용합니다. 제어 결과와 기하 검사는 시연 판정입니다. 도어: 힘·토크/질량·회전 관성 기반 지지 인계. 실제 체결 품질: 미평가. 링크 자체 동역학·판재 탄성은 미지원.");
 }

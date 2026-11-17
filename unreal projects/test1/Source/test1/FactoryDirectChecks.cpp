@@ -20,7 +20,7 @@ bool AFactoryRuntime::RunDirectEditChecks()
     auto Task=[&](const FString& Id)->FFactoryTask*{return Layout.Tasks.FindByPredicate([&](const auto& T){return T.Id==Id;});};
     const auto Original=Layout;const FString Initial=Layout.ToJson();
     int Wheels=0,Doors=0;for(const auto& I:Layout.Items){Wheels+=I.EffectiveTypeId().StartsWith(TEXT("assembly_wheel"))?1:0;Doors+=I.EffectiveTypeId()==TEXT("assembly_door")?1:0;}
-    Check(TEXT("default_two_wheel_two_door_robots"),Wheels==2&&Doors==2&&Layout.Tasks.Num()==6&&RightDoorCell&&ValidateAssemblyBindings(Error));
+    Check(TEXT("default_two_wheel_two_door_robots"),Wheels==2&&Doors==2&&Layout.Tasks.Num()==8&&RightDoorCell&&ValidateAssemblyBindings(Error));
     const FString Left=Task(TEXT("wheel_fl"))->RobotId;
     Check(TEXT("wheel_tool_not_restricted_to_side_name"),FactoryTasks::Supports(TEXT("assembly_wheel_left"),*FactoryTasks::Find(TEXT("wheel_rr"))));
     OpenRobotPopup(Left,FVector2D(700,200));Check(TEXT("robot_selection_opens_context"),bRobotPopup&&bAssigningTask&&SelectedId==Left);

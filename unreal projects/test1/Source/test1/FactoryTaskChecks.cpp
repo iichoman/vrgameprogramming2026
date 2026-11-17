@@ -25,7 +25,7 @@ bool AFactoryRuntime::RunTaskAssignmentChecks()
     auto Check=[&](const TCHAR* N,bool Ok){auto O=MakeShared<FJsonObject>();O->SetStringField(TEXT("check"),N);O->SetBoolField(TEXT("passed"),Ok);O->SetStringField(TEXT("status"),Status);Checks.Add(MakeShared<FJsonValueObject>(O));Pass&=Ok;UE_LOG(LogTemp,Display,TEXT("TASK_TEST %s %d %s"),N,Ok,*Status);};
     auto Task=[&](const FString& Id)->FFactoryTask*{return Layout.Tasks.FindByPredicate([&](const auto& T){return T.Id==Id;});};
     const auto Original=Layout;
-    Check(TEXT("legacy_migrated_to_six_independent_tasks"),Layout.Tasks.Num()==6&&ValidateAssemblyBindings(Error));
+    Check(TEXT("legacy_migrated_to_eight_independent_tasks"),Layout.Tasks.Num()==8&&ValidateAssemblyBindings(Error));
     if(!Pass)return false;
     const FString Left=Task(TEXT("wheel_fl"))->RobotId,Door=Task(TEXT("door_fl"))->RobotId;
     SelectedId=Left;const FString Before=Layout.ToJson();
@@ -39,13 +39,34 @@ bool AFactoryRuntime::RunTaskAssignmentChecks()
     auto Bad=Layout;Bad.Tasks[1].Id=Bad.Tasks[0].Id;Check(TEXT("duplicate_task_rejected"),!Bad.Validate(Error));
     Bad=Layout;Bad.Tasks[0].PartId=TEXT("missing");Check(TEXT("invalid_part_rejected"),!Bad.Validate(Error));
     auto Advance=[&](int N){for(int I=0;I<N;++I)StepSimulation(1./120);};
-    auto Run=[&](){ResetCycle();Advance(24);bool Ok=StartCycle();for(int I=0;I<36000&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)StepSimulation(1./120);return Ok&&RunState==EFactoryRunState::Complete;};
-    Check(TEXT("two_robot_tasks_full_cycle"),Run());const double TwoSeconds=SimulationSeconds;ResetCycle();
+    double HeadSwing[2]={0,0};bool RearPickupObserved[2]={false,false};
+    auto Run=[&](){ResetCycle();Advance(24);bool Ok=StartCycle();for(int I=0;I<36000&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)
+    {
+        StepSimulation(1./120);auto* Cell=TestAssemblyLine->WheelCell.Get();
+        for(int Side=0;Side<2;++Side)if(const auto* Lane=Cell->LaneSnapshot(Side))
+        {
+            if(Lane->WheelIndex!=Side*2+1||Lane->bHeld||(Lane->Stage!=EWheelStage::ApproachPickup&&Lane->Stage!=EWheelStage::Grip))continue;
+            const auto* Arm=Side==0?Cell->LeftRobot.Get():Cell->RightRobot.Get();
+            const auto Reference=(Side==0?Cell->LeftTCPInWheel:Cell->RightTCPInWheel)*Lane->Pickup;
+            HeadSwing[Side]=FMath::Max(HeadSwing[Side],FMath::RadiansToDegrees(Arm->GetTCPWorld().GetRotation().AngularDistance(Reference.GetRotation())));
+            RearPickupObserved[Side]=true;
+        }
+    }return Ok&&RunState==EFactoryRunState::Complete;};
+    Check(TEXT("two_robot_tasks_full_cycle"),Run());const double TwoSeconds=SimulationSeconds;
+    auto* TwoWheelCell=TestAssemblyLine->WheelCell.Get();
+    const double LeftPickupSeconds=TwoWheelCell->LaneSnapshot(0)->NextPickupSeconds;
+    const double RightPickupSeconds=TwoWheelCell->LaneSnapshot(1)->NextPickupSeconds;
+    const double LeftHeadSwing=HeadSwing[0],RightHeadSwing=HeadSwing[1];
+    Check(TEXT("rear_pickup_without_head_flip"),RearPickupObserved[0]&&RearPickupObserved[1]&&LeftPickupSeconds>0&&RightPickupSeconds>0&&LeftHeadSwing<1&&RightHeadSwing<1);
+    UE_LOG(LogTemp,Display,TEXT("MOTION_TEST stage %d wheel %d left_next %.3f right_next %.3f"),int32(TwoWheelCell->FailedStage),TwoWheelCell->FailedWheelIndex,LeftPickupSeconds,RightPickupSeconds);
+    ResetCycle();
     bSnap=false;
     for(const FString Id:{TEXT("wheel_rl"),TEXT("wheel_rr")})
     {
         const auto* Base=Layout.Find(Task(Id)->RobotId);const FString Type=Base->EffectiveTypeId();const auto P=Base->Position;
-        AddRegisteredItem(Type,P+FVector2D(-10,0));Check(TEXT("rear_task_reassigned_to_new_executor"),AssignTask(Id));
+        const int Index=Id==TEXT("wheel_rl")?1:3;
+        const FVector StationDelta=TestAssemblyLine->WheelCell->GetMountWorld(Index).GetLocation()-TestAssemblyLine->WheelCell->GetMountWorld(Index-1).GetLocation();
+        AddRegisteredItem(Type,P+FVector2D(StationDelta));Check(TEXT("rear_task_reassigned_to_new_executor"),AssignTask(Id));
     }
     auto* W=TestAssemblyLine->WheelCell.Get();
     Check(TEXT("four_distinct_executors_and_sensor_banks"),W->TaskRobots[0]!=W->TaskRobots[1]&&W->TaskRobots[2]!=W->TaskRobots[3]&&W->TaskSensors.Num()==4&&W->TaskSensors[0]!=W->TaskSensors[2]);
@@ -67,6 +88,8 @@ bool AFactoryRuntime::RunTaskAssignmentChecks()
     Layout=Original;Rebuild();History.Clear();
     auto Report=MakeShared<FJsonObject>();Report->SetBoolField(TEXT("success"),Pass);Report->SetArrayField(TEXT("checks"),Checks);
     Report->SetNumberField(TEXT("two_robot_cycle_s"),TwoSeconds);Report->SetNumberField(TEXT("four_robot_cycle_s"),FourSeconds);
+    Report->SetNumberField(TEXT("left_second_pickup_s"),LeftPickupSeconds);Report->SetNumberField(TEXT("right_second_pickup_s"),RightPickupSeconds);
+    Report->SetNumberField(TEXT("left_rear_pickup_tcp_rotation_deg"),LeftHeadSwing);Report->SetNumberField(TEXT("right_rear_pickup_tcp_rotation_deg"),RightHeadSwing);
     Report->SetStringField(TEXT("scope"),TEXT("Functional allocation regression. Synthetic scene sensors, timed fastening, no collision/force certification; timing includes seeded demo events."));
     FString Json;FJsonSerializer::Serialize(Report,TJsonWriterFactory<>::Create(&Json));
     FFileHelper::SaveStringToFile(Json,*(FPaths::ProjectSavedDir()/TEXT("FactoryTaskReport.json")));return Pass;

@@ -5,7 +5,7 @@ namespace
 {
 // Live Coding preserves previously constructed function-local statics. Give each
 // incompatible catalog revision its own storage (including its initialization guard).
-const TArray<FFactoryTaskSpec>& DirectEditCatalogV5()
+const TArray<FFactoryTaskSpec>& DirectEditCatalogV6()
 {
     // Adapter registration boundary. Add calibrated targets here; do not infer from mesh names.
     static const TArray<FFactoryTaskSpec> Specs={
@@ -14,11 +14,13 @@ const TArray<FFactoryTaskSpec>& DirectEditCatalogV5()
         {TEXT("wheel_fr"),TEXT("오른쪽 앞 휠"),TEXT("wheel_install"),TEXT("hub_fr"),TEXT("wheel"),TEXT("rack_fr"),TEXT("wheel_right"),2},
         {TEXT("wheel_rr"),TEXT("오른쪽 뒤 휠"),TEXT("wheel_install"),TEXT("hub_rr"),TEXT("wheel"),TEXT("rack_rr"),TEXT("wheel_right"),3},
         {TEXT("door_fl"),TEXT("왼쪽 앞문"),TEXT("door_install_demo"),TEXT("door_fl"),TEXT("door"),TEXT("door_rack_fl"),TEXT("door"),INDEX_NONE},
-        {TEXT("door_fr"),TEXT("오른쪽 앞문"),TEXT("door_install_demo"),TEXT("door_fr"),TEXT("door"),TEXT("door_rack_fr"),TEXT("door"),INDEX_NONE}};
+        {TEXT("door_fr"),TEXT("오른쪽 앞문"),TEXT("door_install_demo"),TEXT("door_fr"),TEXT("door"),TEXT("door_rack_fr"),TEXT("door"),INDEX_NONE},
+        {TEXT("door_rl"),TEXT("왼쪽 뒷문"),TEXT("door_install_demo"),TEXT("door_rl"),TEXT("door"),TEXT("door_rack_rl"),TEXT("door"),INDEX_NONE},
+        {TEXT("door_rr"),TEXT("오른쪽 뒷문"),TEXT("door_install_demo"),TEXT("door_rr"),TEXT("door"),TEXT("door_rack_rr"),TEXT("door"),INDEX_NONE}};
     return Specs;
 }
 }
-const TArray<FFactoryTaskSpec>& FactoryTasks::Catalog(){return DirectEditCatalogV5();}
+const TArray<FFactoryTaskSpec>& FactoryTasks::Catalog(){return DirectEditCatalogV6();}
 const FFactoryTaskSpec* FactoryTasks::Find(const FString& Id)
 { return Catalog().FindByPredicate([&](const auto& S){return S.Id==Id;}); }
 bool FactoryTasks::Supports(const FString& Type,const FFactoryTaskSpec& S)

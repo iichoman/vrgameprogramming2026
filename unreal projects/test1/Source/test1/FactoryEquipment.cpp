@@ -52,6 +52,8 @@ UStaticMeshComponent* AFactoryEquipment::Box(FName Name, FVector Pos, FVector Si
     C->SetAffectDistanceFieldLighting(false);
     Tint(C, Color);
     C->ComponentTags.Add(Name);
+    if(Name==TEXT("SelectionFootprint")||Name==TEXT("EquipmentFootprint")||Name==TEXT("ZoneArea"))
+        C->ComponentTags.Add(TEXT("MotionIgnore")); // painted layout/UI markers, not solid equipment
     C->RegisterComponent();
     Parts.Add(C);
     return C;

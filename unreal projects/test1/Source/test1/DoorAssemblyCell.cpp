@@ -1,10 +1,15 @@
 #include "DoorAssemblyCell.h"
+#include "AssemblyModelContracts.h"
+#include "ReducedPartPhysics.h"
 #include "RobotArm.h"
+#include "DoorGripperGeometry.h"
 #include "CamryAssembly.h"
 #include "DoorPoseComponent.h"
 #include "DoorInspectionComponent.h"
 #include "VehicleProcessTest.h"
 #include "Components/PrimitiveComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/World.h"
 #include "Components/SceneComponent.h"
 #include "Components/BoxComponent.h"
 #include "HAL/FileManager.h"
@@ -30,29 +35,40 @@ FString ADoorAssemblyCell::GetStateLabel() const
 	return StaticEnum<EDoorAssemblyState>()->GetNameStringByValue(int64(State));
 }
 
+FString ADoorAssemblyCell::GetOperationTaskId() const
+{
+    if(TargetModule) return TargetModule->ModuleId.ToString().ToLower();
+    return bRightDoor ? TEXT("door_fr") : OperationTaskId;
+}
+
 bool ADoorAssemblyCell::ScanDoorSize()
 {
 	if(!Pose.IsValid()||!DoorSizeProxy||DoorSizeScale<=0)return false;
 	FBox Bounds(ForceInit);
-	TArray<USceneComponent*> DoorParts;
-	Pose->GetControlledDoor()->GetChildrenComponents(true,DoorParts);
-	if(auto* RootPrimitive=Cast<UPrimitiveComponent>(Pose->GetControlledDoor()))Bounds+=RootPrimitive->Bounds.GetBox();
-	for(auto* C:DoorParts)if(auto* P=Cast<UPrimitiveComponent>(C))Bounds+=P->Bounds.GetBox();
+    const FTransform Frame(Pose->GetControlledDoor()->GetComponentQuat(),Pose->GetControlledDoor()->GetComponentLocation());
+    TArray<USceneComponent*> DoorParts;
+    Pose->GetControlledDoor()->GetChildrenComponents(true,DoorParts);
+    DoorParts.Add(Pose->GetControlledDoor());
+    // Empty legacy components have zero bounds at their pivot, not physical surfaces.
+    for(auto* C:DoorParts)if(auto* P=Cast<UStaticMeshComponent>(C))
+        if(P->GetStaticMesh()&&!P->bHiddenInGame)
+            Bounds+=P->CalcBounds(P->GetComponentTransform().GetRelativeTransform(Frame)).GetBox();
 	if(!Bounds.IsValid)return false;
-	const FVector Center=Bounds.GetCenter(),Extent=Bounds.GetExtent();
-	NominalDoorWidthCm=Extent.X*2/DoorSizeScale;
+	const FVector Center=Frame.TransformPosition(Bounds.GetCenter()),Extent=Bounds.GetExtent();
+    const FVector Axis=Frame.TransformVectorNoScale(FVector::ForwardVector);
+    NominalDoorWidthCm=RecipeDoorWidthCm>0 ? RecipeDoorWidthCm : AssemblyRecipes::CamryDoorWidthCm(GetOperationTaskId());
 	DoorSizeProxy->SetBoxExtent(Extent);
 	DoorSizeProxy->SetWorldLocation(Center);
-	DoorSizeProxy->SetWorldRotation(FRotator::ZeroRotator);
+	DoorSizeProxy->SetWorldRotation(Frame.GetRotation());
 	FHitResult Left,Right;
 	const double Reach=Extent.X+100;
-	const bool HitLeft=DoorSizeProxy->LineTraceComponent(Left,Center-FVector(Reach,0,0),Center+FVector(Reach,0,0),FCollisionQueryParams(SCENE_QUERY_STAT(DoorSizeLaser),false));
-	const bool HitRight=DoorSizeProxy->LineTraceComponent(Right,Center+FVector(Reach,0,0),Center-FVector(Reach,0,0),FCollisionQueryParams(SCENE_QUERY_STAT(DoorSizeLaser),false));
+	const bool HitLeft=DoorSizeProxy->LineTraceComponent(Left,Center-Axis*Reach,Center+Axis*Reach,FCollisionQueryParams(SCENE_QUERY_STAT(DoorSizeLaser),false));
+	const bool HitRight=DoorSizeProxy->LineTraceComponent(Right,Center+Axis*Reach,Center-Axis*Reach,FCollisionQueryParams(SCENE_QUERY_STAT(DoorSizeLaser),false));
 	DoorSizeLeftHitWorld=HitLeft?Left.ImpactPoint:FVector::ZeroVector;
 	DoorSizeRightHitWorld=HitRight?Right.ImpactPoint:FVector::ZeroVector;
 	MeasuredDoorWidthCm=HitLeft&&HitRight?FVector::Distance(Left.ImpactPoint,Right.ImpactPoint):0;
 	DoorSizeMeasuredAt=SimulationTimeSeconds;
-	bDoorSizePassed=HitLeft&&HitRight&&FMath::Abs(MeasuredDoorWidthCm-NominalDoorWidthCm)<=1.0;
+	bDoorSizePassed=FAssemblyDimensionCriterion{NominalDoorWidthCm,DoorWidthToleranceCm}.Accepts(MeasuredDoorWidthCm,HitLeft&&HitRight);
 	return bDoorSizePassed;
 }
 
@@ -123,6 +139,9 @@ FTransform ADoorAssemblyCell::GetPickupDoorWorld() const
 
 bool ADoorAssemblyCell::ResetCycle()
 {
+    if(Robot)DoorGripperGeometry::Configure(*Robot);
+    Operations.Reset();PhysicalDoor=FDoorRigidBody();bSupportCommand=false;
+    if(Robot){Robot->ToolReactionForceN=Robot->ToolReactionTorqueNm=FVector::ZeroVector;}
 	for (const auto& Entry:OriginalDoorMeshScales) if(Entry.Key.IsValid())Entry.Key->SetRelativeScale3D(Entry.Value);
 	OriginalDoorMeshScales.Empty();
 	if (Robot) Robot->Halt();
@@ -153,10 +172,48 @@ bool ADoorAssemblyCell::ResetCycle()
 	return true;
 }
 
+void ADoorAssemblyCell::FinishOperation(EFactoryCommandStatus Control)
+{
+    Operations.Finish(Operations.Active.Id,Control,
+        bUsePhysicalDynamics&&PhysicalDoor.bSupportContact
+            ? (PhysicalDoor.SupportDeflectionMm<=2?EAssemblyQuality::Pass:EAssemblyQuality::Fail) : EAssemblyQuality::NotEvaluated,
+        !bUsePhysicalDynamics||PhysicalDoor.bValid,Status);
+}
+bool ADoorAssemblyCell::PrepareNextOperation()
+{
+    if(Operations.bActive||bDoorHeld||!(State==EDoorAssemblyState::Complete||State==EDoorAssemblyState::Idle))return false;
+    if(!ValidateSetup())return false;
+    PhysicalDoor=FDoorRigidBody();bSupportCommand=false;bDoorFastened=false;
+    Outcome=EDoorCellOutcome::NotEvaluated;AlignmentCorrections=0;Accumulator=StateTime=StableTime=0;
+    DoorSizeMeasuredAt=LastAlignmentSampleTime=-1;MeasuredDoorWidthCm=0;
+    EnterState(EDoorAssemblyState::Idle,TEXT("다음 부품 요청 준비 · 로봇/부품 자세 유지"));return true;
+}
+bool ADoorAssemblyCell::StartOperation(const FAssemblyOperationRequest& Request)
+{
+    const bool Bound=RequestBinding.TaskId==GetOperationTaskId();
+    const bool Matches=!Bound||(Request.ProductId==RequestBinding.ProductId&&Request.PartId==RequestBinding.PartId
+        &&Request.EquipmentId==RequestBinding.EquipmentId&&Request.SourcePort==RequestBinding.SourcePort&&Request.TargetPort==RequestBinding.TargetPort);
+    if(State!=EDoorAssemblyState::Idle||!Matches||Request.TaskId!=GetOperationTaskId()||!Operations.Accept(Request))
+    {Status=TEXT("작업 요청 거부: 대상/세대/순서/중복/점유 확인");return false;}
+    return StartCycle();
+}
+
 bool ADoorAssemblyCell::StartCycle()
 {
-	if (State!=EDoorAssemblyState::Idle) { Status=TEXT("Reset to Idle before starting a new cycle."); return false; }
-	if (!ValidateSetup()) { Fail(Status); return false; }
+    if (State!=EDoorAssemblyState::Idle) { Status=TEXT("Reset to Idle before starting a new cycle."); return false; }
+    if(!Operations.bActive)
+    {
+        auto R=RequestBinding.TaskId==GetOperationTaskId()?RequestBinding:FAssemblyOperationRequest();R.Id={Operations.Epoch,Operations.LastSequence+1};R.TaskId=GetOperationTaskId();
+        if(R.ProductId.IsEmpty())R.ProductId=Assembly?Assembly->GetPathName():TEXT("standalone");
+        if(R.PartId.IsEmpty())R.PartId=TEXT("part_")+R.TaskId;
+        if(R.EquipmentId.IsEmpty())R.EquipmentId=GetPathName();
+        if(R.SourcePort.IsEmpty())R.SourcePort=TEXT("supply_")+R.TaskId;
+        if(R.TargetPort.IsEmpty())R.TargetPort=R.TaskId;
+        return StartOperation(R);
+    }
+    if(bUsePhysicalDynamics&&!PhysicsSettings.Valid()){PhysicalDoor.bValid=false;Fail(TEXT("도어 물성 무효"));return false;}
+    if (!ValidateSetup()) { Fail(Status); return false; }
+    Robot->bTorqueDynamics=bUsePhysicalDynamics;
 	SimulationTimeSeconds=0; RecordTime=0; Accumulator=0;
 	if (bRecordCSV)
 	{
@@ -178,6 +235,7 @@ void ADoorAssemblyCell::StopCycle()
 {
 	if (State==EDoorAssemblyState::Idle || State==EDoorAssemblyState::Complete || State==EDoorAssemblyState::Fault || State==EDoorAssemblyState::Stopped) return;
 	Robot->Halt(); Outcome=EDoorCellOutcome::Stopped; EnterState(EDoorAssemblyState::Stopped,TEXT("Cycle stopped; grasp/fastening state retained. Reset to recover."));
+    FinishOperation(EFactoryCommandStatus::Cancelled);
 	Accumulator=0; RecordSample(); FlushRecording();
 }
 
@@ -187,7 +245,7 @@ void ADoorAssemblyCell::Fail(const FString& Reason)
 	const FString FailureReason=Reason;
 	if (Robot) Robot->Halt();
 	Outcome=EDoorCellOutcome::Blocked;
-	EnterState(EDoorAssemblyState::Fault,FailureReason); RecordSample(); FlushRecording();
+	EnterState(EDoorAssemblyState::Fault,FailureReason); FinishOperation(EFactoryCommandStatus::Failed); RecordSample(); FlushRecording();
 }
 
 void ADoorAssemblyCell::EnterState(EDoorAssemblyState Next,const FString& Message)
@@ -197,7 +255,11 @@ bool ADoorAssemblyCell::EnterMove(EDoorAssemblyState Next,const FTransform& Door
 {
 	TargetDoorWorld=DoorTarget;
 	TargetTCPWorld=(bDoorHeld && !bDoorFastened ? DoorInTCP.Inverse() : TCPInDoorCm)*DoorTarget;
-	if (!Robot->CommandTCPWorld(TargetTCPWorld))
+    Robot->SetMotionPart(Pose.IsValid()?Pose->GetControlledDoor():nullptr,bDoorHeld&&!bDoorFastened);
+    const bool Linear=Next==EDoorAssemblyState::Align||Next==EDoorAssemblyState::Retract
+        ||(Next==EDoorAssemblyState::ApproachMount&&State==EDoorAssemblyState::Align);
+    if(Next==EDoorAssemblyState::Retract)TargetTCPWorld.SetRotation(Robot->GetTCPWorld().GetRotation());
+	if (!(Linear?Robot->CommandLinearTCPWorld(TargetTCPWorld):Robot->CommandTCPWorld(TargetTCPWorld)))
     {
         Fail(FString::Printf(TEXT("%s %s · 목표 %s / 로봇 %s · %s"),
             TargetModule ? *TargetModule->ModuleId.ToString() : (bRightDoor ? TEXT("Door_FR") : TEXT("Door_FL")),
@@ -219,11 +281,21 @@ void ADoorAssemblyCell::MeasureTCP()
 bool ADoorAssemblyCell::AdvanceSimulation(double Delta)
 {
 	if (!FMath::IsFinite(Delta) || Delta<0 || Delta>1 || !FMath::IsFinite(FixedStepSeconds) || FixedStepSeconds<=0 || FixedStepSeconds>0.02) return false;
-	if (bDoorFastened && Pose.IsValid() && IsValid(Assembly) && Assembly->GetBodyFrame())
+	if (!bUsePhysicalDynamics && bDoorFastened && Pose.IsValid() && IsValid(Assembly) && Assembly->GetBodyFrame())
 		Pose->SetDoorWorldPose(FastenedInBody*Assembly->GetBodyFrame()->GetComponentTransform());
 	if (Pose.IsValid()) { RefreshQuality(); MeasureSensors(); }
-	if (State==EDoorAssemblyState::Fault) return false;
-	if (State==EDoorAssemblyState::Idle || State==EDoorAssemblyState::Stopped || State==EDoorAssemblyState::Complete) return true;
+    if(State==EDoorAssemblyState::Fault||State==EDoorAssemblyState::Stopped||State==EDoorAssemblyState::Complete)
+    {
+        if(bUsePhysicalDynamics&&PhysicalDoor.bActive)
+        {
+            Accumulator+=Delta;
+            while(Accumulator>=FixedStepSeconds){Accumulator-=FixedStepSeconds;SimulationTimeSeconds+=FixedStepSeconds;
+                if(Robot)Robot->StepControl(FixedStepSeconds);if(!StepDoorPhysics(FixedStepSeconds))return false;}
+            RefreshQuality();MeasureSensors();
+        }
+        return State!=EDoorAssemblyState::Fault;
+    }
+    if (State==EDoorAssemblyState::Idle) return true;
 	Accumulator+=Delta;
 	while (Accumulator+1.e-10>=FixedStepSeconds)
 	{
@@ -235,8 +307,10 @@ bool ADoorAssemblyCell::AdvanceSimulation(double Delta)
 
 void ADoorAssemblyCell::FixedUpdate(double Dt)
 {
-	SimulationTimeSeconds+=Dt; StateTime+=Dt;
+	SimulationTimeSeconds+=Dt;
 	if (!IsValid(Robot) || !Pose.IsValid() || !IsValid(Assembly)) { Fail(TEXT("Lost robot or door reference.")); return; }
+    const bool WasPlanning=Robot->IsMotionPlanning();
+    if(!WasPlanning)StateTime+=Dt;
 	if (!Assembly->GetBodyFrame()->GetComponentTransform().Equals(BodyAtStart,1.e-6)
 		|| !Robot->GetActorTransform().Equals(RobotBaseAtStart,1.e-6))
 	{ Fail(TEXT("Body or robot base moved during active cycle. Stop and recalibrate targets.")); return; }
@@ -245,20 +319,35 @@ void ADoorAssemblyCell::FixedUpdate(double Dt)
 	if (!bDoorHeld && !bDoorFastened && (State==EDoorAssemblyState::ApproachPickup || State==EDoorAssemblyState::Grip)
 		&& !Pose->GetControlledDoor()->GetComponentTransform().Equals(PickupAtStart,1.e-5))
 	{ Fail(TEXT("Door placement changed during pickup. Reset and re-detect.")); return; }
-	if (!Robot->StepControl(Dt)) { Fail(TEXT("Invalid servo input or integration failure.")); return; }
-	if (bDoorHeld && !bDoorFastened && !Pose->SetDoorWorldPose(DoorInTCP*Robot->GetTCPWorld()))
+	if (!Robot->StepControl(Dt)) { Fail(Robot->LastStatus); return; }
+    if(bUsePhysicalDynamics&&PhysicalDoor.bActive)
+    {if(!StepDoorPhysics(Dt)){Fail(TEXT("도어 물리 적분 무효"));return;}if(State==EDoorAssemblyState::Fault)return;}
+    if (!bUsePhysicalDynamics && bDoorHeld && !bDoorFastened && !Pose->SetDoorWorldPose(DoorInTCP*Robot->GetTCPWorld()))
 	{ Fail(TEXT("Door transport pose rejected.")); return; }
-	if (bDoorFastened) Pose->SetDoorWorldPose(FastenedInBody*Assembly->GetBodyFrame()->GetComponentTransform());
+	if (!bUsePhysicalDynamics && bDoorFastened) Pose->SetDoorWorldPose(FastenedInBody*Assembly->GetBodyFrame()->GetComponentTransform());
 	LastCarriedDoorWorld=Pose->GetControlledDoor()->GetComponentTransform();
 	if (!RefreshQuality() || !MeasureSensors()) { Fail(TEXT("Invalid quality geometry or alignment sensor.")); return; }
 	MeasureTCP();
+    if(State==EDoorAssemblyState::Align&&bDoorHeld
+        &&FMath::RadiansToDegrees(LastCarriedDoorWorld.GetRotation().AngularDistance(TargetDoorWorld.GetRotation()))>OrientationToleranceDeg)
+    {Fail(TEXT("삽입 중 도어 각도 이탈 · 체결 차단"));return;}
+    if(Robot->IsMotionPlanning())
+    {StableTime=0;Status=GetStateLabel()+TEXT(" · ")+Robot->LastStatus;return;}
+    if(WasPlanning)Status=GetStateLabel()+TEXT(" · ")+Robot->LastStatus;
 	const bool Settled=PositionErrorMm<=PositionToleranceMm && OrientationErrorDeg<=OrientationToleranceDeg && Robot->IsAtJointTarget();
 	StableTime=Settled ? StableTime+Dt : 0;
 	if (StateTime>StageTimeoutSeconds) { Fail(TEXT("Stage timed out before measured motion settled.")); return; }
 	RecordTime+=Dt;
 	if (RecordTime>=0.05) { RecordSample(); RecordTime=0; }
-	if (State==EDoorAssemblyState::Fasten)
-	{
+    if (State==EDoorAssemblyState::Fasten)
+    {
+        if(bUsePhysicalDynamics)
+        {
+            if(!PhysicalDoor.bSupportContact){Fail(TEXT("수신 지지 미접촉 · 해제 차단"));return;}
+            if(PhysicalDoor.VelocityMps.Size()<0.002&&PhysicalDoor.SupportDeflectionMm<=2)
+            {bDoorHeld=false;EnterState(EDoorAssemblyState::Release,TEXT("받침 하중 인계 · 해제 후 안정 확인"));}
+            return;
+        }
 		if (!Settled) { Fail(TEXT("Lost alignment while fastening.")); return; }
 		if (!AlignmentAccepted()) { Fail(TEXT("Alignment sensor lost alignment while fastening.")); return; }
 		if (!VerifyBeforeFasten()) return;
@@ -269,9 +358,15 @@ void ADoorAssemblyCell::FixedUpdate(double Dt)
 		}
 		return;
 	}
-	if (State==EDoorAssemblyState::Release)
-	{
-		bDoorHeld=false;
+    if (State==EDoorAssemblyState::Release)
+    {
+        if(bUsePhysicalDynamics)
+        {
+            if(!PhysicalDoor.bSupportContact||PhysicalDoor.SupportDeflectionMm>10){Fail(TEXT("해제 후 지지 실패"));return;}
+            if(PhysicalDoor.VelocityMps.Size()>=0.002||PhysicalDoor.SupportDeflectionMm>2||StateTime<0.3)return;
+            bDoorFastened=true; // Compatibility flag: supported placement, NOT bolt quality.
+        }
+        bDoorHeld=false;
 		EnterMove(EDoorAssemblyState::Retract,OffsetDoor(GetMountDoorWorld(),ApproachOffsetBodyCm)); return;
 	}
 	if (StableTime<SettleSeconds) return;
@@ -285,34 +380,59 @@ void ADoorAssemblyCell::FixedUpdate(double Dt)
 		{ Fail(TEXT("Grasp contact does not match the detected door pose.")); break; }
 		DoorInTCP=Pose->GetControlledDoor()->GetComponentTransform().GetRelativeTransform(Robot->GetTCPWorld());
 		LastCarriedDoorWorld=Pose->GetControlledDoor()->GetComponentTransform();
-		bDoorHeld=true; EnterMove(EDoorAssemblyState::Lift,OffsetDoor(PickupAtStart,LiftOffsetBodyCm)); break;
+        if(bUsePhysicalDynamics)
+        {
+            FBox B(ForceInit);TArray<USceneComponent*> MassComponents;Pose->GetControlledDoor()->GetChildrenComponents(true,MassComponents);
+            for(auto* C:MassComponents)if(auto* M=Cast<UStaticMeshComponent>(C))if(M->GetStaticMesh()&&!M->bHiddenInGame)B+=M->Bounds.GetBox();
+            const auto DoorPose=Pose->GetControlledDoor()->GetComponentTransform();
+            BodyInDoor=FTransform(DoorPose.InverseTransformPosition(B.IsValid?B.GetCenter():DoorPose.GetLocation()));
+            PhysicalDoor=FDoorRigidBody();PhysicalDoor.Pose=BodyInDoor*DoorPose;PhysicalDoor.bActive=true;
+        }
+        bDoorHeld=true; EnterMove(EDoorAssemblyState::Lift,OffsetDoor(PickupAtStart,LiftOffsetBodyCm)); break;
 	case EDoorAssemblyState::Lift:
 		EnterMove(EDoorAssemblyState::Transfer,OffsetDoor(GetMountDoorWorld(),TransferOffsetBodyCm)); break;
 	case EDoorAssemblyState::Transfer:
 		EnterMove(EDoorAssemblyState::ApproachMount,OffsetDoor(GetMountDoorWorld(),ApproachOffsetBodyCm)); break;
 	case EDoorAssemblyState::ApproachMount:
-		EnterMove(EDoorAssemblyState::Align,GetMountDoorWorld()); break;
+    {
+        // All translation/attitude corrections happen outside the mating plane.
+        // Only the axial translation remains when entering Align.
+        const FTransform Outside=OffsetDoor(GetMountDoorWorld(),ApproachOffsetBodyCm);
+        const FVector Residual=Outside.GetLocation()-AlignmentMeasuredDoorWorld.GetLocation();
+        const double Angle=FMath::RadiansToDegrees(Outside.GetRotation().AngularDistance(AlignmentMeasuredDoorWorld.GetRotation()));
+        if(!bLastAlignmentSampleValid){Fail(TEXT("삽입 전 정렬 센서 무효"));break;}
+        if(Residual.Size()*10>PositionToleranceMm||Angle>OrientationToleranceDeg)
+        {
+            if(++AlignmentCorrections>8){Fail(TEXT("장착 바깥 사전 정렬 실패"));break;}
+            FTransform Corrected=TargetDoorWorld;Corrected.AddToTranslation(Residual);
+            Corrected.SetRotation((Outside.GetRotation()*AlignmentMeasuredDoorWorld.GetRotation().Inverse()*Corrected.GetRotation()).GetNormalized());
+            EnterMove(EDoorAssemblyState::ApproachMount,Corrected);break;
+        }
+        FTransform Insert=TargetDoorWorld;
+        Insert.AddToTranslation(-BodyAtStart.TransformVectorNoScale(ApproachOffsetBodyCm));
+        EnterMove(EDoorAssemblyState::Align,Insert);break;
+    }
 	case EDoorAssemblyState::Align:
 	{
 		if (!AlignmentAccepted())
 		{
 			if (++AlignmentCorrections>8) { Fail(TEXT("Sensor-driven alignment did not converge within correction limit.")); break; }
-			// Feedback uses only the sensor residual and previous commanded pose.
-			// It never subtracts the configured fault bias or reads true quality to correct motion.
-			const FTransform Mount=GetMountDoorWorld();
-			FTransform Corrected=TargetDoorWorld;
-			Corrected.AddToTranslation(Mount.GetLocation()-AlignmentMeasuredDoorWorld.GetLocation());
-			Corrected.SetRotation((Mount.GetRotation()*AlignmentMeasuredDoorWorld.GetRotation().Inverse()*Corrected.GetRotation()).GetNormalized());
-			EnterMove(EDoorAssemblyState::Align,Corrected); break;
+            // Withdraw along the same axis before correcting; never rotate or
+            // slide a partially inserted panel through its mating surfaces.
+            FTransform Outside=TargetDoorWorld;
+            Outside.AddToTranslation(BodyAtStart.TransformVectorNoScale(ApproachOffsetBodyCm));
+            EnterMove(EDoorAssemblyState::ApproachMount,Outside);break;
 		}
 		if (!VerifyBeforeFasten()) break;
-		EnterState(EDoorAssemblyState::Fasten,TEXT("Measured alignment accepted; ideal fastening in progress.")); break;
+        bSupportCommand=bUsePhysicalDynamics;
+        EnterState(EDoorAssemblyState::Fasten,bUsePhysicalDynamics?TEXT("받침 닫힘 명령 · 실제 지지 확인"):TEXT("Measured alignment accepted; ideal fastening in progress.")); break;
 	}
 	case EDoorAssemblyState::Retract:
 		RefreshQuality(); Outcome=bQualityPassed ? EDoorCellOutcome::Pass : EDoorCellOutcome::QualityFail;
 		EnterState(EDoorAssemblyState::Complete,bQualityPassed
 			? (IsValid(TargetModule) ? TEXT("Complete: independent pose check PASS; module door retained and robot retracted.") : TEXT("Complete: six-station quality PASS; door retained and robot retracted."))
 			: TEXT("Complete: assembly QUALITY FAIL; inspect measured door pose."));
+    FinishOperation(EFactoryCommandStatus::Completed);
 		Assembly->RefreshDoorInspection(); RecordSample(); FlushRecording(); break;
 	default: break;
 	}
@@ -532,4 +652,31 @@ void ADoorAssemblyCell::WriteRunMetadata()
 	FString Json; FJsonSerializer::Serialize(J,TJsonWriterFactory<>::Create(&Json));
 	IFileManager::Get().MakeDirectory(*FPaths::GetPath(RunMetadataFile),true);
 	FFileHelper::SaveStringToFile(Json,*RunMetadataFile,FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+}
+
+
+bool ADoorAssemblyCell::StepDoorPhysics(double Dt)
+{
+    if(!Pose.IsValid()||!IsValid(Robot))return false;
+    const auto Goal=BodyInDoor*DoorInTCP*Robot->GetTCPWorld();
+    const FVector Before=PhysicalDoor.Pose.GetLocation();
+    if(!PhysicalDoor.Step(PhysicsSettings,Goal,BodyInDoor*GetMountDoorWorld(),bDoorHeld,bSupportCommand,Dt))return false;
+    Robot->ToolReactionForceN=-PhysicalDoor.GripForceN;Robot->ToolReactionTorqueNm=-PhysicalDoor.GripTorqueNm;
+    Robot->ForcePointWorldCm=PhysicalDoor.Pose.GetLocation();
+    if(!bDoorHeld&&!PhysicalDoor.bSupportContact&&GetWorld())
+    {
+        FCollisionQueryParams Params(SCENE_QUERY_STAT(DoorDrop),false,this);Params.AddIgnoredActor(Assembly);Params.AddIgnoredActor(Robot);
+        if(TargetModule)Params.AddIgnoredActor(TargetModule);
+        FHitResult Hit;
+        if(GetWorld()->SweepSingleByChannel(Hit,Before,PhysicalDoor.Pose.GetLocation(),FQuat::Identity,ECC_PhysicsBody,FCollisionShape::MakeSphere(20),Params))
+        {
+            PhysicalDoor.Pose.SetLocation(Hit.bStartPenetrating?Before+Hit.Normal*(Hit.PenetrationDepth+0.01):Hit.Location+Hit.ImpactNormal*0.01);
+            PhysicalDoor.VelocityMps=ReducedPartPhysics::ContactVelocity(PhysicalDoor.VelocityMps,Hit.ImpactNormal);
+        }
+    }
+    if(!Pose->SetDoorWorldPose(BodyInDoor.Inverse()*PhysicalDoor.Pose))return false;
+    LastCarriedDoorWorld=Pose->GetControlledDoor()->GetComponentTransform();
+    if(bDoorHeld&&PhysicalDoor.SlipMm>50)
+    {bDoorHeld=false;Fail(TEXT("도어 파지 유지력 초과 · 이탈/낙하 · 후속 공정 차단"));}
+    return true;
 }

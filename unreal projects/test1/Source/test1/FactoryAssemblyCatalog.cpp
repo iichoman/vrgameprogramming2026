@@ -54,6 +54,16 @@ void AFactoryRuntime::InitializeAssemblyCatalog()
 #endif
     }
     FactoryTasks::MigrateLegacy(Layout);
+    // The fixed-line map can contain a second door robot as well as the three
+    // calibration templates. Its factory replacement must not leave a duplicate
+    // physical arm at the same base. Do not hide independently added equipment.
+    if(auto* Legacy=L->RightDoorRobot.Get();IsValid(Legacy)&&!Cast<AFactoryAssemblyEquipment>(Legacy->GetOwner()))
+    {
+        Legacy->SetActorHiddenInGame(true);Legacy->SetActorEnableCollision(false);Legacy->SetActorTickEnabled(false);
+#if WITH_EDITOR
+        Legacy->SetIsTemporarilyHiddenInEditor(true);
+#endif
+    }
     EnsureRightDoor();
     if(Layout.LayoutVersion<5)
     {
@@ -80,6 +90,21 @@ void AFactoryRuntime::InitializeAssemblyCatalog()
         for(auto& Tsk:Layout.Tasks)if(Tsk.PartId.IsEmpty())Tsk.PartId=TEXT("part_")+Tsk.Id;
         Layout.LayoutVersion=5;
     }
+    if(Layout.LayoutVersion<6)
+    {
+        for(const FString Id:{TEXT("door_rl"),TEXT("door_rr")})
+        {
+            const auto* Spec=FactoryTasks::Find(Id);
+            const FString Front=Id==TEXT("door_rl")?TEXT("door_fl"):TEXT("door_fr");
+            const auto* Original=Layout.Tasks.FindByPredicate([&](const auto& T){return T.Id==Front;});
+            FFactoryTask T;T.Id=Id;T.Operation=Spec->Operation;T.ProductId=TEXT("vehicle_1");
+            T.TargetPort=Spec->TargetPort;T.PartType=Spec->PartType;T.SourcePort=Spec->SourcePort;
+            T.PartId=TEXT("part_")+Id;T.RobotId=Original?Original->RobotId:FString();
+            if(auto* Existing=Layout.Tasks.FindByPredicate([&](const auto& V){return V.Id==Id;}))*Existing=T;
+            else Layout.Tasks.Add(T);
+        }
+        Layout.LayoutVersion=6;
+    }
 }
 void AFactoryRuntime::BindAssemblyRobots()
 {
@@ -99,6 +124,15 @@ void AFactoryRuntime::BindAssemblyRobots()
     {const auto* Task=Layout.Tasks.FindByPredicate([&](const auto& V){return V.Id==Id;});
         const auto* P=Task&&!Task->PartId.IsEmpty()?FactoryTasks::Find(Task->PartId.Mid(5)):FactoryTasks::Find(Id);W->TaskPartIndices.Add(P?P->WheelIndex:W->TaskPartIndices.Num());}
     if(RightDoorCell)RightDoorCell->Robot=Find(TEXT("door_fr"));
+    L->DoorTaskRobots={Find(TEXT("door_fl")),Find(TEXT("door_rl")),Find(TEXT("door_fr")),Find(TEXT("door_rr"))};
+    L->RightDoorRobot=Find(TEXT("door_fr"));
+    L->DoorRequests.Reset();
+    for(const auto& T:Layout.Tasks)if(T.PartType==TEXT("door"))
+    {
+        FAssemblyOperationRequest Request;Request.ProductId=T.ProductId;Request.PartId=T.PartId.IsEmpty()?TEXT("part_")+T.Id:T.PartId;
+        Request.EquipmentId=T.RobotId;Request.TaskId=T.Id;Request.SourcePort=T.SourcePort;Request.TargetPort=T.TargetPort;
+        L->DoorRequests.Add(T.Id,Request);
+    }
     W->PrepareTaskLanes();
     for(int32 Lane=0;Lane<4;++Lane)
     {
@@ -113,7 +147,13 @@ void AFactoryRuntime::BindAssemblyRobots()
             if(FRobotKinematics::ForwardKinematics(T->GetDefinitions(),Radians,T->ToolInLastJointCm,Local))
             {
                 const auto Goal=(Local*T->GetActorTransform()).GetRelativeTransform(Arm->GetActorTransform());
-                const auto Solution=FRobotKinematics::SolveInverseKinematics(Arm->GetDefinitions(),Arm->ToolInLastJointCm,Goal,Radians);
+                auto Solution=FRobotKinematics::SolveInverseKinematics(Arm->GetDefinitions(),Arm->ToolInLastJointCm,Goal,Radians);
+                if(!Solution.IsSuccess())
+                {
+                    TArray<double> Home;for(double Q:Arm->InitialAnglesDegrees)Home.Add(FMath::DegreesToRadians(Q));
+                    FRobotIKSettings Settings;Settings.MaxRestarts=12;
+                    Solution=FRobotKinematics::SolveInverseKinematics(Arm->GetDefinitions(),Arm->ToolInLastJointCm,Goal,Home,Settings);
+                }
                 if(Solution.IsSuccess())for(double R:Solution.JointRadians)Angles.Add(FMath::RadiansToDegrees(R));
             }
         }

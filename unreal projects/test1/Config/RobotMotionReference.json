@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "enabled": true,
+  "apply_to_calibration_source_prefix": "robot_calibration.json:",
+  "reference_model": "KUKA KR 1000 L750 titan",
+  "source_url": "https://my.kuka.com/s/product/kr-1000-l750-titan/01t58000002hnhAAAQ?language=en_US",
+  "source_checked": "2026-11-18",
+  "reference_maximum_reach_mm": 3601,
+  "reference_rated_payload_kg": 750,
+  "mesh_model_identity_verified": false,
+  "native_axis_mapping_verified": false,
+  "mapping_note": "q_reference = native_sign * q_native + reference_zero_deg. The imported upper arm is vertical at native A2=0. OEM mastering and axis signs are unverified, so asymmetric A2/A3 position ranges are recorded for comparison but NOT applied to native coordinates. Other ranges are explicit simulation references, not measured asset limits.",
+  "scope": "Reference joint motion envelope only. Imported link geometry/TCP remain in use. Reach, payload rating, torque, acceleration, repeatability and safety certification are not transferred to this simulation.",
+  "speed_override": 0.8,
+  "axes": [
+    {"name":"A1", "minimum_deg":-150, "maximum_deg":150, "apply_position_range":true, "rated_speed_deg_s":58, "native_sign":1, "reference_zero_deg":0},
+    {"name":"A2", "minimum_deg":-130, "maximum_deg":17.5, "apply_position_range":false, "rated_speed_deg_s":50, "native_sign":1, "reference_zero_deg":0},
+    {"name":"A3", "minimum_deg":-110, "maximum_deg":145, "apply_position_range":false, "rated_speed_deg_s":50, "native_sign":1, "reference_zero_deg":0},
+    {"name":"A4", "minimum_deg":-350, "maximum_deg":350, "apply_position_range":true, "rated_speed_deg_s":60, "native_sign":1, "reference_zero_deg":0},
+    {"name":"A5", "minimum_deg":-118, "maximum_deg":118, "apply_position_range":true, "rated_speed_deg_s":60, "native_sign":1, "reference_zero_deg":0},
+    {"name":"A6", "minimum_deg":-350, "maximum_deg":350, "apply_position_range":true, "rated_speed_deg_s":72, "native_sign":1, "reference_zero_deg":0}
+  ]
+}

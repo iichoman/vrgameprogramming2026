@@ -47,8 +47,8 @@ struct TEST1_API FRobotIKSolution
 };
 
 /** Full rigid-pose kinematics. The target and result are relative to the robot base.
- * This solves geometry and joint limits; collision and process interlocks belong
- * to the cell controller. A failed solution must never authorize attachment.
+ * This solves geometry and joint limits. RobotMotionPlanner checks paths;
+ * process interlocks remain in the cell. IK success alone never authorizes attachment.
  */
 struct TEST1_API FRobotKinematics
 {
@@ -97,8 +97,9 @@ struct TEST1_API FRobotJointState
 struct TEST1_API FRobotJointController
 {
 	/** No target snapping. Returns false without changing state for invalid input.
-	 * Call at a fixed simulation interval, e.g. 1/120 s. Derivative acts on measured
-	 * velocity to avoid a target-step kick; saturation uses conditional integration.
+	 * Call at a fixed simulation interval, e.g. 1/120 s. D uses the supplied smooth
+	 * reference rate minus measured velocity; a position step supplies zero rate.
+	 * Saturation uses conditional integration.
 	 */
 	static bool Step(
 		const FRobotJointDefinition& Joint,

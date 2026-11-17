@@ -244,7 +244,7 @@ FString FFactoryLayout::ToJson() const
     FString Error;
     if (!Validate(Error)) return FString();
     const TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
-    Root->SetNumberField(TEXT("version"), 5);
+    Root->SetNumberField(TEXT("version"), 6);
     auto Bindings=MakeShared<FJsonObject>();TArray<FString> Keys;AssemblyBindings.GetKeys(Keys);Keys.Sort();
     for(const auto& Key:Keys)Bindings->SetStringField(Key,AssemblyBindings[Key]);
     Root->SetObjectField(TEXT("assembly_bindings"),Bindings);
@@ -298,9 +298,9 @@ bool FFactoryLayout::FromJson(const FString& Json, FFactoryLayout& Out, FString&
     { Error = TEXT("배치 파일을 읽을 수 없습니다. JSON 형식을 확인해 주세요."); return false; }
     double Version = 0;
     FString Units;
-    if (!ReadNumber(Root, TEXT("version"), Version) || (Version != 1.0 && Version != 2.0 && Version != 3.0 && Version != 4.0 && Version != 5.0)
+    if (!ReadNumber(Root, TEXT("version"), Version) || (Version != 1.0 && Version != 2.0 && Version != 3.0 && Version != 4.0 && Version != 5.0 && Version != 6.0)
         || !ReadString(Root, TEXT("units"), Units) || Units != TEXT("cm"))
-    { Error = TEXT("지원하는 배치 형식은 version 1~5, 단위 cm입니다."); return false; }
+    { Error = TEXT("지원하는 배치 형식은 version 1~6, 단위 cm입니다."); return false; }
     const TSharedPtr<FJsonValue>* HallValue = Field(Root, TEXT("hall"), EJson::Object);
     const TSharedPtr<FJsonValue>* ItemValue = Field(Root, TEXT("items"), EJson::Array);
     const TSharedPtr<FJsonValue>* JobValue = Field(Root, TEXT("job"), EJson::Object);

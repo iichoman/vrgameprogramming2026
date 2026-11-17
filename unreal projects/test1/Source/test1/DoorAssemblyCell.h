@@ -1,6 +1,8 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "AssemblyOperation.h"
+#include "DoorRigidBody.h"
 #include "GameFramework/Actor.h"
 #include "DoorAssemblyCell.generated.h"
 
@@ -42,7 +44,18 @@ class TEST1_API ADoorAssemblyCell : public AActor
 {
 	GENERATED_BODY()
 public:
-	ADoorAssemblyCell();
+    ADoorAssemblyCell();
+    UPROPERTY(EditAnywhere, Category="Cell|Physics") bool bUsePhysicalDynamics=true;
+    UPROPERTY(EditAnywhere, Category="Cell|Physics") FDoorRigidBodySettings PhysicsSettings;
+    FDoorRigidBody PhysicalDoor;
+    FAssemblyOperationLedger Operations;
+    FAssemblyOperationRequest RequestBinding;
+    bool PrepareNextOperation();
+    bool StartOperation(const FAssemblyOperationRequest& Request);
+    bool StepDoorPhysics(double Dt);
+    FTransform BodyInDoor=FTransform::Identity;
+    bool bSupportCommand=false;
+    void FinishOperation(EFactoryCommandStatus Control);
     UPROPERTY(EditAnywhere) bool bRightDoor=false;
     UPROPERTY(Transient) TObjectPtr<UDoorInspectionComponent> InspectionOverride;
 	UPROPERTY(EditAnywhere, Category="Cell|Setup") bool bExternallyDriven = false;
@@ -72,6 +85,11 @@ public:
 	UPROPERTY(EditAnywhere, Category="Cell|Placement") bool bDoorPresent=true;
 	/** Demonstration defect on the first left door only. */
 	double DoorSizeScale=1.0;
+    // Explicit task identity; preserved in completed snapshots before a cell is reused.
+    FString OperationTaskId=TEXT("door_fl");
+    UPROPERTY(EditAnywhere, Category="Cell|Recipe") double DoorWidthToleranceCm=1.0;
+    UPROPERTY(EditAnywhere, Category="Cell|Recipe") double RecipeDoorWidthCm=0;
+    FString GetOperationTaskId() const;
 	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Laser") double MeasuredDoorWidthCm=0;
 	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Laser") double DoorSizeMeasuredAt=-1;
 	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Laser") double NominalDoorWidthCm=0;

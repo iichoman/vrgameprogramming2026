@@ -380,10 +380,17 @@ bool FRobotJointController::Step(const FRobotJointDefinition& Joint,
 	const double Error = TargetRadians - State.AngleRadians;
 	const double CandidateIntegral = FMath::Clamp(State.IntegralErrorSeconds + Error * DeltaSeconds,
 		-Settings.IntegralLimitRadiansSeconds, Settings.IntegralLimitRadiansSeconds);
-	const double BaseOutput = Settings.Kp * Error - Settings.Kd * State.VelocityRadians + FeedforwardRadiansPerSecond;
+	// The supplied rate is a smooth trajectory derivative (zero for a position
+	// step). D must not oppose this intended motion: doing so creates tracking
+	// lag, winds up I during transfer and produces overshoot at the floor/hub.
+	const double BaseOutput = Settings.Kp * Error
+		+ Settings.Kd * (FeedforwardRadiansPerSecond-State.VelocityRadians) + FeedforwardRadiansPerSecond;
 	const double CandidateOutput = BaseOutput + Settings.Ki * CandidateIntegral;
 	// Allow integration when unsaturated or when its sign unwinds saturation.
-	if (FMath::Abs(CandidateOutput) <= Joint.MaxVelocityRadians || CandidateOutput * Error <= 0.0)
+	// Integral trims a stationary reference. During a feedforward move, transient
+	// following error must not accumulate into an endpoint overshoot.
+	if (FMath::Abs(FeedforwardRadiansPerSecond)<1.e-6
+        && (FMath::Abs(CandidateOutput) <= Joint.MaxVelocityRadians || CandidateOutput * Error <= 0.0))
 	{
 		State.IntegralErrorSeconds = CandidateIntegral;
 	}

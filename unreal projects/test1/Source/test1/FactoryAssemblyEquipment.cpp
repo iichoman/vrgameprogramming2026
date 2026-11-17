@@ -1,6 +1,8 @@
 #include "FactoryAssemblyEquipment.h"
 #include "FactoryRuntime.h"
 #include "RobotArm.h"
+#include "WheelGripperGeometry.h"
+#include "DoorGripperGeometry.h"
 #include "Engine/World.h"
 
 bool AFactoryAssemblyEquipment::IsAssemblyType(const FString& Id)
@@ -21,6 +23,8 @@ void AFactoryAssemblyEquipment::Configure(const FFactoryLayoutItem& Item,UStatic
     Arm->ToolInLastJointCm=Source->ToolInLastJointCm;Arm->InitialAnglesDegrees=Source->InitialAnglesDegrees;
     Arm->Kp=Source->Kp;Arm->Ki=Source->Ki;Arm->Kd=Source->Kd;Arm->MotorResponseSeconds=Source->MotorResponseSeconds;
     Arm->CalibrationSource=Source->CalibrationSource;
+    if(Item.EffectiveTypeId()==TEXT("assembly_wheel_left")||Item.EffectiveTypeId()==TEXT("assembly_wheel_right"))WheelGripperGeometry::Configure(*Arm);
+    if(Item.EffectiveTypeId()==TEXT("assembly_door"))DoorGripperGeometry::Configure(*Arm);
     Arm->AttachToActor(this,FAttachmentTransformRules::KeepWorldTransform);
     Arm->SetActorTickEnabled(false);Arm->InitializeArm();
 }

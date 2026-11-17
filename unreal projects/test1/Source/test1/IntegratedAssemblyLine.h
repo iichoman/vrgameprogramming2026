@@ -1,5 +1,6 @@
 #pragma once
 #include "CoreMinimal.h"
+#include "AssemblyOperation.h"
 #include "GameFramework/Actor.h"
 #include "GameFramework/GameModeBase.h"
 #include "GameFramework/PlayerController.h"
@@ -11,6 +12,14 @@ class ACameraActor;
 class ARobotArm;
 class AVehicleProcessModule;
 class SWidget;
+
+struct FDoorOperationSnapshot
+{
+    FString TaskId;
+    double AlignmentMm=0, WidthCm=0, SampleTime=-1, WidthSampleTime=-1, SimulationTime=0;
+    bool bAlignmentValid=false, bComplete=false;
+    FString QualitySummary;
+};
 
 UENUM(BlueprintType)
 enum class EAssemblyLineStage : uint8 { Idle, Wheels, Transfer, Door, Complete, Stopped, Fault };
@@ -28,8 +37,20 @@ public:
     UPROPERTY(VisibleAnywhere, Transient) int32 MountedDoorCount = 0;
     UPROPERTY(VisibleAnywhere, Transient) bool bFourDoorMode = false;
     UPROPERTY(Transient) TObjectPtr<ADoorAssemblyCell> SecondDoorCell;
+    // Resolved by the factory adapter. Standalone legacy maps may leave this empty.
+    UPROPERTY(Transient) TArray<TObjectPtr<ARobotArm>> DoorTaskRobots;
+    UPROPERTY(Transient) TArray<TObjectPtr<AVehicleProcessModule>> DoorModules;
+    TMap<FString,FDoorOperationSnapshot> CompletedDoorOperations;
+    TMap<int32,FVector> DoorSupplyOffsetsWorldCm;
+    ADoorAssemblyCell* ActiveDoorCell(const FString& TaskId) const;
+    TMap<FString,FAssemblyOperationRequest> DoorRequests;
+    bool StartDoorOperation(ADoorAssemblyCell* Cell);
+    bool DoorSnapshot(const FString& TaskId, FDoorOperationSnapshot& Out) const;
+    void CaptureDoorResult(ADoorAssemblyCell* Cell);
     UPROPERTY(EditAnywhere) FTransform VehicleAtWheelStation;
     UPROPERTY(EditAnywhere) FTransform CarriageAtWheelStation;
+    UPROPERTY(EditAnywhere, Category="Assembly|Placement", meta=(ClampMin="0",ClampMax="80",Units="cm")) double WheelStationLiftCm=20;
+    FTransform WheelStationPose() const {auto P=VehicleAtWheelStation;P.AddToTranslation(FVector(0,0,WheelStationLiftCm));return P;}
     UPROPERTY(EditAnywhere) FVector DoorStationOffsetCm = FVector(1000,0,0);
     UPROPERTY(EditAnywhere) double TransferSeconds = 10;
     UPROPERTY(EditAnywhere) double DockSeconds = 1;
@@ -45,8 +66,9 @@ public:
     virtual void BeginPlay() override;
     virtual void Tick(float Seconds) override;
 protected:
+    UPROPERTY() TArray<TObjectPtr<class UStaticMeshComponent>> LiftSupports;
+    void UpdateLiftSupports();
     FTransform DoorSupplyWorld;
-    UPROPERTY(Transient) TArray<TObjectPtr<AVehicleProcessModule>> DoorModules;
     UPROPERTY(Transient) TObjectPtr<ARobotArm> LeftDoorRobot;
     FTransform BaselineTCPInLeftDoor;
     FTransform SecondDoorSupplyWorld;

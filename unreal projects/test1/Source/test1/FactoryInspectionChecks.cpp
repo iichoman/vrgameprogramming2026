@@ -51,6 +51,11 @@ bool AFactoryRuntime::RunInspectionChecks()
     CloseRobotPopup();SelectObject(FString());RefreshInspection();UpdateObjectHighlights();
 
     Layout=Original;RunState=InitialState;SelectObject(Robot);RefreshInspection();FocusWorkcell();CreatePanel();
+    const auto RetainedInspection=InspectionState;
+    EndPlay(EEndPlayReason::EndPlayInEditor);
+    Check(TEXT("end_play_releases_material_roots_even_if_inspector_is_retained"),!InspectionState.IsValid()
+        &&RetainedInspection&&!RetainedInspection->SelectedMaterial.IsValid()&&!RetainedInspection->IssueMaterial.IsValid()
+        &&RetainedInspection->OriginalOverlays.IsEmpty());
     auto Report=MakeShared<FJsonObject>();Report->SetBoolField(TEXT("success"),Pass);Report->SetArrayField(TEXT("checks"),Checks);
     Report->SetStringField(TEXT("scope"),TEXT("Native inspector/telemetry/real mesh overlay and synthetic Slate input checks; no physical sensor validation."));
     FString Json;FJsonSerializer::Serialize(Report,TJsonWriterFactory<>::Create(&Json));

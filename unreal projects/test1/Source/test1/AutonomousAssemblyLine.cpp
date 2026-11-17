@@ -43,6 +43,7 @@ void AAutonomousAssemblyLine::SetFactoryCheck(int32 Kind)
     if (WheelCell)
     {
         WheelCell->bPhysicalLeftGrip = FactoryCheck >= 6 && FactoryCheck <= 8;
+        WheelCell->bDemoRecoveryEnabled = FactoryCheck == 7 || FactoryCheck == 8; // Explicit legacy recovery presentation only.
         WheelCell->bLowFrictionGrip = FactoryCheck == 7;
         WheelCell->FrontLeftWheelMassKg = FactoryCheck == 8 ? 90.0 : 18.0;
         WheelCell->FrontLeftWheelSizeScale = FactoryCheck == 9 ? 1.12 : FactoryCheck == 10 ? 0.88 : 1.0;

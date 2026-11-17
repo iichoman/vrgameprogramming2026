@@ -2,6 +2,12 @@
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/BoxComponent.h"
+#include "HAL/PlatformTime.h"
+#include "CoreGlobals.h"
+#include "Engine/World.h"
+#include "Misc/ScopeExit.h"
+#include "Misc/App.h"
+#include "RobotCommercialProfile.h"
 
 ARobotArm::ARobotArm()
 {
@@ -41,10 +47,20 @@ void ARobotArm::BeginPlay() { Super::BeginPlay(); if (!bInitialized) InitializeA
 bool ARobotArm::InitializeArm()
 {
 	bInitialized = false;
+    PendingMotion.Reset();ActiveTrajectory=FRobotMotionTrajectory();
+    MotionPath.Reset();MotionDurations.Reset();MotionIndex=0;MotionScene=FRobotMotionScene();SceneAge=0;
+    MotionPart.Reset(); bMotionHolding=false; bMotionBlocked=false; PreferredIKSeedDegrees.Reset();
 	Definitions.Reset(); Angles.Reset(); Targets.Reset(); Controllers.Reset();
 	if (Joints.Num()!=6 || InitialAnglesDegrees.Num()!=6 || MeshBindings.Num()>Visuals.Num()
 		|| !GetActorTransform().IsValid() || !GetActorScale3D().Equals(FVector::OneVector,1.e-6))
 	{ LastStatus=TEXT("Six calibrated joints, six initial angles, and unit actor scale required."); return false; }
+    const auto PreviousSetup=Joints;
+    if(!RobotCommercialProfile::Apply(*this,LastStatus))return false;
+    bool InitializationCommitted=false;
+    ON_SCOPE_EXIT{if(!InitializationCommitted)Joints=PreviousSetup;};
+    bool ReferenceEnvelopeChanged=false;
+    for(int I=0;I<6;++I)ReferenceEnvelopeChanged|=PreviousSetup[I].MinimumDegrees!=Joints[I].MinimumDegrees||PreviousSetup[I].MaximumDegrees!=Joints[I].MaximumDegrees;
+    bool NeedsInitialSolve=false;
 	for (int32 i=0;i<6;++i)
 	{
 		const auto& J=Joints[i];
@@ -56,15 +72,33 @@ bool ARobotArm::InitializeArm()
 		const double Q=FMath::DegreesToRadians(InitialAnglesDegrees[i]);
 		if (!D.HomeLocal.IsValid() || !D.HomeLocal.GetScale3D().Equals(FVector::OneVector,1.e-6)
 			|| D.AxisLocal.ContainsNaN() || D.AxisLocal.IsNearlyZero() || !FMath::IsFinite(Q)
-			|| Q<D.MinRadians || Q>D.MaxRadians || D.MinRadians>=D.MaxRadians
+			|| D.MinRadians>=D.MaxRadians
 			|| D.MaxVelocityRadians<=0 || D.MaxAccelerationRadians<=0)
 		{ LastStatus=TEXT("Invalid joint calibration or initial angle."); return false; }
+        NeedsInitialSolve|=Q<D.MinRadians-1.e-8||Q>D.MaxRadians+1.e-8;
+        if((Q<D.MinRadians-1.e-8||Q>D.MaxRadians+1.e-8)&&!ReferenceEnvelopeChanged)
+        {LastStatus=TEXT("초기 관절 각도가 설정 범위 밖입니다.");return false;}
 		D.AxisLocal.Normalize(); Definitions.Add(D); Angles.Add(Q); Targets.Add(Q);
 		FRobotJointState Controller; Controller.AngleRadians=Q; Controllers.Add(Controller);
 	}
 	FTransform Test;
 	if (!FRobotKinematics::ForwardKinematics(Definitions,Angles,ToolInLastJointCm,Test))
 	{ LastStatus=TEXT("Invalid TCP calibration."); return false; }
+    if(NeedsInitialSolve)
+    {
+        // Reset/configuration only: preserve the requested TCP if a previously
+        // saved demo branch lies outside the selected reference envelope.
+        FRobotIKSettings Settings;Settings.MaxRestarts=8;Settings.PositionToleranceCm=.01;Settings.OrientationToleranceRadians=.0002;
+        auto Sol=FRobotKinematics::SolveInverseKinematics(Definitions,ToolInLastJointCm,Test,Angles,Settings);
+        if(!Sol.IsSuccess())
+        {
+            LastStatus=TEXT("초기 자세가 참조 관절 범위 밖이며 동일 TCP의 IK 해를 찾지 못했습니다.");
+            UE_LOG(LogTemp,Warning,TEXT("MOTION_INITIAL_REJECT %s q=%s residual=%.3fcm"),*GetName(),*FString::JoinBy(InitialAnglesDegrees,TEXT(","),[](double Q){return FString::Printf(TEXT("%.2f"),Q);}),Sol.PositionErrorCm);
+            return false;
+        }
+        Angles=Targets=Sol.JointRadians;
+        for(int I=0;I<6;++I){InitialAnglesDegrees[I]=FMath::RadiansToDegrees(Angles[I]);Controllers[I].AngleRadians=Angles[I];}
+    }
 	for (int32 i=0;i<Visuals.Num();++i)
 	{
 		const bool Active=MeshBindings.IsValidIndex(i) && MeshBindings[i].Mesh;
@@ -79,7 +113,7 @@ bool ARobotArm::InitializeArm()
 		DropCollisionBoxes[i]->SetBoxExtent(Bounds.GetExtent()*0.85);
 		DropCollisionBoxes[i]->SetRelativeLocation(Bounds.GetCenter());
 	}
-	SegmentDuration=0; SegmentElapsed=0; bInitialized=true; UpdateVisuals();
+	SegmentDuration=0; SegmentElapsed=0; bInitialized=true; InitializationCommitted=true; UpdateVisuals();
 	LastStatus=TEXT("Calibrated. PID velocity servo with simplified motor response."); return true;
 }
 
@@ -100,30 +134,11 @@ FTransform ARobotArm::GetTCPWorld() const
 		? Local*GetActorTransform() : GetActorTransform();
 }
 
-bool ARobotArm::CommandTCPWorld(const FTransform& World)
+void ARobotArm::SetMotionPart(USceneComponent* Part,bool Held)
 {
-	if (!bInitialized || !World.IsValid() || !World.GetScale3D().Equals(FVector::OneVector,1.e-6))
-	{ LastStatus=TEXT("Invalid TCP command or uninitialized robot."); return false; }
-	FRobotIKSettings IK; IK.PositionToleranceCm=0.03; IK.OrientationToleranceRadians=0.001;
-	const auto Solution=FRobotKinematics::SolveInverseKinematics(Definitions,ToolInLastJointCm,
-		World.GetRelativeTransform(GetActorTransform()),Angles,IK);
-	LastIKIterations=Solution.Iterations;
-	if (Solution.Status!=ERobotIKStatus::Success)
-	{
-		LastStatus=FString::Printf(TEXT("IK failed: status %d, position %.2f mm, orientation %.2f deg."),
-			int32(Solution.Status),Solution.PositionErrorCm*10,FMath::RadiansToDegrees(Solution.OrientationErrorRadians));
-		return false;
-	}
-	SegmentStart=Angles; Targets=Solution.JointRadians; SegmentElapsed=0; SegmentDuration=0.25;
-	for (int32 i=0;i<6;++i)
-	{
-		const double Distance=FMath::Abs(Targets[i]-Angles[i]);
-		// Quintic smoothstep has peak normalized speed 1.875 and acceleration < 6.
-		SegmentDuration=FMath::Max(SegmentDuration,1.875*Distance/Definitions[i].MaxVelocityRadians);
-		SegmentDuration=FMath::Max(SegmentDuration,FMath::Sqrt(6*Distance/Definitions[i].MaxAccelerationRadians));
-	}
-	LastStatus=TEXT("IK solved; tracking joint trajectory with PID."); UpdateVisuals(); return true;
+    MotionPart=Part;bMotionHolding=Held;
 }
+#include "RobotMotionPlanning.inl"
 
 bool ARobotArm::CommandJointDegrees(const TArray<double>& AnglesDegrees)
 {
@@ -137,21 +152,14 @@ bool ARobotArm::CommandJointDegrees(const TArray<double>& AnglesDegrees)
 		{ LastStatus = TEXT("Joint-space target exceeds calibrated range."); return false; }
 		NewTargets.Add(Value);
 	}
-	SegmentStart = Angles; Targets = MoveTemp(NewTargets); SegmentElapsed = 0; SegmentDuration = 0.25;
-	for (int32 Index = 0; Index < Targets.Num(); ++Index)
-	{
-		const double Travel = FMath::Abs(Targets[Index] - Angles[Index]);
-		SegmentDuration = FMath::Max(SegmentDuration, 1.875 * Travel / Definitions[Index].MaxVelocityRadians);
-		SegmentDuration = FMath::Max(SegmentDuration, FMath::Sqrt(6 * Travel / Definitions[Index].MaxAccelerationRadians));
-	}
-	LastStatus = TEXT("Tracking calibrated joint-space transit with PID.");
-	UpdateVisuals(); return true;
+    return PlanJointMove(NewTargets);
 }
 
 FTransform ARobotArm::GetTargetTCPWorld() const
 {
+	if(PendingMotion)return PendingMotion->Goal;
 	FTransform Local;
-	return bInitialized && FRobotKinematics::ForwardKinematics(Definitions, Targets, ToolInLastJointCm, Local)
+	return bInitialized && FRobotKinematics::ForwardKinematics(Definitions, MotionPath.IsEmpty()?Targets:MotionPath.Last(), ToolInLastJointCm, Local)
 		? Local * GetActorTransform() : GetActorTransform();
 }
 
@@ -160,29 +168,73 @@ bool ARobotArm::StepControl(double Dt)
 	if (!bInitialized || !FMath::IsFinite(Dt) || Dt<=0 || Dt>0.1
 		|| !FMath::IsFinite(Kp) || !FMath::IsFinite(Ki) || !FMath::IsFinite(Kd) || Kp<0 || Ki<0 || Kd<0
 		|| !FMath::IsFinite(MotorResponseSeconds) || MotorResponseSeconds<=0) return false;
-	SegmentElapsed+=Dt;
-	const double S=SegmentDuration>0 ? FMath::Clamp(SegmentElapsed/SegmentDuration,0.,1.) : 1.;
-	const double Blend=S*S*S*(10+S*(-15+6*S));
-	const double Rate=SegmentDuration>0 && S<1 ? 30*S*S*(1-S)*(1-S)/SegmentDuration : 0;
+    if(bMotionBlocked)return false;
+    SceneAge+=Dt;
+    if(SceneAge>=.1){MotionScene.Capture(*this,MotionPart.Get(),bMotionHolding);SceneAge=0;}
+    MotionScene.RefreshTransforms();
+    // Cold CAD acceleration structures are built off-thread before planning.
+    // Hold the current pose until ready, rather than counting asset preparation
+    // against the IK budget or accepting unchecked geometry. Headless tests wait.
+    if(!MotionScene.PrepareGeometry(!FApp::CanEverRender()))
+    {LastStatus=TEXT("충돌 형상 준비 중 · 로봇 대기");return true;}
+    if(PendingMotion&&!AdvanceMotionPlanning())return false;
+    const auto PreviousAngles=Angles;const auto PreviousControllers=Controllers;
+    SegmentElapsed+=Dt;
+    TArray<double> Reference=Targets,Feed;Feed.Init(0,Targets.Num());
+    if(ActiveTrajectory.Samples.Num()>1)ActiveTrajectory.Reference(SegmentElapsed,Reference,Feed);
 	FRobotJointControllerSettings Settings; Settings.Kp=Kp; Settings.Ki=Ki; Settings.Kd=Kd; Settings.VelocityResponseSeconds=MotorResponseSeconds;
-	for (int32 i=0;i<6;++i)
-	{
-		const double Start=SegmentStart.IsValidIndex(i) ? SegmentStart[i] : Targets[i];
-		const double Goal=Start+(Targets[i]-Start)*Blend;
-		if (!FRobotJointController::Step(Definitions[i],Settings,Goal,(Targets[i]-Start)*Rate,Dt,Controllers[i])) return false;
+    TArray<FTransform> JointFrames;FTransform TCP;
+    if(bTorqueDynamics&&!FRobotKinematics::ForwardKinematics(Definitions,Angles,ToolInLastJointCm,TCP,&JointFrames))return false;
+    AppliedJointTorqueNm.SetNumZeroed(6);
+    for (int32 i=0;i<6;++i)
+    {
+        const double Goal=Reference[i];
+        if(bTorqueDynamics)
+        {
+            const auto Frame=JointFrames[i]*GetActorTransform();
+            const FVector Axis=Frame.TransformVectorNoScale(Definitions[i].AxisLocal);
+            const double Load=FVector::DotProduct(Axis,FVector::CrossProduct((ForcePointWorldCm-Frame.GetLocation())/100,ToolReactionForceN)+ToolReactionTorqueNm);
+            if(!FRobotTorquePlant::Step(Definitions[i],Goal,Feed[i],i<3?40:4,
+                (i<3?4000:400)*TorqueLimitScale,Load,Dt,Controllers[i],AppliedJointTorqueNm[i]))return false;
+        }
+        else if (!FRobotJointController::Step(Definitions[i],Settings,Goal,Feed[i],Dt,Controllers[i])) return false;
 		Angles[i]=Controllers[i].AngleRadians;
 	}
-	UpdateVisuals(); return true;
+    FString Collision;
+    FTransform ActualTCP;FRobotKinematics::ForwardKinematics(Definitions,Angles,ToolInLastJointCm,ActualTCP);
+    const bool InCorridor=ActiveTrajectory.InCorridor(ActualTCP*GetActorTransform());
+    if(!InCorridor||!MotionScene.Clear(*this,Angles,Collision))
+    {
+        if(!InCorridor)Collision=TEXT("삽입 자세/직선 허용 오차 초과 · 강제 체결 차단");
+        Angles=PreviousAngles;Controllers=PreviousControllers;Halt();bMotionBlocked=true;
+        for(auto& C:Controllers)C.VelocityRadians=0;
+        LastStatus=TEXT("운행 중 간섭 정지 · ")+Collision;
+        UE_LOG(LogTemp,Warning,TEXT("MOTION_STOP %s %s"),*GetName(),*LastStatus);return false;
+    }
+    UpdateVisuals(); return true;
 }
 
 void ARobotArm::Halt()
 {
-	Targets=Angles; SegmentStart=Angles; SegmentDuration=0; SegmentElapsed=0;
-	for (auto& C:Controllers) { C.VelocityRadians=0; C.IntegralErrorSeconds=0; }
+    PendingMotion.Reset();ActiveTrajectory=FRobotMotionTrajectory();
+	MotionPath.Reset();
+    Targets=Angles; SegmentStart=Angles; SegmentDuration=0; SegmentElapsed=0;
+	for (auto& C:Controllers) { if(!bTorqueDynamics)C.VelocityRadians=0; C.IntegralErrorSeconds=0; }
 	LastStatus=TEXT("Stopped: simulated drive hold. Reset required."); UpdateVisuals();
 }
 
 bool ARobotArm::IsAtJointTarget(double ToleranceDegrees) const
+{
+	return !IsMotionPlanning()&&!bMotionBlocked&&MotionIndex+1>=MotionPath.Num()&&SegmentSettled(ToleranceDegrees);
+}
+
+void ARobotArm::EndPlay(const EEndPlayReason::Type Reason)
+{
+    PendingMotion.Reset();ActiveTrajectory=FRobotMotionTrajectory();MotionScene=FRobotMotionScene();
+    Super::EndPlay(Reason);
+}
+
+bool ARobotArm::SegmentSettled(double ToleranceDegrees) const
 {
 	if (!bInitialized || Angles.Num()!=Targets.Num() || SegmentElapsed<SegmentDuration) return false;
 	for (int32 i=0;i<Angles.Num();++i)
@@ -199,6 +251,6 @@ void ARobotArm::UpdateVisuals()
 		FTransform Relative=Definitions[i].HomeLocal;
 		Relative.SetRotation((Relative.GetRotation()*FQuat(Definitions[i].AxisLocal,Angles[i])).GetNormalized());
 		JointNodes[i]->SetRelativeTransform(Relative);
-		CurrentAnglesDegrees.Add(FMath::RadiansToDegrees(Angles[i])); TargetAnglesDegrees.Add(FMath::RadiansToDegrees(Targets[i]));
+		CurrentAnglesDegrees.Add(FMath::RadiansToDegrees(Angles[i])); TargetAnglesDegrees.Add(FMath::RadiansToDegrees(MotionPath.IsEmpty()?Targets[i]:MotionPath.Last()[i]));
 	}
 }

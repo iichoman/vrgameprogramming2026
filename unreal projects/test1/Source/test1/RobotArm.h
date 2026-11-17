@@ -3,6 +3,9 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "RobotControlMath.h"
+#include "RobotTorquePlant.h"
+#include "RobotMotionPlanner.h"
+#include "RobotMotionTrajectory.h"
 #include "RobotArm.generated.h"
 
 class UStaticMesh;
@@ -53,7 +56,17 @@ public:
 	UFUNCTION() bool InitializeArm();
 	UFUNCTION() FTransform GetTCPWorld() const;
 	UFUNCTION() bool CommandTCPWorld(const FTransform& TargetWorld);
-	/** Smooth joint-space transit between calibrated station poses. Angles are degrees. */
+    /** Accepts a queued fixed-orientation straight move; no tilt/detour fallback. */
+    bool CommandLinearTCPWorld(const FTransform& TargetWorld);
+    bool IsMotionPlanning() const { return PendingMotion.IsValid()||(SegmentDuration>0&&!bMotionBlocked&&!MotionScene.IsGeometryReady()); }
+    virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	/** Geometry context supplied by the task; touching a part is not a quality verdict. */
+	void SetMotionPart(USceneComponent* Part,bool Held);
+	TArray<double> PreferredIKSeedDegrees;
+	UPROPERTY(VisibleAnywhere, Transient, Category="Robot|Motion") double PlannedMotionSeconds=0;
+	UPROPERTY(VisibleAnywhere, Transient, Category="Robot|Motion") int32 PlannedWaypoints=0;
+	UPROPERTY(VisibleAnywhere, Transient, Category="Robot|Motion") bool bMotionBlocked=false;
+	/** Collision-checked joint-space move. Angles are degrees, tracked by the existing PID. */
 	UFUNCTION() bool CommandJointDegrees(const TArray<double>& AnglesDegrees);
 	UFUNCTION() FTransform GetTargetTCPWorld() const;
 	UFUNCTION() bool StepControl(double DeltaSeconds);
@@ -66,7 +79,11 @@ public:
 	virtual void BeginPlay() override;
 	const TArray<FRobotJointDefinition>& GetDefinitions() const { return Definitions; }
 	const TArray<double>& GetAnglesRadians() const { return Angles; }
-	int32 LastIKIterations = 0;
+    bool bTorqueDynamics=false;
+    double TorqueLimitScale=1.0;
+    FVector ToolReactionForceN=FVector::ZeroVector, ToolReactionTorqueNm=FVector::ZeroVector, ForcePointWorldCm=FVector::ZeroVector;
+    TArray<double> AppliedJointTorqueNm;
+    int32 LastIKIterations = 0;
 private:
 	UPROPERTY() TObjectPtr<USceneComponent> ArmRoot;
 	UPROPERTY() TArray<TObjectPtr<USceneComponent>> JointNodes;
@@ -80,5 +97,18 @@ private:
 	double SegmentElapsed = 0;
 	double SegmentDuration = 0;
 	bool bInitialized = false;
+	FRobotMotionScene MotionScene;
+	TWeakObjectPtr<USceneComponent> MotionPart;
+	bool bMotionHolding=false;
+	TArray<TArray<double>> MotionPath;
+	TArray<double> MotionDurations;
+	int32 MotionIndex=0;
+	double SceneAge=0;
+	TSharedPtr<FRobotMotionRequest> PendingMotion;
+	FRobotMotionTrajectory ActiveTrajectory;
+	bool QueueTCPMotion(const FTransform& World,bool bLinear);
+	bool AdvanceMotionPlanning();
+	bool PlanJointMove(const TArray<double>& Goal);
+	bool SegmentSettled(double ToleranceDegrees) const;
 	void UpdateVisuals();
 };

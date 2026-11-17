@@ -1,7 +1,9 @@
 #include "WheelAssemblyCell.h"
+#include "ReducedPartPhysics.h"
 #include "WheelGripPhysics.h"
 #include "CamryAssembly.h"
 #include "RobotArm.h"
+#include "WheelGripperGeometry.h"
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/SphereComponent.h"
@@ -391,8 +393,6 @@ bool AWheelAssemblyCell::ValidateSetup()
 	for (int32 Side = 0; Side < LaneCount(); ++Side)
 	{
 		if(!LaneEnabled(Side))continue;
-		if ((UsesTaskBindings()?RearTransit[TaskQueue[Side].Last()]:(Side == 0 ? LeftRearApproachAnglesDegrees : RightRearApproachAnglesDegrees)).Num() != 6)
-		{ Status = TEXT("Both rear station joint targets require six angles."); return false; }
 		RobotAtStart[Side] = RobotFor(Side)->GetActorTransform();
 		if (!RobotAtStart[Side].IsValid() || !RobotAtStart[Side].GetScale3D().Equals(FVector::OneVector, 1.e-6))
 		{ Status = TEXT("Robot base must have a valid rigid transform."); return false; }
@@ -402,6 +402,9 @@ bool AWheelAssemblyCell::ValidateSetup()
 
 bool AWheelAssemblyCell::ResetCycle()
 {
+    if(LeftRobot)WheelGripperGeometry::Configure(*LeftRobot);
+    if(RightRobot)WheelGripperGeometry::Configure(*RightRobot);
+    for(auto R:TaskRobots)if(IsValid(R))WheelGripperGeometry::Configure(*R);
 	if (LeftRobot) LeftRobot->Halt();
 	if (RightRobot) RightRobot->Halt();
     for(auto R:TaskRobots)if(IsValid(R))R->Halt();
@@ -415,6 +418,7 @@ bool AWheelAssemblyCell::ResetCycle()
 	if (!ValidateSetup() || !LeftRobot->InitializeArm() || !RightRobot->InitializeArm())
 	{ Outcome = EWheelOutcome::Blocked; Status += TEXT(" Robot calibration failed or references missing."); return false; }
 	for(int32 S=0;S<LaneCount();++S)if(LaneEnabled(S)&&!RobotFor(S)->InitializeArm())return false;
+
 	if (bEnableTransport)
 	{
 		if (!IsValid(TransportCarriage) || TransportCarriage == Assembly || TransportCarriage == LeftRobot || TransportCarriage == RightRobot
@@ -513,12 +517,9 @@ bool AWheelAssemblyCell::BeginWheel(int32 Side)
     { Fail(TEXT("왼쪽 앞 허브 레이저 스캔 실패 · ")+FrontLeftHubScan.FailureReason); return false; }
     if (Lane.WheelIndex == 0 && bLaserScanFrontLeftHub) FrontLeftDockScan=FrontLeftHubScan;
     auto* Sensors=SensorsFor(Side);
-    // Rear-only robots first move through the calibrated, base-adjusted transit pose.
-    if(UsesTaskBindings()&&Lane.Completed==0&&Lane.Stage==EWheelStage::Idle&&Lane.WheelIndex%2==1)
-    {
-        if(!RobotFor(Side)->CommandJointDegrees(RearTransit[Lane.WheelIndex])){Fail(RobotFor(Side)->LastStatus);return false;}
-        Lane.TargetTCP=RobotFor(Side)->GetTargetTCPWorld();SetStage(Side,EWheelStage::Reposition,TEXT("후방 작업 접근"));return true;
-    }
+    // Rear calibration is an IK seed, not a mandatory physical detour.
+    RobotFor(Side)->PreferredIKSeedDegrees=Lane.WheelIndex%2==1
+        ?(UsesTaskBindings()?RearTransit[Lane.WheelIndex]:(Side==0?LeftRearApproachAnglesDegrees:RightRearApproachAnglesDegrees)):TArray<double>();
 	Lane.bHeld = false; Lane.bFastened = false; Lane.Corrections = 0;
 	Lane.GripAttempts = 0; Lane.bGripCommanded = false; Lane.GripCommandTime = 0;
 	if (SensorDrivenLane(Side))
@@ -571,7 +572,11 @@ bool AWheelAssemblyCell::MoveTo(int32 Side, EWheelStage Next, const FTransform& 
 	FWheelLane& Lane = Lanes[Side];
 	Lane.TargetWheel = WheelTarget;
 	Lane.TargetTCP = (Lane.bHeld ? Lane.WheelInTCP.Inverse() : TCPFor(Side)) * WheelTarget;
-	if (!RobotFor(Side)->CommandTCPWorld(Lane.TargetTCP))
+    RobotFor(Side)->SetMotionPart(WheelRoots[PartIndex(Lane.WheelIndex)],Lane.bHeld);
+    const bool Linear=Next==EWheelStage::Align||Next==EWheelStage::Retract
+        ||(Next==EWheelStage::ApproachMount&&Lane.Stage==EWheelStage::Align);
+    if(Next==EWheelStage::Retract)Lane.TargetTCP.SetRotation(RobotFor(Side)->GetTCPWorld().GetRotation());
+	if (!(Linear?RobotFor(Side)->CommandLinearTCPWorld(Lane.TargetTCP):RobotFor(Side)->CommandTCPWorld(Lane.TargetTCP)))
 	{
 		Fail(FString::Printf(TEXT("%s arm IK: %s"), Side == 0 ? TEXT("Left") : TEXT("Right"), *RobotFor(Side)->LastStatus));
 		return false;
@@ -681,7 +686,7 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
 			return;
 		}
 	}
-	Lane.StageTime += Dt;
+	if(!Robot->IsMotionPlanning())Lane.StageTime += Dt;
 	if (Lane.StageTime > StageTimeoutSeconds)
 	{
 		const FTransform Actual = Robot->GetTCPWorld();
@@ -698,7 +703,7 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
 	if (!SensorDriven && !Lane.bHeld && (Lane.Stage == EWheelStage::ApproachPickup || Lane.Stage == EWheelStage::Grip)
 		&& !GetWheelWorld(Lane.WheelIndex).Equals(Lane.Pickup, 1.e-5))
 	{ Fail(TEXT("Wheel moved during pickup.")); return; }
-	if (!Robot->StepControl(Dt)) { Fail(TEXT("Robot servo failed.")); return; }
+	if (!Robot->StepControl(Dt)) { Fail(Robot->LastStatus); return; }
 	if (Lane.bHeld && !Lane.bFastened)
     {
         FTransform Target = Lane.WheelInTCP * Robot->GetTCPWorld();
@@ -714,8 +719,10 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
         {
             bLeftWheelSlipFall = true;
             LeftWheelSlipFallSeconds = 0;
-            LeftWheelSlipVelocityCmps = BodyAtStart.TransformVectorNoScale(FVector(0,-100,0));
+            LeftWheelSlipVelocityCmps = Lane.GripVelocity * 100.0;
+            DroppedContactStableSeconds=0;
             Lane.bHeld = false;
+            Robot->SetMotionPart(WheelRoots[PartIndex(Lane.WheelIndex)],false);
             if (Sensors) Sensors->CommandGrip(false);
 			SlipFailureMassKg=FrontLeftWheelMassKg;bSlipFailureLowFriction=bLowFrictionGrip;
 			SlipRecoveryPhase=1;SlipRecoveryPhaseSeconds=0;
@@ -737,6 +744,11 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
         }
     }
 	Lane.LastCarried = GetWheelWorld(Lane.WheelIndex);
+    if(Lane.Stage==EWheelStage::Align&&Lane.bHeld
+        &&FMath::RadiansToDegrees(Lane.LastCarried.GetRotation().AngularDistance(Lane.TargetWheel.GetRotation()))>OrientationToleranceDeg)
+    {Fail(TEXT("삽입 중 휠 각도 이탈 · 체결 차단"));return;}
+    if(Robot->IsMotionPlanning())
+    {Lane.StableTime=0;Status=StaticEnum<EWheelStage>()->GetNameStringByValue(int64(Lane.Stage))+TEXT(" · ")+Robot->LastStatus;return;}
 	const FTransform CurrentTCP = Robot->GetTCPWorld();
 	const double TCPErrorMm = FVector::Distance(CurrentTCP.GetLocation(), Lane.TargetTCP.GetLocation()) * 10;
 	const double TCPErrorDeg = FMath::RadiansToDegrees(CurrentTCP.GetRotation().AngularDistance(Lane.TargetTCP.GetRotation()));
@@ -752,6 +764,7 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
 		if (Lane.StageTime >= FasteningSeconds)
 		{
 			Lane.bFastened = true; FastenedWheels[Lane.WheelIndex] = true; ++MountedCount;
+            if(Lane.Completed+1<(UsesTaskBindings()?TaskQueue[Side].Num():2))Lane.NextPickupStartedAt=SimulationTimeSeconds;
 			FastenedInBody[Lane.WheelIndex] = GetWheelWorld(Lane.WheelIndex).GetRelativeTransform(Assembly->GetBodyFrame()->GetComponentTransform());
 			SetStage(Side, EWheelStage::Release, TEXT("virtual fastening complete"));
 		}
@@ -813,7 +826,8 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
 			|| FMath::RadiansToDegrees(Contact.GetRotation().AngularDistance(CurrentTCP.GetRotation())) > OrientationToleranceDeg)
 		{ Fail(TEXT("Gripper contact mismatch.")); break; }
 		Lane.WheelInTCP = Lane.Pickup.GetRelativeTransform(CurrentTCP);
-		Lane.bHeld = true; Lane.LastCarried = Lane.Pickup;
+        if(Lane.NextPickupStartedAt>=0)Lane.NextPickupSeconds=SimulationTimeSeconds-Lane.NextPickupStartedAt;
+        Lane.bHeld = true; Lane.LastCarried = Lane.Pickup;
 		FTransform Lift = Lane.Pickup;
 		Lift.AddToTranslation(BodyAtStart.TransformVectorNoScale(FVector(0, 0, 25)));
 		MoveTo(Side, EWheelStage::Lift, Lift);
@@ -836,26 +850,42 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
 		}
 		MoveTo(Side, EWheelStage::ApproachMount, OffsetOutward(GetMountTargetWorld(Lane.WheelIndex), Side, 25)); break;
 	case EWheelStage::ApproachMount:
-		MoveTo(Side, EWheelStage::Align, GetMountTargetWorld(Lane.WheelIndex)); break;
+    {
+        if(SensorDriven&&!Sensors->MountPose.Fresh(SimulationTimeSeconds,Sensors->MaxAge))
+        {Fail(TEXT("삽입 전 휠 자세 측정 만료"));break;}
+        FTransform Measured=SensorDriven?Sensors->MountPose.Pose:GetWheelWorld(Lane.WheelIndex);
+        Measured.AddToTranslation(BodyAtStart.TransformVectorNoScale(SensorBiasMm/10.));
+        const FTransform Outside=OffsetOutward(GetMountTargetWorld(Lane.WheelIndex),Side,25);
+        const FVector Residual=Outside.GetLocation()-Measured.GetLocation();
+        const double Angle=FMath::RadiansToDegrees(Outside.GetRotation().AngularDistance(Measured.GetRotation()));
+        if(Residual.Size()*10>PositionToleranceMm||Angle>OrientationToleranceDeg)
+        {
+            if(++Lane.Corrections>8){Fail(TEXT("장착 바깥 휠 사전 정렬 실패"));break;}
+            auto Corrected=Lane.TargetWheel;Corrected.AddToTranslation(Residual);
+            Corrected.SetRotation((Outside.GetRotation()*Measured.GetRotation().Inverse()*Corrected.GetRotation()).GetNormalized());
+            MoveTo(Side,EWheelStage::ApproachMount,Corrected);break;
+        }
+        auto Insert=Lane.TargetWheel;
+        Insert.AddToTranslation(GetMountTargetWorld(Lane.WheelIndex).GetLocation()-Outside.GetLocation());
+        MoveTo(Side,EWheelStage::Align,Insert);break;
+    }
 	case EWheelStage::Align:
 	{
 		if (SensorDriven && !Sensors->MountPose.Fresh(SimulationTimeSeconds, Sensors->MaxAge))
 		{ Fail(TEXT("Left robot: mount pose reading stale.")); break; }
 		const FVector Measured = (SensorDriven ? Sensors->MountPose.Pose : GetWheelWorld(Lane.WheelIndex)).GetLocation()
 			+ BodyAtStart.TransformVectorNoScale(SensorBiasMm / 10.0);
-		const FVector Residual = GetMountWorld(Lane.WheelIndex).GetLocation() - Measured;
+		const FVector Residual = GetMountTargetWorld(Lane.WheelIndex).GetLocation() - Measured;
 		if (Residual.Length() * 10 > PositionToleranceMm)
 		{
 			if (++Lane.Corrections > 8) { Fail(TEXT("Sensor alignment did not converge.")); break; }
-			FTransform Corrected = Lane.TargetWheel;
-			Corrected.AddToTranslation(Residual);
-			MoveTo(Side, EWheelStage::Align, Corrected); break;
+            MoveTo(Side,EWheelStage::ApproachMount,OffsetOutward(Lane.TargetWheel,Side,25));break;
 		}
 		if (ControlMode == EWheelControlMode::IndependentVerification)
 		{
 			if (!bVerificationSensorValid) { Fail(TEXT("Independent verification sensor invalid; fastening blocked.")); break; }
 			RefreshQuality();
-			const FTransform Verified = SensorDriven ? Sensors->MountPose.Pose : GetWheelWorld(Lane.WheelIndex);
+			const FTransform Verified = GetWheelWorld(Lane.WheelIndex); // Ideal independent evaluator, not a second hardware sensor.
 			const FTransform Mount = GetMountWorld(Lane.WheelIndex);
 			const double VerifiedMm = FVector::Distance(Verified.GetLocation(), Mount.GetLocation()) * 10;
 			const double VerifiedDeg = FMath::RadiansToDegrees(Verified.GetRotation().AngularDistance(Mount.GetRotation()));
@@ -866,14 +896,11 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
 	}
 	case EWheelStage::Retract:
 		++Lane.Completed;
-		if (Lane.Completed < (UsesTaskBindings()?TaskQueue[Side].Num():2))
-		{
-			if(UsesTaskBindings()&&TaskQueue[Side][Lane.Completed]%2==0){BeginWheel(Side);break;}
-            const TArray<double>& RearAngles = UsesTaskBindings()?RearTransit[TaskQueue[Side][Lane.Completed]]:(Side == 0 ? LeftRearApproachAnglesDegrees : RightRearApproachAnglesDegrees);
-			if (!Robot->CommandJointDegrees(RearAngles)) { Fail(Robot->LastStatus); break; }
-			Lane.TargetTCP = Robot->GetTargetTCPWorld();
-			SetStage(Side, EWheelStage::Reposition, TEXT("joint-space transit to rear station"));
-		}
+        if (Lane.Completed < (UsesTaskBindings()?TaskQueue[Side].Num():2))
+        {
+            if(Lane.NextPickupStartedAt<0)Lane.NextPickupStartedAt=SimulationTimeSeconds;
+            BeginWheel(Side);
+        }
 		else SetStage(Side, EWheelStage::Complete, TEXT("two wheels installed"));
 		break;
 	case EWheelStage::Reposition:
@@ -886,11 +913,19 @@ bool AWheelAssemblyCell::AdvanceSimulation(double DeltaSeconds)
 {
 	if (!FMath::IsFinite(DeltaSeconds) || DeltaSeconds < 0 || DeltaSeconds > 1 || FixedStepSeconds <= 0 || FixedStepSeconds > 0.02) return false;
 	UpdateFastenedWheels();
-	if (!bRunning) return true;
-	Accumulator += DeltaSeconds;
-	while (bRunning && Accumulator + 1.e-10 >= FixedStepSeconds)
+	if (!bRunning && !HasPassiveWork()) return true;
+    Accumulator += DeltaSeconds;
+    while (Accumulator + 1.e-10 >= FixedStepSeconds)
 	{
 		Accumulator -= FixedStepSeconds; SimulationTimeSeconds += FixedStepSeconds;
+        AdvanceFrontLeftWheelReject(FixedStepSeconds);
+        if(!bRunning)
+        {
+            AdvanceLeftWheelSlipFall(FixedStepSeconds);
+            for(int32 I=0;I<LaneCount();++I) if(auto* S=SensorsFor(I)) S->Sample(SimulationTimeSeconds,this,Lanes[I].WheelIndex);
+            RefreshQuality();
+            continue;
+        }
 		if(SlipRecoveryPhase>0)
 		{
 			AdvanceSlipRecovery(FixedStepSeconds);
@@ -995,27 +1030,32 @@ void AWheelAssemblyCell::UpdateFastenedWheels()
 void AWheelAssemblyCell::AdvanceLeftWheelSlipFall(double DeltaSeconds)
 {
 	if(!bLeftWheelSlipFall||!DroppedWheelCollision||!GetWorld())return;
-	const double Dt=FMath::Clamp(DeltaSeconds,0.0,0.02);
+	const double Dt=DeltaSeconds;
+    if(!FMath::IsFinite(Dt)||Dt<=0||Dt>0.02)return;
 	LeftWheelSlipFallSeconds+=Dt;
-	LeftWheelSlipVelocityCmps.Z-=981.0*Dt;
-	const FVector Start=DroppedWheelCollision->GetComponentLocation();
-	const FVector End=Start+LeftWheelSlipVelocityCmps*Dt;
+	const FVector Start=GetWheelWorld(0).GetLocation();
+    FVector VelocityMps=LeftWheelSlipVelocityCmps/100.0;
+    const FVector End=Start+100.0*ReducedPartPhysics::FreeFlightDisplacement(VelocityMps,Dt);
+    LeftWheelSlipVelocityCmps=VelocityMps*100.0;
 	FCollisionQueryParams Params(SCENE_QUERY_STAT(DroppedWheelSweep),false,this);
 	if(LeftWheelSlipFallSeconds<0.12)Params.AddIgnoredActor(RobotForWheel(0));
 	FHitResult Hit;
 	if(GetWorld()->SweepSingleByChannel(Hit,Start,End,FQuat::Identity,ECC_PhysicsBody,
 		FCollisionShape::MakeSphere(30.0),Params))
 	{
-		const FVector Normal=Hit.ImpactNormal.GetSafeNormal();
-		DroppedWheelCollision->SetWorldLocation(Hit.Location+Normal*0.5);
-		const double Into=FVector::DotProduct(LeftWheelSlipVelocityCmps,Normal);
-		if(Into<0)LeftWheelSlipVelocityCmps-=Normal*Into*1.15;
-		LeftWheelSlipVelocityCmps*=Normal.Z>0.5?0.65:0.8;
+		const FVector Normal=(Hit.bStartPenetrating?Hit.Normal:Hit.ImpactNormal).GetSafeNormal();
+        DroppedWheelCollision->SetWorldLocation(Hit.bStartPenetrating
+            ? Start+Normal*(Hit.PenetrationDepth+0.001) : Hit.Location+Normal*0.001);
+		LeftWheelSlipVelocityCmps=100.0*ReducedPartPhysics::ContactVelocity(LeftWheelSlipVelocityCmps/100.0,Normal);
+        const bool Supported=Normal.Z>0.5 && LeftWheelSlipVelocityCmps.Size()<2.0;
+        DroppedContactStableSeconds=Supported ? DroppedContactStableSeconds+Dt : 0;
 		if(Normal.Z>0.5 && Hit.GetActor()!=RobotForWheel(0))bDroppedWheelHitSurface=true;
 	}
-	else DroppedWheelCollision->SetWorldLocation(End);
-	if(LeftWheelSlipFallSeconds>=2.0 && bDroppedWheelHitSurface)
-	{bLeftWheelSlipFall=false;LeftWheelSlipVelocityCmps=FVector::ZeroVector;}
+	else {DroppedWheelCollision->SetWorldLocation(End);DroppedContactStableSeconds=0;}
+    // One authoritative part pose; collision proxy and render geometry follow it.
+    WheelRoots[PartIndex(0)]->SetWorldLocation(DroppedWheelCollision->GetComponentLocation());
+    if(DroppedContactStableSeconds>=0.25)
+    {bLeftWheelSlipFall=false;LeftWheelSlipVelocityCmps=FVector::ZeroVector;}
 }
 void AWheelAssemblyCell::AdvanceSlipRecovery(double DeltaSeconds)
 {
@@ -1023,8 +1063,12 @@ void AWheelAssemblyCell::AdvanceSlipRecovery(double DeltaSeconds)
 	if(SlipRecoveryPhase==1)
 	{
 		AdvanceLeftWheelSlipFall(DeltaSeconds);
-		if(LeftWheelSlipFallSeconds<2.0)return;
-		if(!bDroppedWheelHitSurface){Fail(TEXT("낙하 휠 충돌면 미검출 · 작업자 수동 확인 필요"));return;}
+		if(bLeftWheelSlipFall)
+        {
+            if(LeftWheelSlipFallSeconds>10.0) Fail(FString::Printf(TEXT("낙하 휠 미안정 · 물리 갱신 지속, 작업자 확인 필요 · 속도 %s / 위치 %s / 안정 %.3fs"),*LeftWheelSlipVelocityCmps.ToString(),*GetWheelWorld(0).GetLocation().ToString(),DroppedContactStableSeconds));
+            return;
+        }
+        if(!bDemoRecoveryEnabled){Fail(TEXT("낙하 휠 안정 · 검사/부품 교체 요청 필요 (자동 수리 금지)"));return;}
 		SlipRecoveryPhase=2;SlipRecoveryPhaseSeconds=0;
 		SlipRecoveryTarget=DroppedWheelCollision->GetComponentLocation();
 		SlipWorkerStart=SlipRecoveryTarget+BodyAtStart.TransformVectorNoScale(FVector(-250,-200,0));
@@ -1056,6 +1100,7 @@ void AWheelAssemblyCell::AdvanceSlipRecovery(double DeltaSeconds)
 		const double Alpha=FMath::Clamp(SlipRecoveryPhaseSeconds/1.6,0.0,1.0);
 		const FVector Position=FMath::Lerp(SlipRecoveryStart,SlipRecoveryTarget,Alpha);
 		DroppedWheelCollision->SetWorldLocation(Position);
+        WheelRoots[PartIndex(0)]->SetWorldLocation(Position);
 		SlipRecoveryWorkerLocation=Position+FVector(0,0,90);
 		RecoveryWorkerVisual->SetWorldLocation(SlipRecoveryWorkerLocation);
 		RecoveryWorkerHeadVisual->SetWorldLocation(SlipRecoveryWorkerLocation+FVector(0,0,85));
@@ -1086,7 +1131,8 @@ void AWheelAssemblyCell::AdvanceSlipRecovery(double DeltaSeconds)
 			if(!LaneEnabled(Side)||Lanes[Side].Stage==EWheelStage::Complete)continue;
 			const bool Commanded=Lanes[Side].Stage==EWheelStage::Reposition
 				? RobotFor(Side)->CommandJointDegrees(RearTransit[Lanes[Side].WheelIndex])
-				: RobotFor(Side)->CommandTCPWorld(Lanes[Side].TargetTCP);
+				: (Lanes[Side].Stage==EWheelStage::Align||Lanes[Side].Stage==EWheelStage::Retract
+                    ? RobotFor(Side)->CommandLinearTCPWorld(Lanes[Side].TargetTCP):RobotFor(Side)->CommandTCPWorld(Lanes[Side].TargetTCP));
 			if(!Commanded){Fail(TEXT("회수 후 로봇 작업 재개 실패 · ")+RobotFor(Side)->LastStatus);return;}
 		}
 	}
@@ -1094,7 +1140,7 @@ void AWheelAssemblyCell::AdvanceSlipRecovery(double DeltaSeconds)
 void AWheelAssemblyCell::AdvanceFrontLeftWheelReject(double DeltaSeconds)
 {
 	if (!bFrontLeftWheelRejecting || !WheelRoots.IsValidIndex(PartIndex(0)) || !WheelRoots[PartIndex(0)]) return;
-	const double Dt=FMath::Clamp(DeltaSeconds,0.0,0.05);
+	const double Dt=DeltaSeconds;
 	if (Dt<=0) return;
 	WheelRejectElapsedSeconds+=Dt;
 	const double Alpha=FMath::Clamp(WheelRejectElapsedSeconds/1.8,0.0,1.0);
@@ -1112,7 +1158,7 @@ void AWheelAssemblyCell::BeginPlay() { Super::BeginPlay(); if (!bExternallyDrive
 void AWheelAssemblyCell::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
-	AdvanceFrontLeftWheelReject(DeltaSeconds);
+
 	if(GetWorld()&&(GetWorld()->WorldType==EWorldType::PIE||GetWorld()->WorldType==EWorldType::Game))
 	{
 		if(SlipRecoveryPhase>0)

@@ -2,6 +2,7 @@
 #include "AutonomousAssemblyLine.h"
 #include "WheelAssemblyCell.h"
 #include "DoorAssemblyCell.h"
+#include "VehicleProcessTest.h"
 #include "Kismet/GameplayStatics.h"
 #include "GameFramework/PlayerController.h"
 #include "DrawDebugHelpers.h"
@@ -40,6 +41,14 @@ bool AFactoryRuntime::TaskTargetWorld(const FString& Id,FVector& Out) const
 {
     const auto* S=FactoryTasks::Find(Id);const auto* L=TestAssemblyLine.Get();if(!S||!L)return false;
     if(S->WheelIndex!=INDEX_NONE&&L->WheelCell){Out=L->WheelCell->GetMountWorld(S->WheelIndex).GetLocation();return true;}
+    if(Id==TEXT("door_rl")||Id==TEXT("door_rr"))
+    {
+        const int I=Id==TEXT("door_rl")?1:3;
+        if(!L->DoorModules.IsValidIndex(I)||!L->DoorModules[I])return false;
+        const auto* M=L->DoorModules[I].Get();
+        const auto Local=M->GetActorTransform().InverseTransformPosition(M->GetComponentsBoundingBox(true).GetCenter());
+        Out=(M->ReferencePoseInVehicle*M->VehicleFrame->GetActorTransform()).TransformPosition(Local);return true;
+    }
     if(S->Operation==TEXT("door_install_demo"))
     {
         auto* D=Id==TEXT("door_fr")?RightDoorCell.Get():L->DoorCell.Get();FTransform Part;
