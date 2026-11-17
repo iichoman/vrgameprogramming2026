@@ -55,6 +55,9 @@ struct FWheelIncidentRecord
 	UPROPERTY(VisibleAnywhere) FString PartInstanceId;
 	UPROPERTY(VisibleAnywhere) int32 RunEpoch = INDEX_NONE;
 	UPROPERTY(VisibleAnywhere) FString PartId;
+	UPROPERTY(VisibleAnywhere) FString TaskId;
+	UPROPERTY(VisibleAnywhere) FString TargetPort;
+	UPROPERTY(VisibleAnywhere) FString SourcePort;
 	UPROPERTY(VisibleAnywhere) FString Stage;
 	UPROPERTY(VisibleAnywhere) double DetectedAt = -1;
 	UPROPERTY(VisibleAnywhere) FString Quantity;
@@ -65,6 +68,13 @@ struct FWheelIncidentRecord
 	UPROPERTY(VisibleAnywhere) FString Response;
 	UPROPERTY(VisibleAnywhere) FString Outcome = TEXT("pending");
 	UPROPERTY(VisibleAnywhere) double ResolvedAt = -1;
+};
+
+// Runtime's validated layout task reference, indexed by target wheel position.
+// This is a read-only copy for equipment diagnostics, not a second task owner.
+struct FWheelTaskReference
+{
+    FString TaskId, PartId, TargetPort, SourcePort;
 };
 
 /** Virtual probes read the scene and gripper plant; they never issue arm commands. */
@@ -202,6 +212,7 @@ public:
     FString RequestId, ProductInstanceId;
     FString FrontLeftActiveWheelInstanceId;
     int32 RunEpoch = INDEX_NONE;
+    FString GetFrontLeftPartId() const;
     void SetRunIdentity(const FString& InRequestId, const FString& InProductInstanceId, int32 InRunEpoch);
     int32 CountIncidents(const TCHAR* Kind, const TCHAR* IncidentOutcome) const;
     FString GetIncidentSummary(int32 MaxRows = 6) const;
@@ -230,6 +241,7 @@ public:
     UPROPERTY(Transient) TArray<TObjectPtr<UWheelRobotSensorBank>> TaskSensors;
     TArray<double> RearTransit[4];
     TArray<int32> TaskPartIndices;
+    TArray<FWheelTaskReference> TaskReferences;
     TMap<int32,FVector> SupplyOffsetsCm;
     int32 PartIndex(int32 Target) const { return TaskPartIndices.IsValidIndex(Target)?TaskPartIndices[Target]:Target; }
     FTransform GetPhysicalPartWorld(int32 Index) const;

@@ -230,12 +230,18 @@ bool AFactoryRuntime::RunModularEditorChecks()
         if(Kind==1)
         {
             const FWheelIncidentRecord* Event=Cell->Incidents.FindByPredicate([](const FWheelIncidentRecord& R){return R.Kind==TEXT("supply_missing");});
+            const FFactoryTask* Task=Layout.Tasks.FindByPredicate([](const FFactoryTask& T){return T.Id==TEXT("wheel_fl");});
             Check(TEXT("incident_identifies_demo_request_product_and_part"),Event
+                &&Task
                 &&Event->RunEpoch==Line->RunNumber-1
                 &&Event->RequestId==Cell->RequestId
                 &&Event->ProductInstanceId==Cell->ProductInstanceId
-                &&Event->PartInstanceId==Event->ProductInstanceId+TEXT("/")+Event->PartId+TEXT("/initial")
-                &&Event->PartId==TEXT("part_wheel_fl"));
+                &&Event->PartInstanceId==Event->ProductInstanceId+TEXT("/")+Task->PartId+TEXT("/initial")
+                &&Event->PartId==Task->PartId
+                &&Event->TaskId==Task->Id
+                &&Event->TargetPort==Task->TargetPort
+                &&Event->SourcePort==Task->SourcePort
+                &&Cell->GetIncidentCsv().Contains(TEXT("task_id,target_port,source_port")));
         }
         if(Kind==0)
         {
@@ -364,12 +370,12 @@ bool AFactoryRuntime::RunModularEditorChecks()
         if(Kind==9)
         {
             const FWheelIncidentRecord* Reject=RepCell->Incidents.FindByPredicate([](const FWheelIncidentRecord& R){return R.Kind==TEXT("wheel_size_reject");});
-            const FWheelIncidentRecord* Spare=RepCell->Incidents.FindByPredicate([](const FWheelIncidentRecord& R){return R.Kind==TEXT("spare_supplied");});
+            const FWheelIncidentRecord* SpareEvent=RepCell->Incidents.FindByPredicate([](const FWheelIncidentRecord& R){return R.Kind==TEXT("spare_supplied");});
             Check(TEXT("rejected_and_spare_wheels_have_distinct_demo_identities"),Reject
-                &&Spare&&Spare->Outcome==TEXT("recovered")
+                &&SpareEvent&&SpareEvent->Outcome==TEXT("recovered")
                 &&!RepCell->RejectedWheelInstanceId.IsEmpty()
                 &&RepCell->RejectedWheelInstanceId==Reject->PartInstanceId
-                &&RepCell->SpareWheelInstanceId==Spare->PartInstanceId
+                &&RepCell->SpareWheelInstanceId==SpareEvent->PartInstanceId
                 &&RepCell->SpareWheelInstanceId==RepCell->FrontLeftActiveWheelInstanceId
                 &&RepCell->SpareWheelInstanceId!=RepCell->RejectedWheelInstanceId
                 &&RepCell->GetIncidentCsv().Contains(RepCell->RejectedWheelInstanceId));

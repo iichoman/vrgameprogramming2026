@@ -180,10 +180,16 @@ FTransform AWheelAssemblyCell::GetMountTargetWorld(int32 Index) const
 		? FrontLeftHubScan.MeasuredWorld : GetMountWorld(Index);
 }
 
+FString AWheelAssemblyCell::GetFrontLeftPartId() const
+{
+    return TaskReferences.IsValidIndex(0) && !TaskReferences[0].PartId.IsEmpty()
+        ? TaskReferences[0].PartId : TEXT("part_wheel_fl");
+}
+
 void AWheelAssemblyCell::SetRunIdentity(const FString& InRequestId, const FString& InProductInstanceId, int32 InRunEpoch)
 {
     RequestId=InRequestId; ProductInstanceId=InProductInstanceId; RunEpoch=InRunEpoch;
-    FrontLeftActiveWheelInstanceId=ProductInstanceId+TEXT("/part_wheel_fl/initial");
+    FrontLeftActiveWheelInstanceId=ProductInstanceId+TEXT("/")+GetFrontLeftPartId()+TEXT("/initial");
     RejectedWheelInstanceId.Reset(); SpareWheelInstanceId.Reset();
 }
 
@@ -197,8 +203,14 @@ void AWheelAssemblyCell::OpenIncident(const TCHAR* Kind, int32 WheelIndex, EWhee
 	Row.Kind = Kind;
 	Row.RequestId=RequestId; Row.ProductInstanceId=ProductInstanceId; Row.RunEpoch=RunEpoch;
 	Row.PartId = Part>=0 && Part<4 ? PartIds[Part] : TEXT("");
+	if (TaskReferences.IsValidIndex(WheelIndex))
+	{
+		const FWheelTaskReference& Task=TaskReferences[WheelIndex];
+		Row.PartId=Task.PartId; Row.TaskId=Task.TaskId;
+		Row.TargetPort=Task.TargetPort; Row.SourcePort=Task.SourcePort;
+	}
 	Row.PartInstanceId=!Row.PartId.IsEmpty()&&!ProductInstanceId.IsEmpty()?ProductInstanceId+TEXT("/")+Row.PartId:TEXT("");
-	if (Part==0 && !FrontLeftActiveWheelInstanceId.IsEmpty()) Row.PartInstanceId=FrontLeftActiveWheelInstanceId;
+	if (WheelIndex==0 && !FrontLeftActiveWheelInstanceId.IsEmpty()) Row.PartInstanceId=FrontLeftActiveWheelInstanceId;
 	Row.Stage = StaticEnum<EWheelStage>()->GetNameStringByValue(int64(Stage));
 	Row.DetectedAt = SimulationTimeSeconds;
 	Row.Quantity = Quantity; Row.Unit = Unit; Row.Measured = Measured; Row.Limit = Limit;
@@ -257,9 +269,9 @@ FString AWheelAssemblyCell::GetIncidentSummary(int32 MaxRows) const
 
 FString AWheelAssemblyCell::GetIncidentCsv() const
 {
-	FString Csv = TEXT("request_id,product_instance_id,part_instance_id,run_epoch,detected_s,kind,part_id,stage,quantity,unit,measured,limit,response,outcome,resolved_s\n");
+	FString Csv = TEXT("request_id,product_instance_id,part_instance_id,run_epoch,detected_s,kind,part_id,task_id,target_port,source_port,stage,quantity,unit,measured,limit,response,outcome,resolved_s\n");
 	for (const FWheelIncidentRecord& Row : Incidents)
-		Csv += FString::Printf(TEXT("%s,%s,%s,%d,%.4f,%s,%s,%s,%s,%s,%.4f,%.4f,%s,%s,%.4f\n"), *Row.RequestId, *Row.ProductInstanceId, *Row.PartInstanceId, Row.RunEpoch, Row.DetectedAt, *Row.Kind, *Row.PartId, *Row.Stage,
+		Csv += FString::Printf(TEXT("%s,%s,%s,%d,%.4f,%s,%s,%s,%s,%s,%s,%s,%s,%.4f,%.4f,%s,%s,%.4f\n"), *Row.RequestId, *Row.ProductInstanceId, *Row.PartInstanceId, Row.RunEpoch, Row.DetectedAt, *Row.Kind, *Row.PartId, *Row.TaskId, *Row.TargetPort, *Row.SourcePort, *Row.Stage,
 			*Row.Quantity.Replace(TEXT(","),TEXT(";")), *Row.Unit, Row.Measured, Row.Limit,
 			*Row.Response.Replace(TEXT(","),TEXT(";")), *Row.Outcome, Row.ResolvedAt);
 	return Csv;
@@ -566,7 +578,7 @@ bool AWheelAssemblyCell::ResetCycle()
 	Incidents.Reset();
 	WheelReplacePhase = 0; WheelReplacements = 0; WheelReplaceSeconds = 0; RejectedWheelDiameterCm = 0;
 	RejectedWheelInstanceId.Reset(); SpareWheelInstanceId.Reset();
-	FrontLeftActiveWheelInstanceId=ProductInstanceId.IsEmpty()?TEXT(""):ProductInstanceId+TEXT("/part_wheel_fl/initial");
+	FrontLeftActiveWheelInstanceId=ProductInstanceId.IsEmpty()?TEXT(""):ProductInstanceId+TEXT("/")+GetFrontLeftPartId()+TEXT("/initial");
 	WheelSpareStartWorld = FVector::ZeroVector;
 	DroppedTireVisual->SetRelativeScale3D(FVector(0.66,0.66,0.16));
 	DroppedHubVisual->SetRelativeScale3D(FVector(0.37,0.37,0.025));
@@ -1321,7 +1333,7 @@ void AWheelAssemblyCell::AdvanceWheelReplacement(double DeltaSeconds)
 		DroppedTireVisual->SetVisibility(true); DroppedHubVisual->SetVisibility(true);
 		bFrontLeftWheelRejecting = false; bFrontLeftWheelRejected = true;
 		RejectedWheelInstanceId=FrontLeftActiveWheelInstanceId;
-		SpareWheelInstanceId=ProductInstanceId+TEXT("/part_wheel_fl/spare_1");
+		SpareWheelInstanceId=ProductInstanceId+TEXT("/")+GetFrontLeftPartId()+TEXT("/spare_1");
 		FrontLeftActiveWheelInstanceId=SpareWheelInstanceId;
 		// The spare is a nominal wheel. Until the next scenario selection this cell supplies nominal wheels.
 		FrontLeftWheelSizeScale = 1.0;
