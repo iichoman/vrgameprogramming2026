@@ -181,7 +181,7 @@ FTransform AWheelAssemblyCell::GetMountTargetWorld(int32 Index) const
 }
 
 void AWheelAssemblyCell::OpenIncident(const TCHAR* Kind, int32 WheelIndex, EWheelStage Stage, const TCHAR* Quantity,
-	const TCHAR* Unit, double Measured, double Limit, const FString& Response, const TCHAR* Outcome)
+	const TCHAR* Unit, double Measured, double Limit, const FString& Response, const TCHAR* IncidentOutcome)
 {
 	if (Incidents.Num() >= 64) return;
 	static const TCHAR* PartIds[]={TEXT("part_wheel_fl"),TEXT("part_wheel_rl"),TEXT("part_wheel_fr"),TEXT("part_wheel_rr")};
@@ -192,23 +192,23 @@ void AWheelAssemblyCell::OpenIncident(const TCHAR* Kind, int32 WheelIndex, EWhee
 	Row.Stage = StaticEnum<EWheelStage>()->GetNameStringByValue(int64(Stage));
 	Row.DetectedAt = SimulationTimeSeconds;
 	Row.Quantity = Quantity; Row.Unit = Unit; Row.Measured = Measured; Row.Limit = Limit;
-	Row.Response = Response; Row.Outcome = Outcome;
+	Row.Response = Response; Row.Outcome = IncidentOutcome;
 	if (Row.Outcome != TEXT("pending")) Row.ResolvedAt = SimulationTimeSeconds;
 	Incidents.Add(MoveTemp(Row));
 }
 
-void AWheelAssemblyCell::CloseIncidents(const TCHAR* Kind, const TCHAR* Outcome)
+void AWheelAssemblyCell::CloseIncidents(const TCHAR* Kind, const TCHAR* IncidentOutcome)
 {
 	for (FWheelIncidentRecord& Row : Incidents)
 		if (Row.Outcome == TEXT("pending") && (!Kind || Row.Kind == Kind))
-		{ Row.Outcome = Outcome; Row.ResolvedAt = SimulationTimeSeconds; }
+		{ Row.Outcome = IncidentOutcome; Row.ResolvedAt = SimulationTimeSeconds; }
 }
 
-int32 AWheelAssemblyCell::CountIncidents(const TCHAR* Kind, const TCHAR* Outcome) const
+int32 AWheelAssemblyCell::CountIncidents(const TCHAR* Kind, const TCHAR* IncidentOutcome) const
 {
 	int32 Count = 0;
 	for (const FWheelIncidentRecord& Row : Incidents)
-		if (Row.Kind == Kind && Row.Outcome == Outcome) ++Count;
+		if (Row.Kind == Kind && Row.Outcome == IncidentOutcome) ++Count;
 	return Count;
 }
 

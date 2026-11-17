@@ -179,12 +179,12 @@ public:
     void AdvanceWheelReplacement(double DeltaSeconds);
     /** Incident rows of the current cycle, oldest first. Cleared by ResetCycle. */
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Incidents") TArray<FWheelIncidentRecord> Incidents;
-    int32 CountIncidents(const TCHAR* Kind, const TCHAR* Outcome) const;
+    int32 CountIncidents(const TCHAR* Kind, const TCHAR* IncidentOutcome) const;
     FString GetIncidentSummary(int32 MaxRows = 6) const;
     FString GetIncidentCsv() const;
     void OpenIncident(const TCHAR* Kind, int32 WheelIndex, EWheelStage Stage, const TCHAR* Quantity, const TCHAR* Unit,
-        double Measured, double Limit, const FString& Response, const TCHAR* Outcome = TEXT("pending"));
-    void CloseIncidents(const TCHAR* Kind, const TCHAR* Outcome);
+        double Measured, double Limit, const FString& Response, const TCHAR* IncidentOutcome = TEXT("pending"));
+    void CloseIncidents(const TCHAR* Kind, const TCHAR* IncidentOutcome);
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Sensors") FVector PreviousPickupWorld = FVector::ZeroVector;
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Sensors") FVector ReplannedPickupWorld = FVector::ZeroVector;
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Grip") bool bLeftWheelSlipFall = false;
