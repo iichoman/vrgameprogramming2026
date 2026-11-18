@@ -4,6 +4,8 @@
 #include "DoorAssemblyCell.h"
 #include "FactoryAssemblyEquipment.h"
 #include "RobotArm.h"
+#include "Components/SceneComponent.h"
+#include "VehicleAssemblyMounting.h"
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonSerializer.h"
 #include "Misc/FileHelper.h"
@@ -17,6 +19,29 @@ public:
     FFactoryPartObservation Value;
     virtual FFactoryPartObservation ObservePart(const FString&,double) const override { return Value; }
 };
+// Exact wheel geometry, independent of the arm's IK branch. This verifies that
+// the authored hub pose actually admits straight insertion, including the rim.
+bool RearWheelInsertionClear(AWheelAssemblyCell& Cell,int Index,FString& Why)
+{
+    auto* Arm=Cell.RobotForWheel(Index);USceneComponent* Part=nullptr;
+    TInlineComponentArray<USceneComponent*> Components(&Cell);
+    for(auto* C:Components)if(C->GetName()==FString::Printf(TEXT("Wheel%d"),Cell.PartIndex(Index)))Part=C;
+    if(!Arm||!Part){Why=TEXT("Missing wheel/robot");return false;}
+    FRobotMotionScene Scene;Scene.Capture(*Arm,Part,true);
+    Scene.Shapes.RemoveAll([](const auto& S){return !S.bPayload;});
+    if(Scene.Shapes.IsEmpty()){Why=TEXT("Missing carried wheel geometry");return false;}
+    Scene.PrepareGeometry(true);
+    const auto OriginalShapes=Scene.Shapes;const auto TCP=Arm->GetTCPWorld();const auto PartPose=Part->GetComponentTransform();
+    for(int Out=40;Out>=0;--Out)
+    {
+        auto Goal=Cell.GetMountWorld(Index);Goal.AddToTranslation(Goal.TransformVectorNoScale(FVector(0,Index==1?-Out:Out,0)));
+        for(int J=0;J<Scene.Shapes.Num();++J)
+            Scene.Shapes[J].Local=(OriginalShapes[J].Local*TCP).GetRelativeTransform(PartPose)*Goal.GetRelativeTransform(TCP);
+        if(!Scene.Clear(*Arm,Arm->GetAnglesRadians(),Why))return false;
+    }
+    return true;
+}
+
 }
 
 bool AFactoryRuntime::RunTaskAssignmentChecks()
@@ -40,9 +65,15 @@ bool AFactoryRuntime::RunTaskAssignmentChecks()
     Bad=Layout;Bad.Tasks[0].PartId=TEXT("missing");Check(TEXT("invalid_part_rejected"),!Bad.Validate(Error));
     auto Advance=[&](int N){for(int I=0;I<N;++I)StepSimulation(1./120);};
     double HeadSwing[2]={0,0};bool RearPickupObserved[2]={false,false};
+    bool RearClearanceChecked=false,RearClearance=true;FString RearClearanceFailure;
     auto Run=[&](){ResetCycle();Advance(24);bool Ok=StartCycle();for(int I=0;I<36000&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)
     {
         StepSimulation(1./120);auto* Cell=TestAssemblyLine->WheelCell.Get();
+        if(!RearClearanceChecked&&TestAssemblyLine->Stage==EAssemblyLineStage::Wheels&&!Cell->bTransporting)
+        {
+            RearClearanceChecked=true;
+            for(int Index:{1,3})RearClearance=RearWheelInsertionClear(*Cell,Index,RearClearanceFailure)&&RearClearance;
+        }
         for(int Side=0;Side<2;++Side)if(const auto* Lane=Cell->LaneSnapshot(Side))
         {
             if(Lane->WheelIndex!=Side*2+1||Lane->bHeld||(Lane->Stage!=EWheelStage::ApproachPickup&&Lane->Stage!=EWheelStage::Grip))continue;
@@ -53,7 +84,13 @@ bool AFactoryRuntime::RunTaskAssignmentChecks()
         }
     }return Ok&&RunState==EFactoryRunState::Complete;};
     Check(TEXT("two_robot_tasks_full_cycle"),Run());const double TwoSeconds=SimulationSeconds;
+    Check(TEXT("lifted_rear_wheels_allow_straight_insertion"),RearClearanceChecked&&RearClearance);
+    if(!RearClearance)UE_LOG(LogTemp,Warning,TEXT("REAR_INSERTION_CLEARANCE %s"),*RearClearanceFailure);
     auto* TwoWheelCell=TestAssemblyLine->WheelCell.Get();
+    Check(TEXT("four_wheels_fastened_before_door_transfer"),TwoWheelCell->MountedCount==4);
+    bool HubRestored=TwoWheelCell->MountedCount==4&&VehicleAssemblyMounting::HubOffset(*TwoWheelCell->Assembly,1).IsNearlyZero(.0001);
+    for(int Index:{1,3})HubRestored&=TwoWheelCell->GetWheelWorld(Index).GetLocation().Equals(TwoWheelCell->GetMountWorld(Index).GetLocation(),.1);
+    Check(TEXT("rear_wheels_follow_hubs_after_lift_lowering"),HubRestored);
     const double LeftPickupSeconds=TwoWheelCell->LaneSnapshot(0)->NextPickupSeconds;
     const double RightPickupSeconds=TwoWheelCell->LaneSnapshot(1)->NextPickupSeconds;
     const double LeftHeadSwing=HeadSwing[0],RightHeadSwing=HeadSwing[1];

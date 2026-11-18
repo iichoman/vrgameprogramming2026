@@ -521,11 +521,20 @@ bool ADoorAssemblyCell::CheckPickup()
 	TArray<double> Seed=Robot->GetAnglesRadians();
 	const TArray<FTransform> Targets={OffsetDoor(PickupAtStart,ApproachOffsetBodyCm),PickupAtStart,OffsetDoor(PickupAtStart,LiftOffsetBodyCm)};
 	FRobotIKSettings IK; IK.PositionToleranceCm=0.03; IK.OrientationToleranceRadians=0.001;
-	for (const auto& Door:Targets)
+	for (int32 StageIndex=0;StageIndex<Targets.Num();++StageIndex)
 	{
+		const auto& Door=Targets[StageIndex];
 		const auto Result=FRobotKinematics::SolveInverseKinematics(Robot->GetDefinitions(),Robot->ToolInLastJointCm,
 			(TCPInDoorCm*Door).GetRelativeTransform(Robot->GetActorTransform()),Seed,IK);
-		if (!Result.IsSuccess()) { Status=TEXT("Pickup blocked: IK cannot reach approach, grasp or lift pose."); return false; }
+        if (!Result.IsSuccess())
+        {
+            Status=FString::Printf(TEXT("문 픽업 IK 실패 · 단계 %d · %s · 위치 %.2fcm / 각도 %.2f도"),StageIndex,
+                FRobotKinematics::StatusText(Result.Status),Result.PositionErrorCm,FMath::RadiansToDegrees(Result.OrientationErrorRadians));
+            UE_LOG(LogTemp,Warning,TEXT("DOOR_PICKUP_IK %s task=%s base=%s goal=%s joints=%s %s"),*GetName(),*GetOperationTaskId(),
+                *Robot->GetActorLocation().ToString(),*(TCPInDoorCm*Door).GetLocation().ToString(),
+                *FString::JoinBy(Result.JointRadians,TEXT(","),[](double Q){return FString::Printf(TEXT("%.2f"),FMath::RadiansToDegrees(Q));}),*Status);
+            return false;
+        }
 		Seed=Result.JointRadians;
 	}
 	return true;

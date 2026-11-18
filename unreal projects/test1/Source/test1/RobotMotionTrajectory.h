@@ -64,5 +64,7 @@ struct FRobotMotionRequest
     bool bLinear=false,bPreferStraight=false,bJointOnly=false;
     double PreviewTime=0,NominalDuration=0,ElapsedPlanning=0;
     TArray<FRobotJointState> PreviewState;
+    TArray<double> PreviewGeometryAngles;
+    FTransform PreviewGeometryTCP;
     FString Failure;
 };

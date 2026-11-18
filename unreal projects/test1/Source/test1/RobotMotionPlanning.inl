@@ -57,7 +57,10 @@ bool ARobotArm::AdvanceMotionPlanning()
         PendingMotion.Reset();bMotionBlocked=true;return false;
     };
     if(!R.Base.Equals(GetActorTransform(),1.e-6))return Reject(TEXT("계산 중 로봇 기준 좌표 변경"));
-    if(R.ElapsedPlanning>2.)return Reject(TEXT("계산 예산 초과 · 배치/간섭 위치를 확인하세요. ")+R.Failure);
+    // A single prescribed insertion also previews the loaded servo. It needs
+    // more total work than a free transfer, while retaining the same per-frame
+    // slice; this is not permission for a long blocking game-thread search.
+    if(R.ElapsedPlanning>(R.bLinear?6.:2.))return Reject(TEXT("계산 예산 초과 · 배치/간섭 위치를 확인하세요. ")+R.Failure);
     FRobotIKSettings IK;IK.MaxRestarts=0;IK.MaxIterations=100;IK.PositionToleranceCm=.005;IK.OrientationToleranceRadians=.0001;
     auto Normalize=[&](TArray<double>& Q,const TArray<double>& Near)
     {
@@ -70,6 +73,7 @@ bool ARobotArm::AdvanceMotionPlanning()
     auto StartPreview=[&]()
     {
         R.PreviewState=Controllers;R.PreviewTime=0;
+        R.PreviewGeometryAngles.Reset();
         if(!bTorqueDynamics)for(auto& C:R.PreviewState)C.IntegralErrorSeconds=0;
         R.Trial.Duration=R.NominalDuration*FMath::Pow(1.5,R.Scale);
         R.Phase=FRobotMotionRequest::EPhase::Preview;
@@ -201,7 +205,22 @@ bool ARobotArm::AdvanceMotionPlanning()
             }
             FRobotKinematics::ForwardKinematics(Definitions,Q,ToolInLastJointCm,TCP);
             if(!R.Trial.InCorridor(TCP*R.Base)){Safe=false;R.Failure=TEXT("PID 예측에서 삽입 각도/직선 허용 오차 초과");}
-            if(Safe)Safe=MotionScene.Clear(*this,Q,R.Failure);
+            if(Safe)
+            {
+                // Do not repeat expensive CAD intersection tests at effectively
+                // identical settling poses. Servo/corridor checks still run at
+                // 120 Hz, and actual execution checks geometry on EVERY step.
+                // Preview sampling is finer than the .25-degree path check.
+                const auto WorldTCP=TCP*R.Base;double Travel=0;
+                if(R.PreviewGeometryAngles.Num()==Q.Num())
+                    for(int J=0;J<Q.Num();++J)Travel+=FMath::Abs(Q[J]-R.PreviewGeometryAngles[J]);
+                if(R.PreviewGeometryAngles.IsEmpty()||Settled||Travel>=FMath::DegreesToRadians(.1)
+                    ||FVector::Distance(WorldTCP.GetLocation(),R.PreviewGeometryTCP.GetLocation())>=.1)
+                {
+                    Safe=MotionScene.Clear(*this,Q,R.Failure);
+                    R.PreviewGeometryAngles=Q;R.PreviewGeometryTCP=WorldTCP;
+                }
+            }
             if(!Safe||(!Settled&&R.PreviewTime>R.Trial.Duration+3))
             {if(++R.Scale<4)StartPreview();else NextCandidate();continue;}
             if(Settled)

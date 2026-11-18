@@ -99,6 +99,31 @@ bool ARobotArm::InitializeArm()
         Angles=Targets=Sol.JointRadians;
         for(int I=0;I<6;++I){InitialAnglesDegrees[I]=FMath::RadiansToDegrees(Angles[I]);Controllers[I].AngleRadians=Angles[I];}
     }
+    // A saved demo home can fit A5 while leaving no room for the next pickup.
+    // At RESET only, prefer an equivalent wrist configuration with more A5
+    // travel. Never assume an imported wrist convention: FK must prove that
+    // both position and orientation are unchanged before accepting a branch.
+    if(CalibrationSource.StartsWith(TEXT("robot_calibration.json:"))
+        &&FMath::Min(Angles[4]-Definitions[4].MinRadians,Definitions[4].MaxRadians-Angles[4])<FMath::DegreesToRadians(15.))
+    {
+        auto Best=Angles;double BestCost=TNumericLimits<double>::Max();
+        for(double A:{-UE_DOUBLE_PI,UE_DOUBLE_PI})for(double B:{-UE_DOUBLE_PI,UE_DOUBLE_PI})
+        {
+            auto Candidate=Angles;Candidate[3]+=A;Candidate[4]=UE_DOUBLE_PI-Candidate[4];Candidate[5]+=B;
+            bool Valid=true;for(int I=0;I<6;++I)Valid&=Candidate[I]>=Definitions[I].MinRadians&&Candidate[I]<=Definitions[I].MaxRadians;
+            const double Margin=FMath::Min(Candidate[4]-Definitions[4].MinRadians,Definitions[4].MaxRadians-Candidate[4]);
+            FTransform Pose;
+            if(!Valid||Margin<FMath::DegreesToRadians(30.)||!FRobotKinematics::ForwardKinematics(Definitions,Candidate,ToolInLastJointCm,Pose)
+                ||!Pose.GetLocation().Equals(Test.GetLocation(),.001)||Pose.GetRotation().AngularDistance(Test.GetRotation())>.00001)continue;
+            const double Cost=FMath::Abs(Candidate[3])+FMath::Abs(Candidate[5]);
+            if(Cost<BestCost){Best=Candidate;BestCost=Cost;}
+        }
+        if(BestCost<TNumericLimits<double>::Max())
+        {
+            Angles=Targets=Best;
+            for(int I=0;I<6;++I){InitialAnglesDegrees[I]=FMath::RadiansToDegrees(Angles[I]);Controllers[I].AngleRadians=Angles[I];}
+        }
+    }
 	for (int32 i=0;i<Visuals.Num();++i)
 	{
 		const bool Active=MeshBindings.IsValidIndex(i) && MeshBindings[i].Mesh;

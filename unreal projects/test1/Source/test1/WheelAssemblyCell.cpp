@@ -2,6 +2,7 @@
 #include "ReducedPartPhysics.h"
 #include "WheelGripPhysics.h"
 #include "CamryAssembly.h"
+#include "VehicleAssemblyMounting.h"
 #include "RobotArm.h"
 #include "WheelGripperGeometry.h"
 #include "Components/SceneComponent.h"
@@ -170,7 +171,8 @@ FTransform AWheelAssemblyCell::GetMountWorld(int32 Index) const
 	if (!IsValid(Assembly) || !Assembly->GetBodyFrame() || Index < 0 || Index > 3) return FTransform::Identity;
 	const double X = Index % 2 == 0 ? FrontXcm : RearXcm;
 	const double Y = Index < 2 ? -HubHalfTrackCm : HubHalfTrackCm;
-	FTransform Mount = FTransform(FRotator::ZeroRotator, MountCentersCm.Num() == 4 ? MountCentersCm[Index] : FVector(X, Y, HubHeightCm)) * Assembly->GetBodyFrame()->GetComponentTransform();
+    const FVector Nominal=MountCentersCm.Num()==4?MountCentersCm[Index]:FVector(X,Y,HubHeightCm);
+	FTransform Mount = FTransform(FRotator::ZeroRotator,Nominal+VehicleAssemblyMounting::HubOffset(*Assembly,Index)) * Assembly->GetBodyFrame()->GetComponentTransform();
 	if (Index == 0 && bLaserScanFrontLeftHub)
 		Mount.AddToTranslation(Assembly->GetBodyFrame()->GetComponentTransform().TransformVectorNoScale(FrontLeftHubOffsetCm));
 	return Mount;
@@ -765,7 +767,10 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
 		{
 			Lane.bFastened = true; FastenedWheels[Lane.WheelIndex] = true; ++MountedCount;
             if(Lane.Completed+1<(UsesTaskBindings()?TaskQueue[Side].Num():2))Lane.NextPickupStartedAt=SimulationTimeSeconds;
-			FastenedInBody[Lane.WheelIndex] = GetWheelWorld(Lane.WheelIndex).GetRelativeTransform(Assembly->GetBodyFrame()->GetComponentTransform());
+            // Preserve the measured seating residual in the moving hub frame.
+            // During lift unloading the wheel must follow its hub, not stay at
+            // a frozen body-relative Z and detach from the running gear.
+			FastenedInBody[Lane.WheelIndex] = GetWheelWorld(Lane.WheelIndex).GetRelativeTransform(GetMountWorld(Lane.WheelIndex));
 			SetStage(Side, EWheelStage::Release, TEXT("virtual fastening complete"));
 		}
 		return;
@@ -1025,7 +1030,7 @@ void AWheelAssemblyCell::UpdateFastenedWheels()
 	if (!Assembly || !Assembly->GetBodyFrame()) return;
 	for (int32 I=0; I<4; ++I)
 		if (FastenedWheels.IsValidIndex(I) && FastenedWheels[I])
-			WheelRoots[PartIndex(I)]->SetWorldTransform(FastenedInBody[I] * Assembly->GetBodyFrame()->GetComponentTransform());
+			WheelRoots[PartIndex(I)]->SetWorldTransform(FastenedInBody[I] * GetMountWorld(I));
 }
 void AWheelAssemblyCell::AdvanceLeftWheelSlipFall(double DeltaSeconds)
 {

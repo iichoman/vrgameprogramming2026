@@ -7,6 +7,7 @@
 #include "CamryAssembly.h"
 #include "RobotArm.h"
 #include "VehicleProcessTest.h"
+#include "VehicleAssemblyMounting.h"
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
@@ -275,6 +276,7 @@ bool AIntegratedAssemblyLine::ResetLine()
     bFourDoorMode=IsValid(RightDoorRobot) && IsValid(LeftDoorRobot);
     for (const auto& Module:DoorModules) bFourDoorMode &= IsValid(Module) && Module->bHasReferencePose;
     auto* Car = WheelCell->Assembly.Get();
+    if(!VehicleAssemblyMounting::SetRearExtension(*Car,0)) {Fail(TEXT("후방 허브 기준 자세 복원 실패"));return false;}
     FTransform DoorStation = VehicleAtWheelStation;
     DoorStation.AddToTranslation(DoorStationOffsetCm);
     Car->SetActorTransform(DoorStation);
@@ -301,6 +303,8 @@ bool AIntegratedAssemblyLine::ResetLine()
         if(!SecondDoorCell->ResetCycle()){Fail(SecondDoorCell->Status);return false;}
         SecondDoorSupplyWorld=Car->GetRightDoor()->GetComponentTransform();}
     Car->SetActorTransform(WheelStationPose());
+    if(!VehicleAssemblyMounting::SetRearExtension(*Car,FMath::Min(WheelStationLiftCm,VehicleAssemblyMounting::RearExtensionCm)))
+    {Fail(TEXT("리프트 작업용 후방 허브 자세 설정 실패"));return false;}
     WheelCell->TransportCarriage->SetActorTransform(CarriageAtWheelStation);
     if (!WheelCell->ResetAtStation(WheelStationPose(),CarriageAtWheelStation)) { Fail(WheelCell->Status); return false; }
     UpdateLiftSupports();
@@ -369,6 +373,8 @@ bool AIntegratedAssemblyLine::AdvanceLine(double Seconds)
         ExpectedCarriage.AddToTranslation(DoorStationOffsetCm * TransferProgress);
         Car->SetActorTransform(ExpectedVehicle);
         Carriage->SetActorTransform(ExpectedCarriage);
+        if(!VehicleAssemblyMounting::SetRearExtension(*Car,FMath::Min(WheelStationLiftCm,VehicleAssemblyMounting::RearExtensionCm)*(1-TransferProgress)))
+        {Fail(TEXT("리프트 하강 중 후방 허브 자세 갱신 실패"));return false;}
         UpdateLiftSupports();
         WheelCell->UpdateFastenedWheels();
         Car->GetLeftDoor()->SetWorldTransform(DoorSupplyWorld);
