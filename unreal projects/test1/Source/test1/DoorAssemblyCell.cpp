@@ -1,5 +1,6 @@
-﻿#include "DoorFixture.h"
+#include "DoorFixture.h"
 #include "DoorAssemblyCell.h"
+#include "AssemblyDebugVisualization.h"
 #include "AssemblyModelContracts.h"
 #include "ReducedPartPhysics.h"
 #include "RobotArm.h"
@@ -551,7 +552,7 @@ void ADoorAssemblyCell::Tick(float DeltaSeconds)
 		if (GetWorld() && (GetWorld()->WorldType==EWorldType::PIE || GetWorld()->WorldType==EWorldType::Game))
 		{
 			DrawDebugLine(GetWorld(),DoorRejectStartWorld,DoorRejectTargetWorld,FColor::Red,false,.08f,0,3.f);
-			DrawDebugSphere(GetWorld(),DoorRejectTargetWorld,24,12,FColor::Red,false,.08f,0,2.f);
+			AssemblyDebugVisualization::SensorSphere(GetWorld(),DoorRejectTargetWorld,24,12,FColor::Red);
 			DrawDebugString(GetWorld(),DoorRejectTargetWorld+FVector(0,0,90),
 				FString::Printf(TEXT("DOOR REJECT HOLD / %.1f cm / %s"),RejectedDoorWidthCm,
 					bDoorSizeRejected?TEXT("ISOLATED"):TEXT("MOVING")),nullptr,FColor::Red,.08f,false,1.f);

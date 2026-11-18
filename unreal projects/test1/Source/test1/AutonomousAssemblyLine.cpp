@@ -1,4 +1,5 @@
 #include "AutonomousAssemblyLine.h"
+#include "AssemblyDebugVisualization.h"
 #include "AssemblySituationCatalog.h"
 #include "WheelAssemblyCell.h"
 #include "DoorAssemblyCell.h"
@@ -276,8 +277,8 @@ void AAutonomousAssemblyLine::Tick(float Seconds)
 		if (!bInjected[Index] || bRestored[Index] || Planned[Index]!=ERandomWheelEvent::SupplyMissing) continue;
 		const FVector Start=SupplyTravelFrom[Index], End=SupplyTravelTo[Index];
 		DrawDebugLine(GetWorld(),Start,End,FColor::Cyan,false,.08f,0,3.f);
-		DrawDebugSphere(GetWorld(),Start,12,12,FColor::Cyan,false,.08f,0,2.f);
-		DrawDebugSphere(GetWorld(),End,12,12,FColor::Green,false,.08f,0,2.f);
+		AssemblyDebugVisualization::SensorSphere(GetWorld(),Start,12,12,FColor::Cyan);
+		AssemblyDebugVisualization::SensorSphere(GetWorld(),End,12,12,FColor::Green);
 		DrawDebugString(GetWorld(),End+FVector(0,0,60),
 			FString::Printf(TEXT("SPARE WHEEL %d: %s"),Index+1,
 				SupplyTravelStartedAt[Index]<0?TEXT("DISPATCH WAIT"):TEXT("MOVING TO SUPPLY SENSOR")),

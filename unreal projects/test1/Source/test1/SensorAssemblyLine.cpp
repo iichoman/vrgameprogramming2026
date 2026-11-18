@@ -1,4 +1,5 @@
 #include "SensorAssemblyLine.h"
+#include "AssemblyDebugVisualization.h"
 #include "WheelAssemblyCell.h"
 #include "DoorAssemblyCell.h"
 #include "RobotArm.h"
@@ -277,8 +278,8 @@ void ASensorAssemblyLine::DrawSensorVisualization() const
 	{
 		const FColor Color=DoorCell->bDoorSizePassed?FColor::Green:FColor::Red;
 		DrawDebugLine(GetWorld(),DoorCell->DoorSizeLeftHitWorld,DoorCell->DoorSizeRightHitWorld,Color,false,.08f,0,4.f);
-		DrawDebugSphere(GetWorld(),DoorCell->DoorSizeLeftHitWorld,6,10,Color,false,.08f,0,2.f);
-		DrawDebugSphere(GetWorld(),DoorCell->DoorSizeRightHitWorld,6,10,Color,false,.08f,0,2.f);
+		AssemblyDebugVisualization::SensorSphere(GetWorld(),DoorCell->DoorSizeLeftHitWorld,6,10,Color);
+		AssemblyDebugVisualization::SensorSphere(GetWorld(),DoorCell->DoorSizeRightHitWorld,6,10,Color);
 		DrawDebugString(GetWorld(),(DoorCell->DoorSizeLeftHitWorld+DoorCell->DoorSizeRightHitWorld)*.5+FVector(0,0,65),
 			FString::Printf(TEXT("DOOR SIZE: %.1fcm / %.1f +/- 1.0cm: %s"),DoorCell->MeasuredDoorWidthCm,DoorCell->NominalDoorWidthCm,
 				DoorCell->bDoorSizePassed?TEXT("PASS"):TEXT("REJECT")),nullptr,Color,.08f,false,1.f);
@@ -287,21 +288,21 @@ void ASensorAssemblyLine::DrawSensorVisualization() const
 	{
 		const FColor SizeColor=WheelCell->bFrontLeftWheelSizePassed?FColor::Green:FColor::Red;
 		DrawDebugLine(GetWorld(),WheelCell->WheelSizeNearHitWorld,WheelCell->WheelSizeFarHitWorld,SizeColor,false,.08f,0,4.f);
-		DrawDebugSphere(GetWorld(),WheelCell->WheelSizeNearHitWorld,6,10,SizeColor,false,.08f,0,2.f);
-		DrawDebugSphere(GetWorld(),WheelCell->WheelSizeFarHitWorld,6,10,SizeColor,false,.08f,0,2.f);
+		AssemblyDebugVisualization::SensorSphere(GetWorld(),WheelCell->WheelSizeNearHitWorld,6,10,SizeColor);
+		AssemblyDebugVisualization::SensorSphere(GetWorld(),WheelCell->WheelSizeFarHitWorld,6,10,SizeColor);
 		DrawDebugString(GetWorld(),(WheelCell->WheelSizeNearHitWorld+WheelCell->WheelSizeFarHitWorld)*.5+FVector(0,0,65),
 			FString::Printf(TEXT("WHEEL SIZE: %.1fcm / 66.0 +/- 1.0cm: %s"),WheelCell->FrontLeftWheelMeasuredDiameterCm,
 				WheelCell->bFrontLeftWheelSizePassed?TEXT("PASS"):TEXT("REJECT")),nullptr,SizeColor,.08f,false,1.f);
 		const FVector SizeCenter=WheelCell->GetWheelWorld(0).GetLocation();
-		DrawDebugSphere(GetWorld(),SizeCenter,33,24,FColor::Green,false,.08f,0,1.5f);
-		DrawDebugSphere(GetWorld(),SizeCenter,33*WheelCell->FrontLeftWheelSizeScale,24,SizeColor,false,.08f,0,3.f);
+		AssemblyDebugVisualization::SensorSphere(GetWorld(),SizeCenter,33,24,FColor::Green);
+		AssemblyDebugVisualization::SensorSphere(GetWorld(),SizeCenter,33*WheelCell->FrontLeftWheelSizeScale,24,SizeColor);
 	}
 	if (WheelCell && (WheelCell->bFrontLeftWheelRejecting || WheelCell->bFrontLeftWheelRejected))
 	{
 		const FVector Current=WheelCell->GetWheelWorld(0).GetLocation();
 		DrawDebugLine(GetWorld(),WheelCell->WheelRejectStartWorld,WheelCell->WheelRejectTargetWorld,FColor::Red,false,.08f,0,3.f);
-		DrawDebugSphere(GetWorld(),WheelCell->WheelRejectTargetWorld,20,12,FColor::Red,false,.08f,0,3.f);
-		DrawDebugSphere(GetWorld(),Current,14,12,FColor::Red,false,.08f,0,3.f);
+		AssemblyDebugVisualization::SensorSphere(GetWorld(),WheelCell->WheelRejectTargetWorld,20,12,FColor::Red);
+		AssemblyDebugVisualization::SensorSphere(GetWorld(),Current,14,12,FColor::Red);
 		DrawDebugString(GetWorld(),WheelCell->WheelRejectTargetWorld+FVector(0,0,85),
 			WheelCell->bFrontLeftWheelRejected?TEXT("REJECTED WHEEL: LOCAL HOLD POINT"):TEXT("REJECTED WHEEL: MOVING TO HOLD POINT"),
 			nullptr,FColor::Red,.08f,false,1.f);
@@ -310,8 +311,8 @@ void ASensorAssemblyLine::DrawSensorVisualization() const
 	{
 		const FVector Before=WheelCell->PreviousPickupWorld;
 		const FVector After=WheelCell->ReplannedPickupWorld;
-		DrawDebugSphere(GetWorld(),Before,13,12,FColor(150,150,150),false,.08f,0,2.f);
-		DrawDebugSphere(GetWorld(),After,13,12,FColor::Yellow,false,.08f,0,2.f);
+		AssemblyDebugVisualization::SensorSphere(GetWorld(),Before,13,12,FColor(150,150,150));
+		AssemblyDebugVisualization::SensorSphere(GetWorld(),After,13,12,FColor::Yellow);
 		DrawDebugLine(GetWorld(),Before,After,FColor::Yellow,false,.08f,0,2.f);
 		DrawDebugString(GetWorld(),After+FVector(0,0,50),
 			FString::Printf(TEXT("PICKUP REPLAN: %.1fcm | #%d"),FVector::Distance(Before,After),WheelCell->LeftPickupReplans),
@@ -323,7 +324,7 @@ void ASensorAssemblyLine::DrawSensorVisualization() const
         const FVector At=WheelCell->GetWheelWorld(I).GetLocation();
         const int Contacts=WheelCell->PhysicalGripContacts(I);
         const auto Color=Contacts>0?FColor::Green:FColor::Red;
-        DrawDebugSphere(GetWorld(),At,22,16,Color,false,.08f,0,3.f);
+        AssemblyDebugVisualization::SensorSphere(GetWorld(),At,22,16,Color);
         DrawDebugString(GetWorld(),At+FVector(0,0,80),FString::Printf(TEXT("%s | contacts %d | %.1fkg | %.0fN / %.0fN | slip %.1fmm"),
             *WheelCell->PartPhysics[I].PartId,Contacts,WheelCell->PartPhysics[I].Mass,Grip->AppliedForceN,Grip->CapacityN,Grip->SlipMm),nullptr,Color,.08f);
     }
@@ -337,7 +338,7 @@ void ASensorAssemblyLine::DrawSensorVisualization() const
 			if (R.MeasuredAt<0) continue;
 			const FColor Color=R.bValid?FColor::Green:FColor::Red;
 			const FVector Center=R.bValid?R.MeasuredWorld.GetLocation():WheelCell->GetMountWorld(0).GetLocation();
-			DrawDebugSphere(GetWorld(),Center,10+I*4,12,Color,false,.08f,0,2.f);
+			AssemblyDebugVisualization::SensorSphere(GetWorld(),Center,10+I*4,12,Color);
 			DrawDebugString(GetWorld(),Center+FVector(0,0,35+I*25),FString::Printf(TEXT("%s: %s %d/5 RMS %.2fmm t=%.2fs"),Labels[I],R.bValid?TEXT("PASS"):TEXT("FAIL"),R.HitCount,R.ResidualMm,R.MeasuredAt),nullptr,Color,.08f,false,1.f);
 		}
 		const FWheelHubScanReading* Latest=Stages[2]->MeasuredAt>=0?Stages[2]:(Stages[1]->MeasuredAt>=0?Stages[1]:Stages[0]);
@@ -354,17 +355,17 @@ void ASensorAssemblyLine::DrawSensorVisualization() const
     const FColor Color=Fresh ? (Sensors->Arrival.Value.X>.5 ? FColor::Green : FColor::Cyan) : FColor::Red;
     DrawDebugBox(GetWorld(),Station,FVector(250,150,150),FColor::Cyan,false,.08f,0,1.5f);
     DrawDebugLine(GetWorld(),Station,Station+FVector(0,0,180),Color,false,.08f,0,2.f);
-    DrawDebugSphere(GetWorld(),Station+FVector(0,0,180),12,12,Color,false,.08f,0,2.f);
+    AssemblyDebugVisualization::SensorSphere(GetWorld(),Station+FVector(0,0,180),12,12,Color);
     DrawDebugString(GetWorld(),Station+FVector(0,0,205),Fresh ? TEXT("DOCK SENSOR: LIVE") : TEXT("DOCK SENSOR: STALE"),nullptr,Color,.08f,false,1.f);
     if (bDemoDockOvershoot && bOvershootOutbound && IsValid(WheelCell) && IsValid(WheelCell->Assembly))
     {
         const FVector Stop=WheelStationPose().GetLocation();
         const FVector Actual=WheelCell->Assembly->GetActorLocation();
         const FColor ActualColor=bDockOvershootRecovered?FColor::Green:FColor::Yellow;
-        DrawDebugSphere(GetWorld(),Stop,17,12,FColor::Green,false,.08f,0,3.f);
-        DrawDebugSphere(GetWorld(),OvershootTarget,17,12,FColor::Red,false,.08f,0,3.f);
+        AssemblyDebugVisualization::SensorSphere(GetWorld(),Stop,17,12,FColor::Green);
+        AssemblyDebugVisualization::SensorSphere(GetWorld(),OvershootTarget,17,12,FColor::Red);
         DrawDebugLine(GetWorld(),Stop,OvershootTarget,FColor::Red,false,.08f,0,3.f);
-        DrawDebugSphere(GetWorld(),Actual,12,12,ActualColor,false,.08f,0,3.f);
+        AssemblyDebugVisualization::SensorSphere(GetWorld(),Actual,12,12,ActualColor);
         DrawDebugString(GetWorld(),Stop+FVector(0,0,240),
             FString::Printf(TEXT("DOCK %.1fcm / <= %.1fcm | max overshoot %.1fcm | %s"),
                 FVector::Distance(Actual,Stop),DockToleranceCm,MaxDockOvershootCm,
@@ -372,7 +373,7 @@ void ASensorAssemblyLine::DrawSensorVisualization() const
             nullptr,ActualColor,.08f,false,1.f);
     }
     if (Sensors->Position.Fresh(SensorTime,Sensors->MaxAge))
-        DrawDebugSphere(GetWorld(),Sensors->Station.TransformPosition(Sensors->Position.Value),9,10,FColor::Yellow,false,.08f,0,2.f);
+        AssemblyDebugVisualization::SensorSphere(GetWorld(),Sensors->Station.TransformPosition(Sensors->Position.Value),9,10,FColor::Yellow);
 	if (ArrivalPhase==EArrivalPhase::Released && WheelCell && WheelCell->bSensorDrivenLeftRobot
 		&& WheelCell->LeftSensors && IsValid(WheelCell->LeftRobot))
 	{
@@ -382,7 +383,7 @@ void ASensorAssemblyLine::DrawSensorVisualization() const
 		const bool Present=ArmSensors->Presence.Fresh(Now,ArmSensors->MaxAge) && ArmSensors->Presence.bDetected;
 		const bool Gripped=ArmSensors->Gripped.Fresh(Now,ArmSensors->MaxAge) && ArmSensors->Gripped.bDetected;
 		const FColor ArmColor=!Present ? FColor::Red : Gripped ? FColor::Green : FColor::Yellow;
-		DrawDebugSphere(GetWorld(),TCP,9,10,ArmColor,false,.08f,0,2.f);
+		AssemblyDebugVisualization::SensorSphere(GetWorld(),TCP,9,10,ArmColor);
 		DrawDebugString(GetWorld(),TCP+FVector(0,0,45),
 			FString::Printf(TEXT("LEFT SENSOR: wheel %s | grip %s"),Present?TEXT("YES"):TEXT("NO"),Gripped?TEXT("YES"):TEXT("NO")),
 			nullptr,ArmColor,.08f,false,1.f);
@@ -390,7 +391,7 @@ void ASensorAssemblyLine::DrawSensorVisualization() const
 		{
 			const FVector Retreat=WheelCell->GetLeftGripState().TargetTCP.GetLocation();
 			DrawDebugLine(GetWorld(),TCP,Retreat,FColor::Cyan,false,.08f,0,2.f);
-			DrawDebugSphere(GetWorld(),Retreat,11,12,FColor::Cyan,false,.08f,0,2.f);
+			AssemblyDebugVisualization::SensorSphere(GetWorld(),Retreat,11,12,FColor::Cyan);
 			DrawDebugString(GetWorld(),Retreat+FVector(0,0,55),
 				FString::Printf(TEXT("GRIP RETRY %d: RETREAT THEN REAPPROACH"),WheelCell->LeftGripRetries),
 				nullptr,FColor::Cyan,.08f,false,1.f);
@@ -400,7 +401,7 @@ void ASensorAssemblyLine::DrawSensorVisualization() const
 			const FVector Measured=ArmSensors->PickupPose.Pose.GetLocation();
 			const bool PoseFresh=ArmSensors->PickupPose.Fresh(Now,ArmSensors->MaxAge);
 			const FColor MeasurementColor=PoseFresh?FColor::Yellow:FColor::Red;
-			DrawDebugSphere(GetWorld(),Measured,10,10,MeasurementColor,false,.08f,0,2.f);
+			AssemblyDebugVisualization::SensorSphere(GetWorld(),Measured,10,10,MeasurementColor);
 			DrawDebugLine(GetWorld(),TCP,Measured,MeasurementColor,false,.08f,0,1.f);
 			if (!PoseFresh || WheelCell->GetLeftStage()==EWheelStage::WaitPose)
 				DrawDebugString(GetWorld(),Measured+FVector(0,0,95),
@@ -416,8 +417,8 @@ void ASensorAssemblyLine::DrawSensorVisualization() const
 			const FVector Actual=WheelCell->GetWheelWorld(WheelIndex).GetLocation();
 			const FVector Target=WheelCell->GetMountWorld(WheelIndex).GetLocation();
 			if(WheelCell->IsWheelVisible(WheelIndex))
-				DrawDebugSphere(GetWorld(),Actual,6,12,FColor::White,false,.08f,0,2.f);
-			DrawDebugSphere(GetWorld(),Target,10,12,FColor::Green,false,.08f,0,2.f);
+				AssemblyDebugVisualization::SensorSphere(GetWorld(),Actual,6,12,FColor::White);
+			AssemblyDebugVisualization::SensorSphere(GetWorld(),Target,10,12,FColor::Green);
 			if(ArmSensors->PickupPose.bValid && ArmSensors->PickupPose.MeasuredAt>=0)
 				DrawDebugLine(GetWorld(),ArmSensors->PickupPose.Pose.GetLocation(),Target,FColor(80,150,255),false,.08f,0,1.f);
 		}

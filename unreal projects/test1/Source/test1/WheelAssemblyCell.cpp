@@ -1,4 +1,5 @@
-﻿#include "WheelAssemblyCell.h"
+#include "WheelAssemblyCell.h"
+#include "AssemblyDebugVisualization.h"
 #include "ReducedPartPhysics.h"
 #include "WheelGripPhysics.h"
 #include "CamryAssembly.h"
@@ -1621,6 +1622,9 @@ void AWheelAssemblyCell::BeginPlay() { Super::BeginPlay(); if (!bExternallyDrive
 void AWheelAssemblyCell::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+    if(GetWorld()&&(GetWorld()->WorldType==EWorldType::PIE||GetWorld()->WorldType==EWorldType::Game))
+        for(const auto& Part:PartPhysics)AssemblyDebugVisualization::Damage(GetWorld(),Part);
+
 
 	if(bShowSensorVisualization&&GetWorld()&&(GetWorld()->WorldType==EWorldType::PIE||GetWorld()->WorldType==EWorldType::Game))
 	{
@@ -1629,8 +1633,8 @@ void AWheelAssemblyCell::Tick(float DeltaSeconds)
 			const FVector Before=FrontLeftDockScan.MeasuredWorld.GetLocation();
 			const FVector After=FrontLeftHubScan.MeasuredWorld.GetLocation();
 			DrawDebugLine(GetWorld(),Before,After,FColor::Yellow,false,0.08f,0,5.f);
-			DrawDebugSphere(GetWorld(),Before,9,12,FColor::Cyan,false,0.08f,0,2.f);
-			DrawDebugSphere(GetWorld(),After,9,12,FColor::Yellow,false,0.08f,0,2.f);
+			AssemblyDebugVisualization::SensorSphere(GetWorld(),Before,9,12,FColor::Cyan);
+			AssemblyDebugVisualization::SensorSphere(GetWorld(),After,9,12,FColor::Yellow);
 			DrawDebugString(GetWorld(),After+FVector(0,0,125),
 				FString::Printf(TEXT("HUB SHIFT %.1f mm / LIMIT 5.0 mm\n%s"),DockToPreMountShiftMm,
 					FrontLeftPreMountScan.bValid?TEXT("RESCAN OK - NEW TARGET"):TEXT("RETRACT - RESCAN")),
@@ -1649,7 +1653,7 @@ void AWheelAssemblyCell::Tick(float DeltaSeconds)
 		if(SlipRecoveryPhase>0)
 		{
 			const FVector Fallen=GetDroppedWheelLocation();
-			DrawDebugSphere(GetWorld(),Fallen,35,16,FColor::Red,false,0.08f,0,3.f);
+			AssemblyDebugVisualization::SensorSphere(GetWorld(),Fallen,35,16,FColor::Red);
 			DrawDebugString(GetWorld(),Fallen+FVector(0,0,115),
 				FString::Printf(TEXT("%s / %s / %.0f kg / operator recovery %d/4"),
 					GetSlipFailureLabel(),
@@ -1665,8 +1669,8 @@ void AWheelAssemblyCell::Tick(float DeltaSeconds)
 		if(FrontLeftWheelMeasuredDiameterCm>0&&!bFrontLeftWheelSizePassed)
 		{
 			const FVector Center=GetWheelWorld(0).GetLocation();
-			DrawDebugSphere(GetWorld(),Center,33,24,FColor::Green,false,0.08f,0,1.5f);
-			DrawDebugSphere(GetWorld(),Center,33*FrontLeftWheelSizeScale,24,FColor::Red,false,0.08f,0,3.f);
+			AssemblyDebugVisualization::SensorSphere(GetWorld(),Center,33,24,FColor::Green);
+			AssemblyDebugVisualization::SensorSphere(GetWorld(),Center,33*FrontLeftWheelSizeScale,24,FColor::Red);
 			DrawDebugString(GetWorld(),Center+FVector(0,0,120),
 				FString::Printf(TEXT("SIZE REJECT: %.1f cm / 66.0 +/- 1.0 cm"),FrontLeftWheelMeasuredDiameterCm),
 				nullptr,FColor::Red,0.08f,false,1.f);

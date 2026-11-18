@@ -18,11 +18,15 @@ struct FAssemblyContact
 struct FAssemblyDamage
 {
     FString PartId, Region;
+    // Contact location in the damaged part, support, or gripper's own frame.
     FVector LocalPointCm=FVector::ZeroVector;
     FVector WorldPointCm=FVector::ZeroVector;
     bool bCounterpart=false;
+    bool bGripCounterpart=false;
     double ElasticDeflectionMm=0;
     double PeakForceN=0, LimitN=0;
+    FVector MarkerWorldPosition(const FTransform& Part,const FTransform& Support,const FTransform& Grip) const
+    {return (bCounterpart?(bGripCounterpart?Grip:Support):Part).TransformPosition(LocalPointCm);}
 };
 struct FAssemblyContactBody
 {
@@ -57,7 +61,13 @@ struct FAssemblyContactBody
         if(Magnitude<=Limit||Victim.IsEmpty())return;
         auto* D=Damage.FindByPredicate([&](const auto& X){return X.Region==C.Region&&X.PartId==Victim;});
         if(!D){FAssemblyDamage New;New.PartId=Victim;New.Region=C.Region;New.LocalPointCm=C.PointCm;New.LimitN=Limit;New.bCounterpart=Other;Damage.Add(New);D=&Damage.Last();}
-        if(Magnitude>D->PeakForceN){D->PeakForceN=Magnitude;D->LocalPointCm=C.PointCm;D->WorldPointCm=At;D->ElasticDeflectionMm=1000*Magnitude/C.Stiffness;}
+        if(Magnitude>D->PeakForceN)
+        {
+            D->PeakForceN=Magnitude;
+            D->LocalPointCm=C.PointCm+(Other?C.Normal.GetSafeNormal()*(C.DebrisM*100):FVector::ZeroVector);
+            D->bGripCounterpart=C.bGrip;D->WorldPointCm=At;
+            D->ElasticDeflectionMm=1000*Magnitude/C.Stiffness;
+        }
     }
     bool Step(const TArray<FAssemblyContact>& Contacts,const FTransform& PreviousGrip,const FTransform& Grip,
         const FTransform& Support,double Dt)
@@ -109,7 +119,7 @@ struct FAssemblyContactBody
                 const FVector F=N*NormalForce+Tangential;
                 const FVector M=FVector::CrossProduct(R,F);
                 Force+=F;Torque+=M;LastContactForceN=FMath::Max(LastContactForceN,F.Size());RecordDamage(C,F.Size());
-                if(!C.CounterpartId.IsEmpty())RecordDamage(C,F.Size(),true,Frame.TransformPosition(C.PointCm));
+                if(!C.CounterpartId.IsEmpty())RecordDamage(C,F.Size(),true,Frame.TransformPosition(C.PointCm)+N*(C.DebrisM*100));
                 if(C.bGrip){++GripContacts;GripForce+=F;GripTorque+=M;GripFrictionCapacityN+=C.Friction*NormalCapacity;}else{++SupportContacts;SupportForce+=F;}
             }
             Velocity+=Force*(H/Mass);

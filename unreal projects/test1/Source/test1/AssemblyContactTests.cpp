@@ -44,6 +44,21 @@ bool FAssemblyContactTests::RunTest(const FString&)
     Bad.Step({Bolt},FTransform::Identity,FTransform::Identity,FTransform::Identity,.001);
     TestTrue(TEXT("body and part damage identified independently"),Bad.Damage.ContainsByPredicate([](const auto& D){return D.PartId==TEXT("body-A")&&D.bCounterpart;})
         &&Bad.Damage.ContainsByPredicate([](const auto& D){return D.PartId==TEXT("door-A")&&!D.bCounterpart;}));
+    const FTransform MovedPart(FRotator(0,90,0),FVector(200,300,100));
+    const FTransform MovedSupport(FRotator(90,0,0),FVector(-100,50,80));
+    for(const auto& D:Bad.Damage)
+    {
+        const FVector Expected=D.bCounterpart?MovedSupport.TransformPosition(FVector(0,0,2)):MovedPart.GetLocation();
+        TestTrue(TEXT("damage marker follows its own part or support, including obstruction height"),
+            D.MarkerWorldPosition(MovedPart,MovedSupport,FTransform::Identity).Equals(Expected,.0001));
+    }
+    FAssemblyContactBody ToolDamage;ToolDamage.PartId=TEXT("door-B");
+    FAssemblyContact Jaw;Jaw.Region=TEXT("jaw pad");Jaw.CounterpartId=TEXT("gripper-B");
+    Jaw.PointCm=FVector(5,10,0);Jaw.bGrip=true;Jaw.CounterpartYieldN=100;
+    ToolDamage.RecordDamage(Jaw,200,true);
+    TestTrue(TEXT("gripper damage follows the tool instead of the fixture"),ToolDamage.Damage.Num()==1&&
+        ToolDamage.Damage[0].MarkerWorldPosition(MovedPart,FTransform::Identity,MovedSupport)
+            .Equals(MovedSupport.TransformPosition(Jaw.PointCm),.0001));
     FAssemblyContactBody Vacuum;TArray<FAssemblyContact> Cups;
     for(double X:{-16.,16.})for(double Z:{-16.,16.})
     {FAssemblyContact C;C.PointCm=FVector(X,26,Z-19);C.Normal=FVector::RightVector;C.bGrip=C.bAdhesive=true;

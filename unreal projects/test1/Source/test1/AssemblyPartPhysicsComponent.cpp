@@ -5,6 +5,7 @@
 #include "Engine/World.h"
 #include "DrawDebugHelpers.h"
 #include "ReducedPartPhysics.h"
+#include "AssemblyDebugVisualization.h"
 
 UAssemblyPartPhysicsComponent::UAssemblyPartPhysicsComponent(){PrimaryComponentTick.bCanEverTick=false;}
 void UAssemblyPartPhysicsComponent::Initialize(USceneComponent* Root,const FString& Id,const FTransform& Offset,double Mass,const FVector& Inertia)
@@ -42,10 +43,10 @@ bool UAssemblyPartPhysicsComponent::Advance(double Dt)
         {
             const FVector N=(Hit.bStartPenetrating?Hit.Normal:Hit.ImpactNormal).GetSafeNormal();
             const double Closing=FMath::Max(0.,-FVector::DotProduct(Body.Velocity,N));
+            Body.Pose.SetLocation(Hit.bStartPenetrating?Before+N*(Hit.PenetrationDepth+.01):Hit.Location+N*.01);
             FAssemblyContact C;C.Region=TEXT("충돌 접촉부");C.PointCm=Body.Pose.InverseTransformPosition(Hit.ImpactPoint);C.YieldN=5000;
             C.Stiffness=300000; // Equivalent local compliance: peak from mv²/2=kx²/2, independent of render/outer step.
             Body.RecordDamage(C,Closing*FMath::Sqrt(Body.Mass*C.Stiffness));
-            Body.Pose.SetLocation(Hit.bStartPenetrating?Before+N*(Hit.PenetrationDepth+.01):Hit.Location+N*.01);
             Body.ResolveImpact(N,(Hit.ImpactPoint-Body.Pose.GetLocation())/100);
         }
         if(bShowContacts&&LastDrawFrame!=GFrameCounter)for(const auto& C:Enabled)
@@ -55,9 +56,7 @@ bool UAssemblyPartPhysicsComponent::Advance(double Dt)
             const auto Q=FRotationMatrix::MakeFromZ(Frame.TransformVectorNoScale(C.Normal)).ToQuat();
             DrawDebugBox(GetWorld(),At,FVector(C.RadiusM*100,C.RadiusM*100,.2),Q,C.bGrip?FColor::Cyan:FColor::Green,false,.04f,0,.3f);
         }
-        if(bShowDamage&&LastDrawFrame!=GFrameCounter)for(const auto& D:Body.Damage)
-        {const auto At=D.bCounterpart?D.WorldPointCm:Body.Pose.TransformPosition(D.LocalPointCm);DrawDebugSphere(GetWorld(),At,5,12,FColor::Red,false,.08f);
-         DrawDebugString(GetWorld(),At+FVector(0,0,8),D.PartId+TEXT(" · ")+D.Region+TEXT(" 손상 추정"),nullptr,FColor::Red,.08f);}
+        if(bShowDamage&&LastDrawFrame!=GFrameCounter)AssemblyDebugVisualization::Damage(GetWorld(),Body,Support,Grip);
         LastDrawFrame=GFrameCounter;
     }
     ObservedPose=Body.Pose;ObservedVelocityMps=Body.Velocity;ObservedAngularVelocity=Body.Omega;

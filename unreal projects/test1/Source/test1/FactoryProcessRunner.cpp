@@ -1,4 +1,5 @@
 #include "FactoryProcessRunner.h"
+#include "AssemblyDebugVisualization.h"
 #include "WheelGripPhysics.h"
 #include "FactoryEquipment.h"
 #include "Components/SceneComponent.h"
@@ -385,7 +386,7 @@ void UFactoryWheelProcessRunner::DrawFeatureVisualization() const
     if(!R||!C||!GetWorld()||!R->WheelRoot||!R->Layout.Find(R->Layout.SupplyId)||!R->Layout.Find(R->Layout.StationId))return;
     const FVector Supply=R->SupplyWorld(),Hub=R->HubWorld(),TCP=C->Pose().GetLocation();
     // Draw for this frame only: view toggles never leave persistent stale geometry.
-    auto Sphere=[&](FVector P,double Radius,FColor Color){DrawDebugSphere(GetWorld(),P,Radius,16,Color,false,-1,0,2);};
+    auto Sphere=[&](FVector P,double Radius,FColor Color){AssemblyDebugVisualization::SensorSphere(GetWorld(),P,Radius,16,Color);};
     const auto& S=Sensors.Reading;
     if(bShowSensors)
     {
