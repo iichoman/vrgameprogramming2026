@@ -34,7 +34,11 @@ bool AFactoryRuntime::RunModularEditorChecks()
         &&TestAssemblyLine->bExtendedRandomEvents
         &&TestAssemblyLine->ConfigureIncidentDemo(5)
         &&!TestAssemblyLine->bExtendedRandomEvents
-        &&!TestAssemblyLine->WheelCell->bReplaceRejectedWheel;
+        &&!TestAssemblyLine->WheelCell->bReplaceRejectedWheel
+        &&TestAssemblyLine->ConfigureIncidentDemo(11)
+        &&TestAssemblyLine->DoorCell->bReplaceRejectedDoor
+        &&TestAssemblyLine->ConfigureIncidentDemo(5)
+        &&!TestAssemblyLine->DoorCell->bReplaceRejectedDoor;
     Check(TEXT("incident_demo_adapter_resets_previous_fault_configuration"),DemoAdapterValid);
     auto Broken=Layout;Broken.AssemblyBindings.Add(TEXT("assembly_door"),TEXT("missing"));
     Check(TEXT("dangling_operation_binding_rejected"),!Broken.Validate(Error));
@@ -334,20 +338,41 @@ bool AFactoryRuntime::RunModularEditorChecks()
         ResetCycle();
         for(int32 I=0;I<24;++I)StepSimulation(1./120);
         const bool Began=StartCycle();
-        for(int32 I=0;I<120*300&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)StepSimulation(1./120);
+        bool RejectedBeforeGrip=false,HoldVisualObserved=false,SpareTransitObserved=false,RescanPassed=false;
+        for(int32 I=0;I<120*300&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)
+        {
+            StepSimulation(1./120);
+            const auto* Current=TestAssemblyLine->DoorCell.Get();
+            RejectedBeforeGrip|=Current->DoorReplacePhase==1&&Current->State==EDoorAssemblyState::WaitReplacement
+                &&!Current->bDoorHeld&&Current->RejectedDoorWidthCm>0
+                &&(Kind==11?Current->RejectedDoorWidthCm>Current->NominalDoorWidthCm+1
+                    :Current->RejectedDoorWidthCm<Current->NominalDoorWidthCm-1);
+            HoldVisualObserved|=Current->DoorReplacePhase==2&&Current->bDoorSizeRejected
+                &&Current->GetRejectedDoorVisualCount()>0;
+            SpareTransitObserved|=Current->DoorReplacePhase==2
+                &&FVector::Distance(Current->Assembly->GetLeftDoor()->GetComponentLocation(),Current->GetPickupDoorWorld().GetLocation())>20.0;
+            RescanPassed|=Current->DoorReplacements==1&&Current->bDoorSizePassed
+                &&FMath::Abs(Current->MeasuredDoorWidthCm-Current->NominalDoorWidthCm)<=1.0;
+        }
         auto* Door=TestAssemblyLine->DoorCell.Get();
-        Check(Kind==11?TEXT("oversized_door_laser_rejects_before_pickup"):TEXT("undersized_door_laser_rejects_before_pickup"),
-            Began&&RunState==EFactoryRunState::Fault&&Door->MeasuredDoorWidthCm>0&&!Door->bDoorSizePassed
-            &&(Kind==11?Door->MeasuredDoorWidthCm>Door->NominalDoorWidthCm+1:Door->MeasuredDoorWidthCm<Door->NominalDoorWidthCm-1)
-            &&!Door->bDoorHeld);
-        for(int32 TickIndex=0;TickIndex<40;++TickIndex)Door->Tick(0.05f);
-        const USceneComponent* RejectedDoorRoot=Door->TargetModule
-            ? Door->TargetModule->GetRootComponent() : Door->Assembly->GetLeftDoor();
-        Check(Kind==11?TEXT("oversized_door_moves_to_reject_hold"):TEXT("undersized_door_moves_to_reject_hold"),
-            Door->bDoorSizeRejected&&!Door->bDoorSizeRejectMoving&&RejectedDoorRoot
-            &&FVector::Distance(RejectedDoorRoot->GetComponentLocation(),Door->DoorRejectTargetWorld)<0.5
-            &&FVector::Distance(Door->DoorRejectStartWorld,Door->DoorRejectTargetWorld)>190.0
-            &&FMath::IsNearlyEqual(Door->RejectedDoorWidthCm,Door->MeasuredDoorWidthCm,0.01));
+        Check(Kind==11?TEXT("oversized_door_rejected_replaced_rescanned_and_cycle_completes")
+            :TEXT("undersized_door_rejected_replaced_rescanned_and_cycle_completes"),
+            Began&&RejectedBeforeGrip&&HoldVisualObserved&&SpareTransitObserved&&RescanPassed
+            &&RunState==EFactoryRunState::Complete&&TestAssemblyLine->MountedDoorCount==4);
+        if(Kind==11)
+        {
+            TestAssemblyLine->SetFactoryCheck(11);
+            Door->bReplaceRejectedDoor=false;
+            ResetCycle();
+            for(int32 I=0;I<24;++I)StepSimulation(1./120);
+            const bool StopBegan=StartCycle();
+            for(int32 I=0;I<120*300&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)StepSimulation(1./120);
+            for(int32 TickIndex=0;TickIndex<40;++TickIndex)Door->Tick(0.05f);
+            const USceneComponent* RejectedDoorRoot=Door->Assembly->GetLeftDoor();
+            Check(TEXT("door_reject_without_replacement_isolates_and_stops"),StopBegan
+                &&RunState==EFactoryRunState::Fault&&!Door->bDoorHeld&&Door->bDoorSizeRejected
+                &&RejectedDoorRoot&&FVector::Distance(RejectedDoorRoot->GetComponentLocation(),Door->DoorRejectTargetWorld)<0.5);
+        }
     }
     for(int32 Kind : {1,2,3,4,9})
     {

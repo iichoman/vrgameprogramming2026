@@ -87,7 +87,11 @@ void AAutonomousAssemblyLine::SetFactoryCheck(int32 Kind)
         WheelCell->FrontLeftWheelSizeScale = FactoryCheck == 9 ? 1.12 : FactoryCheck == 10 ? 0.88 : 1.0;
     }
     bDemoDockOvershoot=FactoryCheck==13;
-    if(DoorCell)DoorCell->DoorSizeScale=FactoryCheck==11?1.12:FactoryCheck==12?0.88:1.0;
+    if(DoorCell)
+    {
+        DoorCell->DoorSizeScale=FactoryCheck==11?1.12:FactoryCheck==12?0.88:1.0;
+        DoorCell->bReplaceRejectedDoor=FactoryCheck==11||FactoryCheck==12;
+    }
 }
 
 bool AAutonomousAssemblyLine::ConfigureIncidentDemo(int32 Preset)

@@ -6,6 +6,7 @@
 #include "VehicleProcessTest.h"
 #include "Components/PrimitiveComponent.h"
 #include "Components/SceneComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "Components/BoxComponent.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
@@ -124,6 +125,9 @@ FTransform ADoorAssemblyCell::GetPickupDoorWorld() const
 
 bool ADoorAssemblyCell::ResetCycle()
 {
+	ClearRejectedDoorVisual();
+	DoorReplacePhase=DoorReplacements=0; DoorReplaceSeconds=0;
+	DoorSpareStartWorld=FVector::ZeroVector;
 	bDoorSizeRejectMoving=bDoorSizeRejected=false;
 	DoorRejectElapsedSeconds=RejectedDoorWidthCm=0;
 	DoorRejectStartWorld=DoorRejectTargetWorld=FVector::ZeroVector;
@@ -179,6 +183,14 @@ bool ADoorAssemblyCell::StartCycle()
 			DoorRejectTargetWorld=DoorRejectStartWorld
 				+BodyAtStart.TransformVectorNoScale(FVector(-90,bRightDoor?180:-180,0));
 			bDoorSizeRejectMoving=true;
+			if(bReplaceRejectedDoor && DoorReplacements==0 && !bRightDoor && !IsValid(TargetModule))
+			{
+				Robot->Halt();
+				DoorReplacePhase=1; DoorReplaceSeconds=0;
+				EnterState(EDoorAssemblyState::WaitReplacement,
+					FString::Printf(TEXT("차문 폭 %.1fcm 불합격 · 파지 금지 · 격리 및 대체품 공급"),RejectedDoorWidthCm));
+				return true;
+			}
 		}
 		Fail(FString::Printf(TEXT("차문 규격 검사 실패 · 레이저 폭 %.1fcm / 기준 %.1fcm ± 1.0cm · 파지 금지·격리"),MeasuredDoorWidthCm,NominalDoorWidthCm));
 		return false;
@@ -234,6 +246,17 @@ void ADoorAssemblyCell::MeasureTCP()
 bool ADoorAssemblyCell::AdvanceSimulation(double Delta)
 {
 	if (!FMath::IsFinite(Delta) || Delta<0 || Delta>1 || !FMath::IsFinite(FixedStepSeconds) || FixedStepSeconds<=0 || FixedStepSeconds>0.02) return false;
+	if (State==EDoorAssemblyState::WaitReplacement)
+	{
+		Accumulator+=Delta;
+		while (Accumulator+1.e-10>=FixedStepSeconds && State==EDoorAssemblyState::WaitReplacement)
+		{
+			Accumulator-=FixedStepSeconds;
+			SimulationTimeSeconds+=FixedStepSeconds;
+			AdvanceDoorReplacement(FixedStepSeconds);
+		}
+		return State!=EDoorAssemblyState::Fault;
+	}
 	if (bDoorFastened && Pose.IsValid() && IsValid(Assembly) && Assembly->GetBodyFrame())
 		Pose->SetDoorWorldPose(FastenedInBody*Assembly->GetBodyFrame()->GetComponentTransform());
 	if (Pose.IsValid()) { RefreshQuality(); MeasureSensors(); }
@@ -374,7 +397,7 @@ void ADoorAssemblyCell::BeginPlay()
 void ADoorAssemblyCell::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
-	AdvanceRejectedDoor(DeltaSeconds);
+	if (DoorReplacePhase==0) AdvanceRejectedDoor(DeltaSeconds);
 	if (bDoorSizeRejectMoving || bDoorSizeRejected)
 	{
 		if (GetWorld() && (GetWorld()->WorldType==EWorldType::PIE || GetWorld()->WorldType==EWorldType::Game))
@@ -402,6 +425,78 @@ void ADoorAssemblyCell::AdvanceRejectedDoor(double DeltaSeconds)
 	World.SetLocation(FMath::Lerp(DoorRejectStartWorld,DoorRejectTargetWorld,Smooth));
 	if(!Pose->SetDoorWorldPose(World)) { bDoorSizeRejectMoving=false; return; }
 	if(Alpha>=1.0) { bDoorSizeRejectMoving=false; bDoorSizeRejected=true; }
+}
+void ADoorAssemblyCell::ClearRejectedDoorVisual()
+{
+	for (UStaticMeshComponent* Visual:RejectedDoorVisuals)
+		if(IsValid(Visual)) { RemoveInstanceComponent(Visual); Visual->DestroyComponent(); }
+	RejectedDoorVisuals.Empty();
+	if(IsValid(RejectedDoorRoot)) { RemoveInstanceComponent(RejectedDoorRoot); RejectedDoorRoot->DestroyComponent(); }
+	RejectedDoorRoot=nullptr;
+}
+bool ADoorAssemblyCell::CreateRejectedDoorVisual()
+{
+	if(!Pose.IsValid() || !Pose->GetControlledDoor())return false;
+	ClearRejectedDoorVisual();
+	USceneComponent* DoorRoot=Pose->GetControlledDoor();
+	RejectedDoorRoot=NewObject<USceneComponent>(this);
+	AddInstanceComponent(RejectedDoorRoot);
+	RejectedDoorRoot->SetupAttachment(RootComponent);
+	RejectedDoorRoot->RegisterComponent();
+	RejectedDoorRoot->SetWorldTransform(DoorRoot->GetComponentTransform());
+	TArray<USceneComponent*> DoorChildren; DoorRoot->GetChildrenComponents(true,DoorChildren);
+	for(USceneComponent* Child:DoorChildren)
+	{
+		UStaticMeshComponent* Source=Cast<UStaticMeshComponent>(Child);
+		if(!IsValid(Source)||!Source->GetStaticMesh()||!Source->IsVisible())continue;
+		UStaticMeshComponent* Visual=NewObject<UStaticMeshComponent>(this);
+		AddInstanceComponent(Visual);
+		Visual->SetupAttachment(RejectedDoorRoot);
+		Visual->SetMobility(EComponentMobility::Movable);
+		Visual->SetStaticMesh(Source->GetStaticMesh());
+		Visual->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		Visual->SetRelativeTransform(Source->GetComponentTransform().GetRelativeTransform(DoorRoot->GetComponentTransform()));
+		for(int32 Material=0;Material<Source->GetNumMaterials();++Material)
+			Visual->SetMaterial(Material,Source->GetMaterial(Material));
+		Visual->RegisterComponent();
+		RejectedDoorVisuals.Add(Visual);
+	}
+	if(RejectedDoorVisuals.IsEmpty()) { ClearRejectedDoorVisual(); return false; }
+	return true;
+}
+void ADoorAssemblyCell::AdvanceDoorReplacement(double DeltaSeconds)
+{
+	if(DoorReplacePhase==1)
+	{
+		AdvanceRejectedDoor(DeltaSeconds);
+		if(bDoorSizeRejectMoving)return;
+		if(!bDoorSizeRejected || !CreateRejectedDoorVisual())
+		{ DoorReplacePhase=0; Fail(TEXT("불량 차문 격리 표시 생성 실패 · 공급 중단")); return; }
+		for(const auto& Entry:OriginalDoorMeshScales)
+			if(Entry.Key.IsValid())Entry.Key->SetRelativeScale3D(Entry.Value);
+		OriginalDoorMeshScales.Empty();
+		DoorSizeScale=1.0;
+		DoorSpareStartWorld=PickupAtStart.GetLocation()+BodyAtStart.TransformVectorNoScale(FVector(0,-160,0));
+		FTransform Spare=PickupAtStart; Spare.SetLocation(DoorSpareStartWorld);
+		if(!Pose->SetDoorWorldPose(Spare))
+		{ DoorReplacePhase=0; Fail(TEXT("대체 차문 공급 시작 위치 설정 실패")); return; }
+		DoorReplacePhase=2; DoorReplaceSeconds=0;
+		Status=TEXT("불합격 차문 격리 완료 · 대체 차문 공급 중 · 로봇 대기");
+		return;
+	}
+	if(DoorReplacePhase!=2 || !Pose.IsValid())return;
+	DoorReplaceSeconds+=DeltaSeconds;
+	const double Alpha=FMath::Clamp(DoorReplaceSeconds/1.8,0.0,1.0);
+	const double Smooth=Alpha*Alpha*(3.0-2.0*Alpha);
+	FTransform Spare=PickupAtStart;
+	Spare.SetLocation(FMath::Lerp(DoorSpareStartWorld,PickupAtStart.GetLocation(),Smooth));
+	if(!Pose->SetDoorWorldPose(Spare))
+	{ DoorReplacePhase=0; Fail(TEXT("대체 차문 공급 이동 실패")); return; }
+	if(Alpha<1.0)return;
+	DoorReplacePhase=0; DoorReplaceSeconds=0; ++DoorReplacements;
+	FlushRecording();
+	EnterState(EDoorAssemblyState::Idle,TEXT("대체 차문 도착 · 폭 재검사 대기"));
+	if(!StartCycle())return;
 }
 void ADoorAssemblyCell::EndPlay(const EEndPlayReason::Type Reason)
 { FlushRecording(); Super::EndPlay(Reason); }
