@@ -5,6 +5,8 @@
 #include "FactoryAssemblyEquipment.h"
 #include "RobotArm.h"
 #include "Components/SceneComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
 #include "VehicleAssemblyMounting.h"
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonSerializer.h"
@@ -42,6 +44,42 @@ bool RearWheelInsertionClear(AWheelAssemblyCell& Cell,int Index,FString& Why)
     return true;
 }
 
+void ProbeDoorInsertion(AIntegratedAssemblyLine& Line)
+{
+    const auto* Car=Line.WheelCell->Assembly.Get();
+    for(int Index=0;Index<4;++Index)
+    {
+        if(!Line.DoorModules.IsValidIndex(Index)||!Line.DoorTaskRobots.IsValidIndex(Index))continue;
+        auto* Module=Line.DoorModules[Index].Get();auto* Arm=Line.DoorTaskRobots[Index].Get();
+        if(!Module||!Arm)continue;
+        const auto Nominal=Module->ReferencePoseInVehicle*Car->GetActorTransform();
+        const auto* Neighbor=Line.DoorModules[Index^1].Get();
+        for(bool Occupied:{false,true})
+        {
+            FRobotMotionScene Scene;Scene.Capture(*Arm,Module->GetRootComponent(),true);
+            Scene.Shapes.RemoveAll([](const auto& S){return !S.bPayload;});
+            if(!Occupied)Scene.Obstacles.RemoveAll([&](const auto& O){return O.Component.IsValid()&&O.Component->GetOwner()==Neighbor;});
+            for(auto& O:Scene.Obstacles)if(auto* C=O.Component.Get())
+                if(auto* D=Cast<AVehicleProcessModule>(C->GetOwner()))if(Line.DoorModules.Contains(D))
+                {
+                    O.World=C->GetComponentTransform().GetRelativeTransform(D->GetActorTransform())*(D->ReferencePoseInVehicle*Car->GetActorTransform());
+                    O.Bounds=C->GetStaticMesh()->GetBoundingBox().TransformBy(O.World);
+                }
+            Scene.PrepareGeometry(true);const auto Shapes=Scene.Shapes;const auto TCP=Arm->GetTCPWorld();
+            auto Clear=[&](double Out,FString& Why)
+            {
+                auto Goal=Nominal;Goal.AddToTranslation(Car->GetBodyFrame()->GetComponentTransform().TransformVectorNoScale(FVector(0,Index<2?-Out:Out,0)));
+                for(int J=0;J<Shapes.Num();++J)Scene.Shapes[J].Local=(Shapes[J].Local*TCP).GetRelativeTransform(Module->GetActorTransform())*Goal.GetRelativeTransform(TCP);
+                return Scene.Clear(*Arm,Arm->GetAnglesRadians(),Why);
+            };
+            FString Reason;double First=-1;
+            for(int Sample=50;Sample>=0;--Sample)if(!Clear(Sample*.5,Reason)){First=Sample*.5;break;}
+            UE_LOG(LogTemp,Display,TEXT("DOOR_INSERTION_PROBE task=%s neighbor=%d first_out=%.1f %s"),*Module->ModuleId.ToString(),Occupied,First,*Reason);
+            Reason.Empty();const bool Seated=Clear(0,Reason);
+            UE_LOG(LogTemp,Display,TEXT("DOOR_SEATED_PROBE task=%s neighbor=%d clear=%d %s"),*Module->ModuleId.ToString(),Occupied,Seated,*Reason);
+        }
+    }
+}
 }
 
 bool AFactoryRuntime::RunTaskAssignmentChecks()
@@ -84,6 +122,8 @@ bool AFactoryRuntime::RunTaskAssignmentChecks()
         }
     }return Ok&&RunState==EFactoryRunState::Complete;};
     Check(TEXT("two_robot_tasks_full_cycle"),Run());const double TwoSeconds=SimulationSeconds;
+    const int TwoMountedWheels=TestAssemblyLine->WheelCell->MountedCount,TwoMountedDoors=TestAssemblyLine->MountedDoorCount;
+    ProbeDoorInsertion(*TestAssemblyLine);
     Check(TEXT("lifted_rear_wheels_allow_straight_insertion"),RearClearanceChecked&&RearClearance);
     if(!RearClearance)UE_LOG(LogTemp,Warning,TEXT("REAR_INSERTION_CLEARANCE %s"),*RearClearanceFailure);
     auto* TwoWheelCell=TestAssemblyLine->WheelCell.Get();
@@ -108,7 +148,12 @@ bool AFactoryRuntime::RunTaskAssignmentChecks()
     auto* W=TestAssemblyLine->WheelCell.Get();
     Check(TEXT("four_distinct_executors_and_sensor_banks"),W->TaskRobots[0]!=W->TaskRobots[1]&&W->TaskRobots[2]!=W->TaskRobots[3]&&W->TaskSensors.Num()==4&&W->TaskSensors[0]!=W->TaskSensors[2]);
     Check(TEXT("four_robot_tasks_full_cycle"),Run());const double FourSeconds=SimulationSeconds;
-    Check(TEXT("all_parts_installed_once"),W->MountedCount==4&&TestAssemblyLine->DoorCell->bDoorFastened);
+    const int FourMountedWheels=W->MountedCount,FourMountedDoors=TestAssemblyLine->MountedDoorCount;
+    Check(TEXT("all_parts_installed_once"),FourMountedWheels==4&&FourMountedDoors==4);
+    bool DoorResults=true;
+    for(const FString Id:{TEXT("door_fl"),TEXT("door_rl"),TEXT("door_fr"),TEXT("door_rr")})
+    {FDoorOperationSnapshot Snapshot;DoorResults&=TestAssemblyLine->DoorSnapshot(Id,Snapshot)&&Snapshot.TaskId==Id&&Snapshot.bComplete;}
+    Check(TEXT("four_independent_door_completion_records"),DoorResults);
     ResetCycle();Advance(24);StartCycle();Advance(240);StopCycle();Advance(240);
     Check(TEXT("stop_in_task_mode"),RunState==EFactoryRunState::Stopped);
     ResetCycle();Check(TEXT("reset_clears_task_execution"),CanEdit()&&W->MountedCount==0);
@@ -125,6 +170,8 @@ bool AFactoryRuntime::RunTaskAssignmentChecks()
     Layout=Original;Rebuild();History.Clear();
     auto Report=MakeShared<FJsonObject>();Report->SetBoolField(TEXT("success"),Pass);Report->SetArrayField(TEXT("checks"),Checks);
     Report->SetNumberField(TEXT("two_robot_cycle_s"),TwoSeconds);Report->SetNumberField(TEXT("four_robot_cycle_s"),FourSeconds);
+    Report->SetNumberField(TEXT("two_robot_wheels_mounted"),TwoMountedWheels);Report->SetNumberField(TEXT("two_robot_doors_mounted"),TwoMountedDoors);
+    Report->SetNumberField(TEXT("four_robot_wheels_mounted"),FourMountedWheels);Report->SetNumberField(TEXT("four_robot_doors_mounted"),FourMountedDoors);
     Report->SetNumberField(TEXT("left_second_pickup_s"),LeftPickupSeconds);Report->SetNumberField(TEXT("right_second_pickup_s"),RightPickupSeconds);
     Report->SetNumberField(TEXT("left_rear_pickup_tcp_rotation_deg"),LeftHeadSwing);Report->SetNumberField(TEXT("right_rear_pickup_tcp_rotation_deg"),RightHeadSwing);
     Report->SetStringField(TEXT("scope"),TEXT("Functional allocation regression. Synthetic scene sensors, timed fastening, no collision/force certification; timing includes seeded demo events."));
