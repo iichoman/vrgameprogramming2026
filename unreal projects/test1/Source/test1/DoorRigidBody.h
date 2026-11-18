@@ -14,7 +14,9 @@ struct FDoorRigidBodySettings
     UPROPERTY(EditAnywhere, Category="그리퍼") double GripNormalN=2400;
     UPROPERTY(EditAnywhere, Category="그리퍼") double Friction=0.65;
     UPROPERTY(EditAnywhere, Category="그리퍼") double GripMomentNm=100;
-    UPROPERTY(EditAnywhere, Category="그리퍼") double GripStiffnessNm=80000;
+    // Four pads, 100 kN/m each: 200 N eccentric-load reaction compresses a lip
+    // about 2 mm, inside the 5 mm sealing range. Assumption, not supplier data.
+    UPROPERTY(EditAnywhere, Category="그리퍼") double GripStiffnessNm=400000;
     UPROPERTY(EditAnywhere, Category="그리퍼") double GripAngularStiffness=3000;
     UPROPERTY(EditAnywhere, Category="받침") double SupportStiffnessNm=300000;
     UPROPERTY(EditAnywhere, Category="받침") double SupportMomentNm=300;

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "IntegratedAssemblyLine.h"
@@ -94,6 +94,7 @@ public:
     virtual FString GetSummary() const override;
     virtual void Tick(float Seconds) override;
     void DrawSensorVisualization() const;
+    void SetSensorVisualization(bool Enabled);
 protected:
 	virtual void BeforeSensorStep(double Dt) {}
 	void Record(const FString& Kind, const FString& Message);

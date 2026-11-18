@@ -6,6 +6,7 @@
 #include "RobotTorquePlant.h"
 #include "RobotMotionPlanner.h"
 #include "RobotMotionTrajectory.h"
+#include "WheelContactSettings.h"
 #include "RobotArm.generated.h"
 
 class UStaticMesh;
@@ -80,7 +81,13 @@ public:
 	const TArray<FRobotJointDefinition>& GetDefinitions() const { return Definitions; }
 	const TArray<double>& GetAnglesRadians() const { return Angles; }
     bool bTorqueDynamics=false;
+    UPROPERTY(EditAnywhere, Category="Robot|Tool") FWheelJawSettings WheelJaw;
     double TorqueLimitScale=1.0;
+    // Assumed link parameters in each joint frame; replace with OEM CAD/inertia data.
+    UPROPERTY(EditAnywhere, Category="Robot|Dynamics") TArray<double> LinkMassKg={80,65,45,15,10,5};
+    UPROPERTY(EditAnywhere, Category="Robot|Dynamics") TArray<FVector> LinkCOMCm={FVector(0,0,20),FVector(30,0,0),FVector(30,0,0),FVector(0,0,10),FVector(0,0,8),FVector(0,0,5)};
+    UPROPERTY(EditAnywhere, Category="Robot|Dynamics") TArray<double> JointInertiaKgM2={40,40,40,4,4,4};
+    UPROPERTY(EditAnywhere, Category="Robot|Dynamics") TArray<double> JointDriveLimitNm={4000,4000,4000,400,400,400};
     FVector ToolReactionForceN=FVector::ZeroVector, ToolReactionTorqueNm=FVector::ZeroVector, ForcePointWorldCm=FVector::ZeroVector;
     TArray<double> AppliedJointTorqueNm;
     int32 LastIKIterations = 0;

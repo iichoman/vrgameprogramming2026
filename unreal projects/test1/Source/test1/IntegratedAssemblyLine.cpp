@@ -1,4 +1,4 @@
-#include "IntegratedAssemblyLine.h"
+﻿#include "IntegratedAssemblyLine.h"
 #include "SensorAssemblyLine.h"
 #include "AutonomousAssemblyLine.h"
 #include "WheelAssemblyCell.h"
@@ -357,6 +357,8 @@ void AIntegratedAssemblyLine::StopLine()
 bool AIntegratedAssemblyLine::AdvanceLine(double Seconds)
 {
     if (!FMath::IsFinite(Seconds) || Seconds < 0 || Seconds > 1) { StopLine(); return false; }
+    if(DoorCell)DoorCell->AdvanceRetiredParts(Seconds);if(SecondDoorCell)SecondDoorCell->AdvanceRetiredParts(Seconds);
+    if(Stage==EAssemblyLineStage::Complete){if(DoorCell)DoorCell->AdvanceSimulation(Seconds);if(SecondDoorCell)SecondDoorCell->AdvanceSimulation(Seconds);}
     if((Stage==EAssemblyLineStage::Fault || Stage==EAssemblyLineStage::Stopped) && WheelCell)
         WheelCell->AdvanceSimulation(Seconds);
     if(Stage==EAssemblyLineStage::Fault||Stage==EAssemblyLineStage::Stopped)

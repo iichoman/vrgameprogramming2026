@@ -1,8 +1,9 @@
-#pragma once
+﻿#pragma once
 
 #include "CoreMinimal.h"
 #include "AssemblyOperation.h"
 #include "DoorRigidBody.h"
+#include "AssemblyPartPhysicsComponent.h"
 #include "GameFramework/Actor.h"
 #include "DoorAssemblyCell.generated.h"
 
@@ -45,9 +46,23 @@ class TEST1_API ADoorAssemblyCell : public AActor
 	GENERATED_BODY()
 public:
     ADoorAssemblyCell();
+    UPROPERTY(EditAnywhere, Category="Cell|Visualization") bool bShowSensorVisualization=true;
     UPROPERTY(EditAnywhere, Category="Cell|Physics") bool bUsePhysicalDynamics=true;
     UPROPERTY(EditAnywhere, Category="Cell|Physics") FDoorRigidBodySettings PhysicsSettings;
     FDoorRigidBody PhysicalDoor;
+    UPROPERTY(Transient) TObjectPtr<UAssemblyPartPhysicsComponent> PartPlant;
+    UPROPERTY(Transient) TArray<TObjectPtr<UAssemblyPartPhysicsComponent>> PartPlants;
+    UPROPERTY(EditAnywhere, Category="Cell|Physics", meta=(Units="mm")) double FixtureDebrisMm=0;
+    UPROPERTY(EditInstanceOnly, Category="Cell|Physics") TObjectPtr<class ADoorFixture> PhysicalFixture;
+    UPROPERTY(EditAnywhere, Category="Cell|Physics") bool bFixtureClampsEnabled=true;
+    UPROPERTY(EditAnywhere, Category="Cell|Physics") bool bForceMisalignedFastening=false;
+    UPROPERTY(EditAnywhere, Category="Cell|Physics", meta=(Units="N")) double FastenerDamageLimitN=6000;
+    UPROPERTY(EditAnywhere, Category="Cell|Physics", meta=(Units="N")) double FixtureLocalDamageLimitN=1000;
+    UPROPERTY(VisibleAnywhere, Category="Cell|Physics") bool bFixtureSeated=false;
+    double FastenerClosure=0;
+    FQuat InsertionMeasuredRotation=FQuat::Identity;
+    void AdvanceRetiredParts(double Dt);
+    FString PartDamageSummary() const;
     FAssemblyOperationLedger Operations;
     FAssemblyOperationRequest RequestBinding;
     bool PrepareNextOperation();

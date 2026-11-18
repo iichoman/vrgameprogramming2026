@@ -1,4 +1,4 @@
-#include "SensorAssemblyLine.h"
+﻿#include "SensorAssemblyLine.h"
 #include "WheelAssemblyCell.h"
 #include "DoorAssemblyCell.h"
 #include "RobotArm.h"
@@ -152,6 +152,7 @@ void ASensorAssemblyLine::FixedStep(double Dt)
     if (Sensors->Arrival.MeasuredAt!=PreviousSample && ArrivalPhase!=EArrivalPhase::Released) Record(TEXT("SAMPLE"),TEXT("sensor update"));
     if (ArrivalPhase==EArrivalPhase::Stopped || ArrivalPhase==EArrivalPhase::Fault)
     {
+        if(DoorCell)DoorCell->AdvanceRetiredParts(Dt);if(SecondDoorCell)SecondDoorCell->AdvanceRetiredParts(Dt);
         if(WheelCell)WheelCell->AdvanceSimulation(Dt);
         if(DoorCell)DoorCell->AdvanceSimulation(Dt);if(SecondDoorCell)SecondDoorCell->AdvanceSimulation(Dt);
         if (!bStopRecorded && Sensors->Speed.Fresh(SensorTime,Sensors->MaxAge) && Sensors->Speed.Value.Size()<=StopSpeedCmS)
@@ -250,8 +251,19 @@ void ASensorAssemblyLine::Tick(float Seconds)
     Super::Tick(Seconds);
     DrawSensorVisualization();
 }
+void ASensorAssemblyLine::SetSensorVisualization(bool Enabled)
+{
+    bShowSensorVisualization=Enabled;
+    if(WheelCell)WheelCell->bShowSensorVisualization=bShowSensorVisualization;
+    for(auto* Cell:{DoorCell.Get(),SecondDoorCell.Get()})if(Cell)
+    {Cell->bShowSensorVisualization=bShowSensorVisualization;for(auto P:Cell->PartPlants)if(IsValid(P))P->bShowContacts=bShowSensorVisualization;}
+}
 void ASensorAssemblyLine::DrawSensorVisualization() const
 {
+    if(WheelCell)WheelCell->bShowSensorVisualization=bShowSensorVisualization;
+    for(auto* Cell:{DoorCell.Get(),SecondDoorCell.Get()})if(Cell)
+    {Cell->bShowSensorVisualization=bShowSensorVisualization;for(auto P:Cell->PartPlants)if(IsValid(P))P->bShowContacts=bShowSensorVisualization;}
+
     if (!bShowSensorVisualization || !Sensors || !GetWorld() || (GetWorld()->WorldType!=EWorldType::PIE && GetWorld()->WorldType!=EWorldType::Game)) return;
 	if(DoorCell&&DoorCell->MeasuredDoorWidthCm>0)
 	{
@@ -297,27 +309,16 @@ void ASensorAssemblyLine::DrawSensorVisualization() const
 			FString::Printf(TEXT("PICKUP REPLAN: %.1fcm | #%d"),FVector::Distance(Before,After),WheelCell->LeftPickupReplans),
 			nullptr,FColor::Yellow,.08f,false,1.f);
 	}
-	if (WheelCell && WheelCell->bPhysicalLeftGrip && WheelCell->GetLeftGripState().WheelIndex==0)
-	{
-		const FVector Wheel=WheelCell->GetWheelWorld(0).GetLocation();
-		const auto& Grip=WheelCell->GetLeftGripState();
-		const bool Released=WheelCell->SlipRecoveryPhase>0 || Grip.SlipMm>=3;
-		const FColor GripColor=Released?FColor::Red:FColor::Green;
-		DrawDebugSphere(GetWorld(),Wheel,22,16,GripColor,false,.08f,0,3.f);
-		DrawDebugString(GetWorld(),Wheel+FVector(0,0,80),
-			FString::Printf(TEXT("GRIP %s | mass %.0fkg | need %.0fN / applied %.0fN / limit %.0fN | slip %.1fmm"),
-				Released?TEXT("RELEASED"):TEXT("ACTIVE"),WheelCell->FrontLeftWheelMassKg,Grip.DemandN,Grip.AppliedForceN,Grip.CapacityN,Grip.SlipMm),
-			nullptr,GripColor,.08f,false,1.f);
-		if(WheelCell->SlipRecoveryPhase>0)
-		{
-			const FVector Fallen=WheelCell->GetDroppedWheelLocation();
-			DrawDebugSphere(GetWorld(),Fallen,34,16,FColor::Red,false,.08f,0,3.f);
-			DrawDebugString(GetWorld(),Fallen+FVector(0,0,125),
-				FString::Printf(TEXT("%s | phase %d: fall / worker / quarantine / resupply"),
-					WheelCell->GetSlipFailureLabel(),WheelCell->SlipRecoveryPhase),
-				nullptr,FColor::Yellow,.08f,false,1.f);
-		}
-	}
+    if(WheelCell&&WheelCell->bUseContactPhysics)for(int I=0;I<4;++I)
+    {
+        const auto* Grip=WheelCell->LaneForWheel(I);if(!Grip||!Grip->ContactGrip.bInitialized)continue;
+        const FVector At=WheelCell->GetWheelWorld(I).GetLocation();
+        const int Contacts=WheelCell->PhysicalGripContacts(I);
+        const auto Color=Contacts>0?FColor::Green:FColor::Red;
+        DrawDebugSphere(GetWorld(),At,22,16,Color,false,.08f,0,3.f);
+        DrawDebugString(GetWorld(),At+FVector(0,0,80),FString::Printf(TEXT("%s | contacts %d | %.1fkg | %.0fN / %.0fN | slip %.1fmm"),
+            *WheelCell->PartPhysics[I].PartId,Contacts,WheelCell->PartPhysics[I].Mass,Grip->AppliedForceN,Grip->CapacityN,Grip->SlipMm),nullptr,Color,.08f);
+    }
 	if (WheelCell && WheelCell->bLaserScanFrontLeftHub)
 	{
 		const FWheelHubScanReading* Stages[]={&WheelCell->FrontLeftDockScan,&WheelCell->FrontLeftPreMountScan,&WheelCell->FrontLeftFinalWheelScan};

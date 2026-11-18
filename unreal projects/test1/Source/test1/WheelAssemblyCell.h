@@ -1,7 +1,8 @@
-#pragma once
+﻿#pragma once
 
 #include "CoreMinimal.h"
 #include "FactoryTaskModel.h"
+#include "WheelGripPhysics.h"
 #include "GameFramework/Actor.h"
 #include "Components/ActorComponent.h"
 #include "WheelAssemblyCell.generated.h"
@@ -126,6 +127,7 @@ struct FWheelEvaluationSnapshot
 
 struct FWheelLane
 {
+    FWheelContactGrip ContactGrip;
 	int32 WheelIndex = INDEX_NONE;
 	int32 Completed = 0;
 	EWheelStage Stage = EWheelStage::Idle;
@@ -146,6 +148,11 @@ struct FWheelLane
 	bool bGripCommanded = false;
 	bool bHeld = false;
 	bool bFastened = false;
+};
+
+struct FWheelGripObservation
+{
+    double Time=-1,DemandN=0,CapacityN=0,SlipMm=0;
 };
 
 /** Two independently driven arms; each installs the front and rear wheel on its side. */
@@ -174,13 +181,36 @@ public:
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") FWheelHubScanReading FrontLeftDockScan;
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") FWheelHubScanReading FrontLeftPreMountScan;
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") FWheelHubScanReading FrontLeftFinalWheelScan;
-    bool bPhysicalLeftGrip = false;
+    bool bGripIncidentOverride = false;
+    // Legacy demo flag above selects incident overrides, never the plant implementation.
+    UPROPERTY(EditAnywhere, Category="Wheel Cell|Physics") bool bUseContactPhysics=true;
+    UPROPERTY(EditAnywhere, Category="Wheel Cell|Recovery") FVector2D QuarantineOffsetBodyCm=FVector2D(-500,650);
+    UPROPERTY(EditAnywhere, Category="Wheel Cell|Physics") TArray<FWheelContactProperties> WheelProperties;
+    UPROPERTY(EditAnywhere, Category="Wheel Cell|Tool") TMap<int32,FTransform> GraspTCPByPart;
+    UPROPERTY(EditAnywhere, Category="Wheel Cell|Physics", meta=(ClampMin="0",ClampMax="3")) int32 GripIncidentWheelIndex=0;
+    UPROPERTY(EditAnywhere, Category="Wheel Cell|Visualization") bool bShowSensorVisualization=true;
+    FAssemblyContactBody PartPhysics[4];
+    FWheelGripObservation GripObservations[4];
+    bool SecondaryFalling[4]={false,false,false,false};
+    int32 DroppedWheelIndex=0, RecoveryLane=0;
+    FWheelContactProperties ContactPropertiesFor(int32 Index) const;
+    double ContactRadiusCm(int32 Index) const;
+    FTransform TCPForWheel(int32 Index) const;
+    const FWheelLane* LaneForWheel(int32 Index) const;
+    void AdvanceSecondaryFalls(double Dt);
     bool bLowFrictionGrip = false;
     // Legacy recovery animation is opt-in; physical experiments wait for intervention.
     bool bDemoRecoveryEnabled = false;
     double DroppedContactStableSeconds = 0;
-    bool HasPassiveWork() const { return bLeftWheelSlipFall || bFrontLeftWheelRejecting; }
-    /** Demo, needs bPhysicalLeftGrip: pad friction decays once the front-left wheel is in Transfer,
+    bool HasPassiveWork() const
+    {
+        if(bLeftWheelSlipFall||bFrontLeftWheelRejecting)return true;
+        for(bool Falling:SecondaryFalling)if(Falling)return true;
+        for(const auto& Lane:Lanes)if(bUseContactPhysics&&Lane.bHeld&&!Lane.bFastened)return true;
+        return false;
+    }
+    bool AdvanceCarriedWheel(int32 Side,double Dt);
+    /** Demo, needs bGripIncidentOverride: pad friction decays once the selected wheel is in Transfer,
      * so the wheel holds at lift and slips in mid-transit. Assumed contamination, not a measured pad. */
     UPROPERTY(EditAnywhere, Category="Wheel Cell|Grip") bool bGripDegradesInTransit = false;
     UPROPERTY(EditAnywhere, Category="Wheel Cell|Grip", meta=(Units="s", ClampMin="0.1")) double GripDegradeSeconds = 1.5;
@@ -190,7 +220,7 @@ public:
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Grip", meta=(Units="cm")) double SlipFailureTravelCm = 0;
     EWheelStage SlipFailureStage = EWheelStage::Idle;
     const TCHAR* GetSlipFailureLabel() const;
-    double FrontLeftWheelMassKg = 18.0;
+    double GripIncidentMassKg = 18.0;
     double FrontLeftWheelSizeScale = 1.0;
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") double FrontLeftWheelMeasuredDiameterCm = 0;
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") double FrontLeftWheelSizeMeasuredAt = -1;
@@ -259,6 +289,7 @@ public:
     FTransform GetPhysicalPartWorld(int32 Index) const;
     bool SetPhysicalPartWorld(int32 Index,const FTransform& Pose);
     ARobotArm* RobotForWheel(int32 Index) const;
+    int32 PhysicalGripContacts(int32 Index) const;
     bool UsesTaskBindings() const { return TaskRobots.Num()==4; }
     bool PrepareTaskLanes();
     int32 LaneCount() const { return UsesTaskBindings()?4:2; }
@@ -346,7 +377,9 @@ public:
 	bool ScanFrontLeftHub(bool bScanWheel=false);
 	bool ScanFrontLeftHubOnce(bool bScanWheel);
 	int32 LaserTransientBlocksRemaining = 0;
-	double GripDegradeStartedAt = -1;
+	FVector DroppedWheelOmega=FVector::ZeroVector;
+    FVector DroppedWheelInertia=FVector(1);
+    double GripDegradeStartedAt = -1;
 	bool bGripDegradeSpent = false;
 	UFUNCTION() FTransform GetPickupWorld(int32 Index) const;
 	UFUNCTION() FString GetLaneStage(bool bLeft) const;

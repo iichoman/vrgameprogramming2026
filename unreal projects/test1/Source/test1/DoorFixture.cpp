@@ -202,3 +202,20 @@ void ADoorFixture::AlignFixtureButton()
 	AlignToDoorReference();
 }
 void ADoorFixture::RefreshFixtureButton() { RefreshFixture(); }
+
+void ADoorFixture::AppendPhysicalContacts(const FTransform& BodyInDoor,bool ClampsClosed,double DebrisMm,TArray<FAssemblyContact>& Out) const
+{
+    bool FirstSupport=true;
+    for(const auto& Source:Contacts)
+    {
+        if(Source.bRegionOnly||(Source.Role==EDoorFixtureRole::Clamp&&!ClampsClosed))continue;
+        FAssemblyContact C;C.Region=Source.Name.ToString();C.PointCm=BodyInDoor.InverseTransformPosition(Source.DoorPointLocalCm);
+        C.bSeat=Source.Role==EDoorFixtureRole::Support;
+        C.Normal=BodyInDoor.InverseTransformVectorNoScale(-Source.OutwardNormalLocal).GetSafeNormal();
+        C.RadiusM=FMath::Min(Source.PreviewSizeMm.X,Source.PreviewSizeMm.Y)/2000;
+        C.PreloadN=Source.Role==EDoorFixtureRole::Clamp?200:0;
+        C.DebrisM=FVector::DotProduct(Source.OffsetMm,-Source.OutwardNormalLocal.GetSafeNormal())/1000;
+        if(FirstSupport&&Source.Role==EDoorFixtureRole::Support){C.DebrisM+=DebrisMm/1000;FirstSupport=false;}
+        Out.Add(C);
+    }
+}

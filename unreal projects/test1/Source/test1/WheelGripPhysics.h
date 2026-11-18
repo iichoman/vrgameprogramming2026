@@ -1,5 +1,47 @@
 #pragma once
 #include "CoreMinimal.h"
+#include "AssemblyContactBody.h"
+#include "WheelContactSettings.h"
+
+// Two opposed finite rim pads. Closure generates normal force; friction and
+// rigid-body inertia determine slip. No displacement threshold releases a pad.
+struct FWheelContactGrip
+{
+    FAssemblyContactBody Body;
+    FTransform Previous=FTransform::Identity;
+    bool bInitialized=false;
+    double Closure=0;
+    void Reset(){*this=FWheelContactGrip();}
+    bool Step(const FTransform& Goal,double Mass,double Mu,double Dt,FTransform& Actual)
+    {
+        FWheelContactProperties Part;Part.MassKg=Mass;Part.Friction=Mu;
+        return Step(Goal,Part,FWheelJawSettings(),Dt,Actual);
+    }
+    bool Step(const FTransform& Goal,const FWheelContactProperties& Part,const FWheelJawSettings& Jaw,double Dt,FTransform& Actual)
+    {
+        const double Mass=Part.MassKg, Mu=Part.Friction;
+        if(!FMath::IsFinite(Part.OuterRadiusM)||!FMath::IsFinite(Part.InnerRadiusM)||!FMath::IsFinite(Part.WidthM)
+            ||Part.InnerRadiusM<0||Part.OuterRadiusM<=Part.InnerRadiusM||Part.WidthM<=0
+            ||!FMath::IsFinite(Jaw.CloseSeconds)||Jaw.CloseSeconds<=0||!FMath::IsFinite(Jaw.TotalForceN)||Jaw.TotalForceN<=0
+            ||!FMath::IsFinite(Jaw.HalfOpeningCm)||Jaw.HalfOpeningCm<=0||!FMath::IsFinite(Jaw.HalfPadSpacingCm)||Jaw.HalfPadSpacingCm<=0)return false;
+        if(!bInitialized){Body.Pose=Goal;Previous=Goal;bInitialized=true;}
+        Body.Mass=Mass;Body.MaxStep=Jaw.MaxStepSeconds;
+        // Annular wheel approximation, outer radius .33 m, inner .18 m, width .20 m.
+        const double Axial=.5*Mass*(FMath::Square(Part.OuterRadiusM)+FMath::Square(Part.InnerRadiusM));
+        Body.Inertia=FVector(Axial/2+Mass*FMath::Square(Part.WidthM)/12,Axial,Axial/2+Mass*FMath::Square(Part.WidthM)/12);
+        Closure=FMath::Min(1.,Closure+Dt/Jaw.CloseSeconds);
+        TArray<FAssemblyContact> Pads;
+        for(double Side:{-1.,1.})for(double Height:{-Jaw.HalfPadSpacingCm,Jaw.HalfPadSpacingCm})
+        {
+            FAssemblyContact C;C.bGrip=true;C.Region=TEXT("림 파지면");C.PointCm=FVector(0,Side*Jaw.HalfOpeningCm,Height);
+            C.Normal=FVector(0,-Side,0);C.PreloadN=Jaw.TotalForceN/4*Closure;C.Stiffness=Jaw.StiffnessNm;C.Damping=Jaw.DampingNsM;C.Friction=Mu;C.RadiusM=Jaw.PadRadiusM;
+            C.MaxNormalForceN=C.PreloadN;
+            Pads.Add(C);
+        }
+        if(!Body.Step(Pads,Previous,Goal,Goal,Dt))return false;
+        Previous=Goal;Actual=Body.Pose;return true;
+    }
+};
 
 /** Demo pad model. Values are teaching assumptions, not measured gripper data. */
 namespace WheelGrip

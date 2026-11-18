@@ -1,4 +1,4 @@
-#include "FactorySensorChart.h"
+﻿#include "FactorySensorChart.h"
 #include "FactoryRuntime.h"
 #include "FactoryProcessRunner.h"
 #include "AutonomousAssemblyLine.h"
@@ -105,16 +105,16 @@ FString DemoRecoveryText(const AWheelAssemblyCell* W)
 FString DemoEvidenceText(const AWheelAssemblyCell* W)
 {
     if(!IsValid(W))return TEXT("측정 데이터 없음");
-    FString S=TEXT("대상: 왼쪽 앞 휠 · 가상 센서/간소화 물리 모델\n");
-    if(W->bPhysicalLeftGrip)
+    FString S=TEXT("네 휠 공통 접촉 물리 · 가상 센서/간소화 모델\n");
+    const TCHAR* Names[]={TEXT("왼쪽 앞"),TEXT("왼쪽 뒤"),TEXT("오른쪽 앞"),TEXT("오른쪽 뒤")};
+    for(int I=0;I<4;++I)
     {
-        const auto& G=W->GetLeftGripState();
-        S+=FString::Printf(TEXT("현재 질량 %.1f kg\n"),W->FrontLeftWheelMassKg);
-        if(W->LeftGripMeasuredAt>=0)
-            S+=FString::Printf(TEXT("마지막 파지 표본 %.2f초\n필요 힘 %.1f N / 유지 한계 %.1f N\n미끄러짐 %.1f mm · 힘 여유 %+.1f N\n"),W->LeftGripMeasuredAt,G.DemandN,G.CapacityN,G.SlipMm,G.CapacityN-G.DemandN);
-        else S+=TEXT("파지 측정 대기 — 힘/미끄러짐 표본 없음\n");
-        if(W->SlipFailureMassKg>0)S+=FString::Printf(TEXT("사건 당시: %s · %.1f kg\n"),W->bSlipFailureLowFriction?TEXT("저마찰"):TEXT("과중량"),W->SlipFailureMassKg);
+        const auto& B=W->PartPhysics[I];
+        S+=B.Time>0?FString::Printf(TEXT("%s · %.1fkg · 접촉 %d개 · 전달 %.1fN / 마찰 용량 %.1fN\n"),Names[I],B.Mass,B.GripContacts,B.GripForce.Size(),B.GripFrictionCapacityN)
+            :FString::Printf(TEXT("%s · 파지 측정 대기\n"),Names[I]);
     }
+    if(W->SlipFailureMassKg>0)S+=FString::Printf(TEXT("낙하 대상: %s · %.1fkg\n"),Names[W->DroppedWheelIndex],W->SlipFailureMassKg);
+    S+=TEXT("왼쪽 앞 휠 전용 규격 레이저: ");
     if(W->FrontLeftWheelSizeMeasuredAt>=0)
         S+=FString::Printf(TEXT("휠 지름 %.1f cm / 허용 65–67 cm\n규격 판정: %s · 표본 %.2f초"),W->FrontLeftWheelMeasuredDiameterCm,W->bFrontLeftWheelSizePassed?TEXT("합격"):TEXT("불합격"),W->FrontLeftWheelSizeMeasuredAt);
     else S+=TEXT("휠 지름 측정 대기");
@@ -257,6 +257,8 @@ void AFactoryRuntime::CreatePanel()
                 Button(TEXT("과소 휠 교체"),[this](){if(IsValid(TestAssemblyLine)&&TestAssemblyLine->ConfigureIncidentDemo(17))ResetCycle();},Editing));
             Rows->AddSlot().AutoHeight()[Button(TEXT("확장 난수 사건"),[this](){if(IsValid(TestAssemblyLine)&&TestAssemblyLine->ConfigureIncidentDemo(18))ResetCycle();},Editing)];
             Rows->AddSlot().AutoHeight()[Button(TEXT("차체 위치 변동 · 재스캔"),[this](){if(IsValid(TestAssemblyLine)&&TestAssemblyLine->ConfigureIncidentDemo(19))ResetCycle();},Editing)];
+            Rows->AddSlot().AutoHeight()[Button(TEXT("지그 이물질 · 안착 불량"),[this](){if(IsValid(TestAssemblyLine)&&TestAssemblyLine->ConfigureIncidentDemo(20))ResetCycle();},Editing)];
+            Rows->AddSlot().AutoHeight()[Button(TEXT("잘못된 안착 · 강제 체결 손상"),[this](){if(IsValid(TestAssemblyLine)&&TestAssemblyLine->ConfigureIncidentDemo(21))ResetCycle();},Editing)];
             Dynamic([this](){if(!IsValid(TestAssemblyLine)||!IsValid(TestAssemblyLine->WheelCell))return FString(TEXT("연결 대기"));const auto* W=TestAssemblyLine->WheelCell.Get();
                 return FString::Printf(TEXT("설정: 마찰 저하 %s · 불량 휠 교체 %s · 확장 난수 %s\n레이저 재시도 %d/%d · 휠 교체 %d회 · 현재 단계 %d"),
                     W->bGripDegradesInTransit?TEXT("켬"):TEXT("끔"),W->bReplaceRejectedWheel?TEXT("켬"):TEXT("끔"),TestAssemblyLine->bExtendedRandomEvents?TEXT("켬"):TEXT("끔"),W->LaserScanRetries,W->MaxLaserScanAttempts,W->WheelReplacements,W->WheelReplacePhase);});
@@ -264,6 +266,10 @@ void AFactoryRuntime::CreatePanel()
             Dynamic([this](){return IsValid(TestAssemblyLine)&&IsValid(TestAssemblyLine->WheelCell)?TestAssemblyLine->WheelCell->GetIncidentSummary(5):TEXT("연결 대기");});
             Label(TEXT("판단 근거 · 현재 값과 마지막 표본"),true);
             Dynamic([this](){return DemoEvidenceText(IsValid(TestAssemblyLine)?TestAssemblyLine->WheelCell.Get():nullptr);});
+            Label(TEXT("파지 사고 대상 (정상 물리는 네 휠 모두 적용)"),true);
+            const TCHAR* Targets[]={TEXT("왼쪽 앞"),TEXT("왼쪽 뒤"),TEXT("오른쪽 앞"),TEXT("오른쪽 뒤")};
+            for(int Target=0;Target<4;++Target)Rows->AddSlot().AutoHeight()[Button(Targets[Target],[this,Target](){if(TestAssemblyLine&&TestAssemblyLine->WheelCell)TestAssemblyLine->WheelCell->GripIncidentWheelIndex=Target;},Editing)];
+            Dynamic([this](){const TCHAR* T[]={TEXT("왼쪽 앞"),TEXT("왼쪽 뒤"),TEXT("오른쪽 앞"),TEXT("오른쪽 뒤")};return TestAssemblyLine&&TestAssemblyLine->WheelCell?FString(TEXT("선택한 파지 사고 대상: "))+T[FMath::Clamp(TestAssemblyLine->WheelCell->GripIncidentWheelIndex,0,3)]:TEXT("");});
             Label(TEXT("레이저 3단계 · 왼쪽 앞 휠"),true);
             Dynamic([this](){return IsValid(TestAssemblyLine)&&IsValid(TestAssemblyLine->WheelCell)?TestAssemblyLine->WheelCell->GetLaserInspectionSummary().Replace(TEXT("통과"),TEXT("스캔 유효")):TEXT("연결 대기");});
             Label(TEXT("스캔 유효는 측정 성공입니다. 장착 품질은 최종 중심 오차와 공정 결과를 함께 확인하세요."));
@@ -286,8 +292,8 @@ void AFactoryRuntime::CreatePanel()
         {
             Rows->AddSlot().AutoHeight().Padding(0,4)[SNew(SCheckBox)
                 .IsChecked_Lambda([this](){return IsValid(TestAssemblyLine)&&TestAssemblyLine->bShowSensorVisualization?ECheckBoxState::Checked:ECheckBoxState::Unchecked;})
-                .OnCheckStateChanged_Lambda([this](ECheckBoxState V){if(IsValid(TestAssemblyLine))TestAssemblyLine->bShowSensorVisualization=V==ECheckBoxState::Checked;})
-                [SNew(STextBlock).Font(Font).Text(FText::FromString(TEXT("센서 측정 위치·경로 표시")))]];
+                .OnCheckStateChanged_Lambda([this](ECheckBoxState V){if(IsValid(TestAssemblyLine))TestAssemblyLine->SetSensorVisualization(V==ECheckBoxState::Checked);})
+                [SNew(STextBlock).Font(Font).Text(FText::FromString(TEXT("센서·접촉 위치 표시 (측정은 계속)")))]];
             Rows->AddSlot().AutoHeight().Padding(0,4)[SNew(SCheckBox)
                 .IsEnabled(Editing)
                 .IsChecked_Lambda([this](){return IsValid(TestAssemblyLine)&&IsValid(TestAssemblyLine->WheelCell)&&TestAssemblyLine->WheelCell->bLaserScanFrontLeftHub?ECheckBoxState::Checked:ECheckBoxState::Unchecked;})

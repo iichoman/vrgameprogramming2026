@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "AssemblyContactBody.h"
 #include "GameFramework/Actor.h"
 #include "DoorFixture.generated.h"
 
@@ -53,6 +54,7 @@ class TEST1_API ADoorFixture : public AActor
 	GENERATED_BODY()
 public:
 	ADoorFixture();
+    void AppendPhysicalContacts(const FTransform& BodyInDoor,bool ClampsClosed,double DebrisMm,TArray<FAssemblyContact>& Out) const;
 	UPROPERTY(EditInstanceOnly, Category="Fixture|Layout") TObjectPtr<ACamryAssembly> Assembly;
 	UPROPERTY(EditInstanceOnly, Category="Fixture|Layout") TArray<FDoorFixtureContact> Contacts;
 	UPROPERTY(EditInstanceOnly, Category="Fixture|Layout") FString LayoutSource;

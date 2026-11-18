@@ -23,6 +23,9 @@ void AFactoryAssemblyEquipment::Configure(const FFactoryLayoutItem& Item,UStatic
     Arm->ToolInLastJointCm=Source->ToolInLastJointCm;Arm->InitialAnglesDegrees=Source->InitialAnglesDegrees;
     Arm->Kp=Source->Kp;Arm->Ki=Source->Ki;Arm->Kd=Source->Kd;Arm->MotorResponseSeconds=Source->MotorResponseSeconds;
     Arm->CalibrationSource=Source->CalibrationSource;
+    Arm->WheelJaw=Source->WheelJaw;Arm->LinkMassKg=Source->LinkMassKg;Arm->LinkCOMCm=Source->LinkCOMCm;
+    Arm->JointInertiaKgM2=Source->JointInertiaKgM2;Arm->JointDriveLimitNm=Source->JointDriveLimitNm;
+    Arm->TorqueLimitScale=Source->TorqueLimitScale;
     if(Item.EffectiveTypeId()==TEXT("assembly_wheel_left")||Item.EffectiveTypeId()==TEXT("assembly_wheel_right"))WheelGripperGeometry::Configure(*Arm);
     if(Item.EffectiveTypeId()==TEXT("assembly_door"))DoorGripperGeometry::Configure(*Arm);
     Arm->AttachToActor(this,FAttachmentTransformRules::KeepWorldTransform);

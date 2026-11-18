@@ -1,4 +1,4 @@
-#include "RobotArm.h"
+﻿#include "RobotArm.h"
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/BoxComponent.h"
@@ -231,9 +231,18 @@ bool ARobotArm::StepControl(double Dt)
         {
             const auto Frame=JointFrames[i]*GetActorTransform();
             const FVector Axis=Frame.TransformVectorNoScale(Definitions[i].AxisLocal);
-            const double Load=FVector::DotProduct(Axis,FVector::CrossProduct((ForcePointWorldCm-Frame.GetLocation())/100,ToolReactionForceN)+ToolReactionTorqueNm);
-            if(!FRobotTorquePlant::Step(Definitions[i],Goal,Feed[i],i<3?40:4,
-                (i<3?4000:400)*TorqueLimitScale,Load,Dt,Controllers[i],AppliedJointTorqueNm[i]))return false;
+            double Load=FVector::DotProduct(Axis,FVector::CrossProduct((ForcePointWorldCm-Frame.GetLocation())/100,ToolReactionForceN)+ToolReactionTorqueNm);
+            if(LinkMassKg.Num()!=6||LinkCOMCm.Num()!=6||JointInertiaKgM2.Num()!=6||JointDriveLimitNm.Num()!=6)return false;
+            double Inertia=JointInertiaKgM2[i];
+            for(int Link=i;Link<6;++Link)
+            {
+                if(!FMath::IsFinite(LinkMassKg[Link])||LinkMassKg[Link]<=0||LinkCOMCm[Link].ContainsNaN())return false;
+                const FVector R=((JointFrames[Link]*GetActorTransform()).TransformPosition(LinkCOMCm[Link])-Frame.GetLocation())/100;
+                Load+=FVector::DotProduct(Axis,FVector::CrossProduct(R,FVector(0,0,-9.81*LinkMassKg[Link])));
+                Inertia+=LinkMassKg[Link]*FVector::CrossProduct(R,Axis).SizeSquared();
+            }
+            if(!FRobotTorquePlant::Step(Definitions[i],Goal,Feed[i],Inertia,
+                JointDriveLimitNm[i]*TorqueLimitScale,Load,Dt,Controllers[i],AppliedJointTorqueNm[i]))return false;
         }
         else if (!FRobotJointController::Step(Definitions[i],Settings,Goal,Feed[i],Dt,Controllers[i])) return false;
 		Angles[i]=Controllers[i].AngleRadians;

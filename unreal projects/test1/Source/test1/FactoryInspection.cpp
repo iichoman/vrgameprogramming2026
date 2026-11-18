@@ -1,4 +1,4 @@
-#include "FactoryInspection.h"
+﻿#include "FactoryInspection.h"
 #include "FactoryRuntime.h"
 #include "FactoryAssemblyEquipment.h"
 #include "FactoryEquipment.h"
@@ -195,12 +195,16 @@ void AFactoryRuntime::RefreshInspection()
         if(W->FrontLeftWheelSizeMeasuredAt>=0)
             Publish(TEXT("wheel.fl.diameter"),TEXT("왼쪽 앞 휠 실측 지름"),TEXT("part_wheel_fl"),TEXT("cm"),W->FrontLeftWheelMeasuredDiameterCm,
                 W->FrontLeftWheelSizeMeasuredAt,Now,W->FrontLeftWheelMeasuredDiameterCm>0,TEXT("가상 레이저"),TEXT("wheel_fl"));
-        if(W->LeftGripMeasuredAt>=0)
+        const TCHAR* Suffixes[]={TEXT("fl"),TEXT("rl"),TEXT("fr"),TEXT("rr")};
+        for(int I=0;I<4;++I)if(W->GripObservations[I].Time>=0)
         {
-            const auto& G=W->GetLeftGripState();
-            Publish(TEXT("wheel.fl.grip.demand"),TEXT("파지 필요 힘"),TEXT("part_wheel_fl"),TEXT("N"),G.DemandN,W->LeftGripMeasuredAt,Now,true,TEXT("간소화 파지 모델"),TEXT("wheel_fl"));
-            Publish(TEXT("wheel.fl.grip.capacity"),TEXT("마찰 파지 한계"),TEXT("part_wheel_fl"),TEXT("N"),G.CapacityN,W->LeftGripMeasuredAt,Now,true,TEXT("간소화 파지 모델"),TEXT("wheel_fl"));
-            Publish(TEXT("wheel.fl.grip.slip"),TEXT("휠 미끄러짐"),TEXT("part_wheel_fl"),TEXT("mm"),G.SlipMm,W->LeftGripMeasuredAt,Now,true,TEXT("간소화 파지 모델"),TEXT("wheel_fl"));
+            const auto& G=W->GripObservations[I];const auto Suffix=FString(Suffixes[I]);
+            const FString Prefix=TEXT("wheel.")+Suffix+TEXT(".grip.");
+            const FString Part=W->TaskReferences.IsValidIndex(I)?W->TaskReferences[I].PartId:TEXT("part_wheel_")+Suffix;
+            const FString Task=W->TaskReferences.IsValidIndex(I)?W->TaskReferences[I].TaskId:TEXT("wheel_")+Suffix;
+            Publish(Prefix+TEXT("demand"),TEXT("파지 필요 힘"),Part,TEXT("N"),G.DemandN,G.Time,Now,true,TEXT("공통 접촉 모델"),Task);
+            Publish(Prefix+TEXT("capacity"),TEXT("마찰 파지 한계"),Part,TEXT("N"),G.CapacityN,G.Time,Now,true,TEXT("공통 접촉 모델"),Task);
+            Publish(Prefix+TEXT("slip"),TEXT("휠 미끄러짐"),Part,TEXT("mm"),G.SlipMm,G.Time,Now,true,TEXT("공통 접촉 모델"),Task);
         }
         const FWheelHubScanReading* Scans[]={&W->FrontLeftDockScan,&W->FrontLeftPreMountScan,&W->FrontLeftFinalWheelScan};
         const TCHAR* ScanIds[]={TEXT("wheel.fl.hub.arrival"),TEXT("wheel.fl.hub.pre_mount"),TEXT("wheel.fl.hub.final")};
@@ -277,6 +281,8 @@ FString AFactoryRuntime::ResultDetails() const
 {
     if(!bUseAssemblyIntegration)return FString::Printf(TEXT("%s\n경과 %.2f초\n이동 거리 %.2fm\n정렬 오차 %.2fmm"),*StateText(),SimulationSeconds,TravelCm/100,AlignmentMm);
     FString Out=FString::Printf(TEXT("%s · %.2f초\n"),*StateText(),SimulationSeconds);
+    if(TestAssemblyLine){if(TestAssemblyLine->DoorCell)Out+=TestAssemblyLine->DoorCell->PartDamageSummary();
+        if(TestAssemblyLine->SecondDoorCell)Out+=TestAssemblyLine->SecondDoorCell->PartDamageSummary();}
     if(TestAssemblyLine)Out+=FString::Printf(TEXT("차문 장착 %d/4\n"),TestAssemblyLine->MountedDoorCount);
     auto* W=TestAssemblyLine?TestAssemblyLine->WheelCell.Get():nullptr;
     if(W)

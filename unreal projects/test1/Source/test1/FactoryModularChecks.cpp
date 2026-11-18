@@ -1,4 +1,4 @@
-#include "FactoryRuntime.h"
+﻿#include "FactoryRuntime.h"
 #include "FactoryAssemblyEquipment.h"
 #include "FactoryEquipmentRegistry.h"
 #include "AutonomousAssemblyLine.h"
@@ -21,6 +21,70 @@ bool AFactoryRuntime::RunModularEditorChecks()
     bool Pass=true;TArray<TSharedPtr<FJsonValue>> Checks;
     auto Check=[&](const TCHAR* Name,bool OK){auto C=MakeShared<FJsonObject>();C->SetStringField(TEXT("check"),Name);C->SetBoolField(TEXT("passed"),OK);Checks.Add(MakeShared<FJsonValueObject>(C));Pass&=OK;UE_LOG(LogTemp,Display,TEXT("FACTORY_MODULAR %s %s: %s"),Name,OK?TEXT("PASS"):TEXT("FAIL"),*Status);};
     const auto Original=Layout;const auto Initial=Layout.ToJson();FString Error;FFactoryLayout Read;
+    if(FParse::Param(FCommandLine::Get(),TEXT("FactoryGripReuseFocus")))
+    {
+        // Reuse the LEFT robot recipe on the right, retaining the station's pose and task bindings.
+        const auto* Task=Layout.Tasks.FindByPredicate([](const auto& T){return T.Id==TEXT("wheel_fr");});
+        auto* Item=Task?Layout.Find(Task->RobotId):nullptr;
+        if(Item)Item->TypeId=TEXT("assembly_wheel_left");Rebuild();
+        Check(TEXT("left_robot_recipe_accepts_right_tasks"),Item&&ValidateAssemblyBindings(Error));
+        for(int Target:{5,-1,0,1,2,3,4})
+        {
+            if(FParse::Param(FCommandLine::Get(),TEXT("FactoryGripDualFocus")))break;
+            const int Index=Target<4?FMath::Max(0,Target):(Target==4?3:2);
+            TestAssemblyLine->ConfigureIncidentDemo(Target<0?0:Target==4?8:Target==5?14:7);
+            auto* W=TestAssemblyLine->WheelCell.Get();W->GripIncidentWheelIndex=Index;
+            ResetCycle();for(int I=0;I<24;++I)StepSimulation(1./120);
+            const bool Began=StartCycle();bool ContactSeen[4]={};
+            for(int I=0;I<120*300&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)
+            {StepSimulation(1./120);for(int J=0;J<4;++J)ContactSeen[J]|=W->PhysicalGripContacts(J)>0;}
+            bool All=true;for(int I=0;I<4;++I)All&=ContactSeen[I]&&W->PartPhysics[I].Time>0&&W->PartPhysics[I].Inertia.GetMin()>0;
+            Check(*FString::Printf(TEXT("all_four_contact_physics_incident_target_%d"),Target),Began&&All&&RunState==EFactoryRunState::Complete
+                &&(Target<0||(W->DroppedWheelIndex==Index&&W->bDroppedWheelHitSurface)));
+            RefreshInspection();bool FourSensors=true;
+            for(const TCHAR* Suffix:{TEXT("fl"),TEXT("rl"),TEXT("fr"),TEXT("rr")})
+            {const auto* Sample=Inspection().Sensors.Find(FString(TEXT("wheel."))+Suffix+TEXT(".grip.demand"));FourSensors&=Sample&&Sample->Latest.Unit==TEXT("N")&&Sample->Latest.SampleTime>=0;}
+            Check(TEXT("four_part_grip_samples_keep_distinct_sensor_ids"),FourSensors);
+            const double Before=W->SimulationTimeSeconds;
+            TestAssemblyLine->SetSensorVisualization(false);
+            bool Hidden=!W->bShowSensorVisualization;
+            for(auto* Cell:{TestAssemblyLine->DoorCell.Get(),TestAssemblyLine->SecondDoorCell.Get()})if(Cell)
+                for(auto P:Cell->PartPlants)Hidden&=IsValid(P)&&!P->bShowContacts;
+            TestAssemblyLine->SetSensorVisualization(true);
+            Check(TEXT("sensor_visibility_propagates_without_mutating_physics_clock"),Hidden&&W->bShowSensorVisualization&&W->SimulationTimeSeconds==Before);
+            if(!Pass)break;
+        }
+        if(Pass)
+        {
+            TestAssemblyLine->ConfigureIncidentDemo(0);auto* W=TestAssemblyLine->WheelCell.Get();
+            ResetCycle();for(int I=0;I<24;++I)StepSimulation(1./120);const bool Began=StartCycle();
+            bool BothHeld=false;
+            for(int I=0;I<120*60&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)
+            {
+                StepSimulation(1./120);const auto* L=W->LaneForWheel(0);const auto* R=W->LaneForWheel(2);
+                if(L&&R&&L->bHeld&&R->bHeld&&!L->bFastened&&!R->bFastened&&L->ContactGrip.Closure>=1&&R->ContactGrip.Closure>=1
+                    &&W->GetWheelWorld(0).GetLocation().Z>W->ContactRadiusCm(0)+8
+                    &&W->GetWheelWorld(2).GetLocation().Z>W->ContactRadiusCm(2)+8)
+                {BothHeld=true;break;}
+            }
+            // Both wheels must be above the test map's z=0 floor. A newly gripped
+            // wheel still supported by the floor legitimately does not fall.
+            W->WheelProperties[0].Friction=W->WheelProperties[2].Friction=.08;
+            for(int I=0;I<120*10&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)StepSimulation(1./120);
+            for(int I=0;I<120;++I)StepSimulation(1./120);
+            int Count=0;for(bool Falling:W->SecondaryFalling)Count+=Falling?1:0;
+            UE_LOG(LogTemp,Display,TEXT("DUAL_GRIP airborne=%d secondary=%d Z=%.2f/%.2f contacts=%d/%d"),BothHeld,Count,
+                W->GetWheelWorld(0).GetLocation().Z,W->GetWheelWorld(2).GetLocation().Z,W->PhysicalGripContacts(0),W->PhysicalGripContacts(2));
+            Check(TEXT("simultaneous_grip_loss_retains_independent_falling_parts"),Began&&BothHeld&&RunState==EFactoryRunState::Fault&&Count>0
+                &&W->PartPhysics[0].PartId!=W->PartPhysics[2].PartId&&W->PartPhysics[0].Pose.IsValid()&&W->PartPhysics[2].Pose.IsValid());
+            W->WheelProperties[0].Friction=W->WheelProperties[2].Friction=.65;
+        }
+        TestAssemblyLine->WheelCell->GripIncidentWheelIndex=0;TestAssemblyLine->ConfigureIncidentDemo(0);
+        ResetCycle();Layout=Original;Rebuild();History.Clear();
+        auto Report=MakeShared<FJsonObject>();Report->SetBoolField(TEXT("success"),Pass);Report->SetArrayField(TEXT("checks"),Checks);
+        FString Json;FJsonSerializer::Serialize(Report,TJsonWriterFactory<>::Create(&Json));
+        return FFileHelper::SaveStringToFile(Json,*(FPaths::ProjectSavedDir()/(FParse::Param(FCommandLine::Get(),TEXT("FactoryGripDualFocus"))?TEXT("FactoryDualGripReport.json"):TEXT("FactoryReuseReport.json"))))&&Pass;
+    }
     Check(TEXT("three_registered_bound_team_robots"),bUseAssemblyIntegration&&Layout.AssemblyBindings.Num()==3&&ValidateAssemblyBindings(Error));
     Check(TEXT("v3_roundtrip_preserves_explicit_bindings"),FFactoryLayout::FromJson(Initial,Read,Error)&&Read.ToJson()==Initial);
     // The factory UI sends one request to the line adapter; selecting a new case clears prior faults.
@@ -70,6 +134,12 @@ bool AFactoryRuntime::RunModularEditorChecks()
     bool MovedStarted=StartCycle();
     for(int32 I=0;I<120*300&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)StepSimulation(1./120);
     Check(TEXT("moved_robot_replanned_cycle_completes"),MovedStarted&&RunState==EFactoryRunState::Complete);
+    if(FParse::Param(FCommandLine::Get(),TEXT("FactoryIncidentFocus"))&&RunState!=EFactoryRunState::Complete)
+    {
+        auto Report=MakeShared<FJsonObject>();Report->SetBoolField(TEXT("success"),false);Report->SetArrayField(TEXT("checks"),Checks);
+        FString Json;FJsonSerializer::Serialize(Report,TJsonWriterFactory<>::Create(&Json));
+        FFileHelper::SaveStringToFile(Json,*(FPaths::ProjectSavedDir()/TEXT("FactoryMergeReport.json")));return false;
+    }
     ResetCycle();UndoEdit();SelectedId=Left;SetSelectedYaw(0);
     Check(TEXT("robot_base_follows_editor_rotation"),FMath::IsNearlyZero(TestAssemblyLine->WheelCell->LeftRobot->GetActorRotation().Yaw));UndoEdit();
     SelectedId=Left;SetSelectedPosition(60,10);Check(TEXT("unreachable_rear_target_blocks_start"),CanEdit()&&!StartCycle());UndoEdit();
@@ -106,6 +176,17 @@ bool AFactoryRuntime::RunModularEditorChecks()
         FourMounted &= It->GetActorTransform().Equals(Mount,0.2);
     }
     Check(TEXT("all_four_distinct_door_meshes_at_authored_mounts"),FoundDoors==4&&FourMounted);
+    Check(TEXT("four_independent_part_plants_retained"),TestAssemblyLine->DoorCell->PartPlants.Num()==2&&TestAssemblyLine->SecondDoorCell->PartPlants.Num()==2);
+    if(TestAssemblyLine->DoorCell->PartPlants.Num()>1)
+    {
+        auto* PreviousPart=TestAssemblyLine->DoorCell->PartPlants[0].Get();
+        const double BeforeTime=PreviousPart->Body.Time;const double BeforeZ=PreviousPart->Body.Pose.GetLocation().Z;
+        for(int I=0;I<120;++I)StepSimulation(1./120);
+        Check(TEXT("previous_door_physics_continues_after_next_operation"),PreviousPart->Body.Time>BeforeTime+.99&&FMath::Abs(PreviousPart->Body.Pose.GetLocation().Z-BeforeZ)<.2);
+        PreviousPart->bFixtureClosed=PreviousPart->bFastenersClosed=false;
+        for(int I=0;I<30;++I)StepSimulation(1./120);
+        Check(TEXT("previous_door_release_falls_without_current_cell_command"),PreviousPart->Body.Pose.GetLocation().Z<BeforeZ-10);
+    }
     TestAssemblyLine->WheelCell->bLaserScanFrontLeftHub=true;
     ResetCycle();
     for(int32 I=0;I<24;++I)StepSimulation(1./120);
@@ -423,8 +504,73 @@ bool AFactoryRuntime::RunModularEditorChecks()
                 &&RejectedDoorRoot&&FVector::Distance(RejectedDoorRoot->GetComponentLocation(),Door->DoorRejectTargetWorld)<0.5);
         }
     }
+    auto CheckStoppedPhysics=[&]()
+    {
+    // Actual geometry changes without consulting DoorSizeScale or the scenario selector.
+    TestAssemblyLine->SetFactoryCheck(0);ResetCycle();
+    auto* Inspected=TestAssemblyLine->DoorCell.Get();
+    const auto OriginalScale=Inspected->Assembly->GetLeftDoor()->GetRelativeScale3D();
+    Inspected->Assembly->GetLeftDoor()->SetRelativeScale3D(OriginalScale*1.12);
+    const bool WrongSizeStarted=Inspected->StartCycle();
+    Check(TEXT("unflagged_actual_door_scale_is_rejected"),!WrongSizeStarted&&!Inspected->bDoorSizePassed
+        &&Inspected->MeasuredDoorWidthCm>Inspected->NominalDoorWidthCm+1&&Inspected->DoorSizeScale==1);
+    Inspected->Assembly->GetLeftDoor()->SetRelativeScale3D(OriginalScale);
+    TestAssemblyLine->SetFactoryCheck(7);ResetCycle();
+    for(int I=0;I<24;++I)StepSimulation(1./120);
+    const bool FallStarted=StartCycle();auto* Falling=TestAssemblyLine->WheelCell.Get();
+    for(int I=0;I<120*120&&!Falling->bLeftWheelSlipFall&&RunState!=EFactoryRunState::Fault;++I)StepSimulation(1./120);
+    const bool WasFalling=Falling->bLeftWheelSlipFall;
+    StopCycle();const double BeforeStopTime=Falling->SimulationTimeSeconds;
+    const FVector BeforeStopPosition=Falling->GetWheelWorld(0).GetLocation();
+    for(int I=0;I<24;++I)StepSimulation(1./120);
+    Check(TEXT("stopped_factory_keeps_falling_part_physics"),FallStarted&&WasFalling
+        &&Falling->SimulationTimeSeconds>BeforeStopTime
+        &&!Falling->GetWheelWorld(0).GetLocation().Equals(BeforeStopPosition,0.01));
+    Check(TEXT("falling_visual_and_common_part_pose_agree"),Falling->GetWheelWorld(0).GetLocation().Equals(Falling->GetDroppedWheelLocation(),0.001));
+    TestAssemblyLine->SetFactoryCheck(0);ResetCycle();
+    for(int I=0;I<24;++I)StepSimulation(1./120);
+    const bool DoorRunStarted=StartCycle();auto* HeldDoor=TestAssemblyLine->DoorCell.Get();
+    for(int I=0;I<120*180&&!HeldDoor->bDoorHeld&&RunState!=EFactoryRunState::Fault;++I)StepSimulation(1./120);
+    const bool HadDoor=HeldDoor->bDoorHeld;
+    const int PreviousResults=HeldDoor->Operations.Results.Num();
+    StopCycle();const double DoorTime=HeldDoor->SimulationTimeSeconds;
+    const double OldNormal=HeldDoor->PhysicsSettings.GripNormalN;
+    HeldDoor->PhysicsSettings.GripNormalN=10;
+    for(int I=0;I<120;++I)StepSimulation(1./120);
+    Check(TEXT("stopped_door_keeps_physics_and_weak_grip_drops"),DoorRunStarted&&HadDoor
+        &&HeldDoor->SimulationTimeSeconds>DoorTime&&!HeldDoor->bDoorHeld&&HeldDoor->PhysicalDoor.bValid);
+    Check(TEXT("cancelled_request_not_completed_twice_after_drop"),HeldDoor->Operations.Results.Num()==PreviousResults+1
+        &&HeldDoor->Operations.Results.Last().Control==EFactoryCommandStatus::Cancelled);
+    HeldDoor->PhysicsSettings.GripNormalN=OldNormal;
+    };
+    for(int Preset:{20,21})
+    {
+        TestAssemblyLine->ConfigureIncidentDemo(Preset);ResetCycle();
+        for(int I=0;I<24;++I)StepSimulation(1./120);
+        const bool Began=StartCycle();
+        for(int I=0;I<120*300&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)StepSimulation(1./120);
+        bool Damage=false,DebrisMeasured=false;for(auto P:TestAssemblyLine->DoorCell->PartPlants)
+        {Damage|=IsValid(P)&&!P->Body.Damage.IsEmpty();DebrisMeasured|=IsValid(P)&&P->ObservedSeatInterferenceMm>1;}
+        Check(Preset==20?TEXT("fixture_debris_prevents_normal_handoff"):TEXT("forced_fastening_reports_localized_damage"),
+            Began&&RunState==EFactoryRunState::Fault&&(Preset==20?(DebrisMeasured&&!TestAssemblyLine->DoorCell->bFixtureSeated):Damage));
+    }
+    TestAssemblyLine->ConfigureIncidentDemo(0);
     if(FParse::Param(FCommandLine::Get(),TEXT("FactoryIncidentFocus")))
     {
+        for(int Preset:{6,7,8,14})
+        {
+            TestAssemblyLine->ConfigureIncidentDemo(Preset);ResetCycle();
+            for(int I=0;I<24;++I)StepSimulation(1./120);
+            const bool Began=StartCycle();bool ObservedContact=false;
+            for(int I=0;I<120*300&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)
+            {StepSimulation(1./120);ObservedContact|=TestAssemblyLine->WheelCell->PhysicalGripContacts(0)>0;}
+            const auto* W=TestAssemblyLine->WheelCell.Get();
+            Check(*FString::Printf(TEXT("contact_wheel_scenario_%d"),Preset),Began&&ObservedContact&&RunState==EFactoryRunState::Complete
+                &&(Preset==6||W->bDroppedWheelHitSurface));
+        }
+        TestAssemblyLine->ConfigureIncidentDemo(0);
+
+        CheckStoppedPhysics();
         // Targeted rerun of the edited chassis/supply/transfer and door replacement boundaries. Keep
         // the full-suite report intact so earlier incident evidence is retained.
         ResetCycle();Layout=Original;Rebuild();History.Clear();
@@ -539,42 +685,7 @@ bool AFactoryRuntime::RunModularEditorChecks()
     FDoorOperationSnapshot FrontHistory;
     Check(TEXT("completed_door_retains_original_width_timestamp"),TestAssemblyLine->DoorSnapshot(TEXT("door_fl"),FrontHistory)
         &&FrontHistory.WidthSampleTime>=0&&FrontHistory.WidthSampleTime<FrontHistory.SampleTime);
-    // Actual geometry changes without consulting DoorSizeScale or the scenario selector.
-    TestAssemblyLine->SetFactoryCheck(0);ResetCycle();
-    auto* Inspected=TestAssemblyLine->DoorCell.Get();
-    const auto OriginalScale=Inspected->Assembly->GetLeftDoor()->GetRelativeScale3D();
-    Inspected->Assembly->GetLeftDoor()->SetRelativeScale3D(OriginalScale*1.12);
-    const bool WrongSizeStarted=Inspected->StartCycle();
-    Check(TEXT("unflagged_actual_door_scale_is_rejected"),!WrongSizeStarted&&!Inspected->bDoorSizePassed
-        &&Inspected->MeasuredDoorWidthCm>Inspected->NominalDoorWidthCm+1&&Inspected->DoorSizeScale==1);
-    Inspected->Assembly->GetLeftDoor()->SetRelativeScale3D(OriginalScale);
-    TestAssemblyLine->SetFactoryCheck(7);ResetCycle();
-    for(int I=0;I<24;++I)StepSimulation(1./120);
-    const bool FallStarted=StartCycle();auto* Falling=TestAssemblyLine->WheelCell.Get();
-    for(int I=0;I<120*120&&!Falling->bLeftWheelSlipFall&&RunState!=EFactoryRunState::Fault;++I)StepSimulation(1./120);
-    const bool WasFalling=Falling->bLeftWheelSlipFall;
-    StopCycle();const double BeforeStopTime=Falling->SimulationTimeSeconds;
-    const FVector BeforeStopPosition=Falling->GetWheelWorld(0).GetLocation();
-    for(int I=0;I<24;++I)StepSimulation(1./120);
-    Check(TEXT("stopped_factory_keeps_falling_part_physics"),FallStarted&&WasFalling
-        &&Falling->SimulationTimeSeconds>BeforeStopTime
-        &&!Falling->GetWheelWorld(0).GetLocation().Equals(BeforeStopPosition,0.01));
-    Check(TEXT("falling_visual_and_common_part_pose_agree"),Falling->GetWheelWorld(0).GetLocation().Equals(Falling->GetDroppedWheelLocation(),0.001));
-    TestAssemblyLine->SetFactoryCheck(0);ResetCycle();
-    for(int I=0;I<24;++I)StepSimulation(1./120);
-    const bool DoorRunStarted=StartCycle();auto* HeldDoor=TestAssemblyLine->DoorCell.Get();
-    for(int I=0;I<120*180&&!HeldDoor->bDoorHeld&&RunState!=EFactoryRunState::Fault;++I)StepSimulation(1./120);
-    const bool HadDoor=HeldDoor->bDoorHeld;
-    const int PreviousResults=HeldDoor->Operations.Results.Num();
-    StopCycle();const double DoorTime=HeldDoor->SimulationTimeSeconds;
-    const double OldNormal=HeldDoor->PhysicsSettings.GripNormalN;
-    HeldDoor->PhysicsSettings.GripNormalN=10;
-    for(int I=0;I<120;++I)StepSimulation(1./120);
-    Check(TEXT("stopped_door_keeps_physics_and_weak_grip_drops"),DoorRunStarted&&HadDoor
-        &&HeldDoor->SimulationTimeSeconds>DoorTime&&!HeldDoor->bDoorHeld&&HeldDoor->PhysicalDoor.bValid);
-    Check(TEXT("cancelled_request_not_completed_twice_after_drop"),HeldDoor->Operations.Results.Num()==PreviousResults+1
-        &&HeldDoor->Operations.Results.Last().Control==EFactoryCommandStatus::Cancelled);
-    HeldDoor->PhysicsSettings.GripNormalN=OldNormal;
+    CheckStoppedPhysics();
     {
         // Extended seeded pool: whatever line-level event the seed plans must actually
         // occur, be the only physical event, and end in a complete four-wheel cycle.

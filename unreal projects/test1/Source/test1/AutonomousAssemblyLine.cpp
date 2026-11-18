@@ -1,4 +1,4 @@
-#include "AutonomousAssemblyLine.h"
+﻿#include "AutonomousAssemblyLine.h"
 #include "WheelAssemblyCell.h"
 #include "DoorAssemblyCell.h"
 #include "CamryAssembly.h"
@@ -39,10 +39,10 @@ bool AAutonomousAssemblyLine::ResetLine()
 	ExtendedEvent = 0;
 	if (FactoryCheck == 5 && WheelCell)
 	{
-		WheelCell->bPhysicalLeftGrip = false;
+		WheelCell->bGripIncidentOverride = false;
 		WheelCell->bLowFrictionGrip = false;
 		WheelCell->bGripDegradesInTransit = false;
-		WheelCell->FrontLeftWheelMassKg = 18.0;
+		WheelCell->GripIncidentMassKg = 18.0;
 		bDemoDockOvershoot = false;
 		if (bExtendedRandomEvents)
 		{
@@ -51,9 +51,9 @@ bool AAutonomousAssemblyLine::ResetLine()
 			{
 				// One event per wheel: the front-left wheel carries the physical event,
 				// the rear-left wheel keeps its seeded supply/sensor/grip event.
-				WheelCell->bPhysicalLeftGrip = true;
+				WheelCell->bGripIncidentOverride = true;
                 WheelCell->bDemoRecoveryEnabled = true;
-				WheelCell->FrontLeftWheelMassKg = ExtendedEvent == 1 ? 90.0 : 18.0;
+				WheelCell->GripIncidentMassKg = ExtendedEvent == 1 ? 90.0 : 18.0;
 				WheelCell->bGripDegradesInTransit = ExtendedEvent == 2;
 				bInjected[0] = bRestored[0] = true;
 			}
@@ -81,11 +81,11 @@ void AAutonomousAssemblyLine::SetFactoryCheck(int32 Kind)
 	FactoryCheck = FMath::Clamp(Kind, 0, 13);
     if (WheelCell)
     {
-        WheelCell->bPhysicalLeftGrip = FactoryCheck >= 6 && FactoryCheck <= 8;
+        WheelCell->bGripIncidentOverride = FactoryCheck >= 6 && FactoryCheck <= 8;
         WheelCell->bDemoRecoveryEnabled = FactoryCheck == 7 || FactoryCheck == 8; // Explicit legacy recovery presentation only.
         WheelCell->bLowFrictionGrip = FactoryCheck == 7;
         WheelCell->bGripDegradesInTransit = false;
-        WheelCell->FrontLeftWheelMassKg = FactoryCheck == 8 ? 90.0 : 18.0;
+        WheelCell->GripIncidentMassKg = FactoryCheck == 8 ? 90.0 : 18.0;
         WheelCell->FrontLeftWheelSizeScale = FactoryCheck == 9 ? 1.12 : FactoryCheck == 10 ? 0.88 : 1.0;
     }
     bDemoDockOvershoot=FactoryCheck==13;
@@ -98,15 +98,18 @@ void AAutonomousAssemblyLine::SetFactoryCheck(int32 Kind)
 
 bool AAutonomousAssemblyLine::ConfigureIncidentDemo(int32 Preset)
 {
-    if (!IsValid(WheelCell) || Preset < 0 || Preset > 19) return false;
+    if (!IsValid(WheelCell) || Preset < 0 || Preset > 21) return false;
     const int32 BaseCheck = Preset <= 13 ? Preset : Preset == 14 ? 6 : Preset == 15 ? 0
-        : Preset == 16 ? 9 : Preset == 17 ? 10 : Preset == 19 ? 0 : 5;
+        : Preset == 16 ? 9 : Preset == 17 ? 10 : Preset >= 19 ? 0 : 5;
     // The line adapter configures the cell before ResetLine; the UI never writes equipment state.
     bExtendedRandomEvents = false;
     WheelCell->bReplaceRejectedWheel = false;
     WheelCell->LaserTransientBlockScans = 0;
     WheelCell->bDemoChassisShiftBeforeMount = false;
     SetFactoryCheck(BaseCheck);
+    for(auto* Door:{DoorCell.Get(),SecondDoorCell.Get()})if(Door)
+    {Door->FixtureDebrisMm=0;Door->bForceMisalignedFastening=false;}
+    if(DoorCell&&Preset>=20){DoorCell->FixtureDebrisMm=Preset==20?4:20;DoorCell->bForceMisalignedFastening=Preset==21;}
     switch (Preset)
     {
     case 14: WheelCell->bGripDegradesInTransit = true; WheelCell->bDemoRecoveryEnabled=true; break;
