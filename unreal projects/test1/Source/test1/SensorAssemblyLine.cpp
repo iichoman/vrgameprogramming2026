@@ -1,4 +1,4 @@
-﻿#include "SensorAssemblyLine.h"
+#include "SensorAssemblyLine.h"
 #include "WheelAssemblyCell.h"
 #include "DoorAssemblyCell.h"
 #include "RobotArm.h"
@@ -95,6 +95,14 @@ bool ASensorAssemblyLine::SelectDemo(EArrivalDemo Selection)
 {
     if (ArrivalPhase==EArrivalPhase::Moving || ArrivalPhase==EArrivalPhase::Docking || (ArrivalPhase==EArrivalPhase::Released && Stage!=EAssemblyLineStage::Complete && Stage!=EAssemblyLineStage::Fault)) return false;
     Demo=Selection; return ResetLine();
+}
+void ASensorAssemblyLine::AfterProcessEntry()
+{
+    Conveyor->Reset(WheelCell->Assembly,WheelCell->TransportCarriage,WheelCell->Assembly->GetActorLocation());
+    Conveyor->CommandRun(false);ArrivalPhase=EArrivalPhase::Released;
+    Remainder=0;bLoggedComplete=false;
+    Sensors->Reset(WheelCell->Assembly,WheelCell->Assembly->GetActorTransform());
+    Record(TEXT("PROCESS_ENTRY"),ProcessRoute[ActiveProcessIndex].Id.ToString()+TEXT(" / ")+SkippedProcessSummary().Replace(TEXT("\n"),TEXT("; ")));
 }
 bool ASensorAssemblyLine::StartLine()
 {

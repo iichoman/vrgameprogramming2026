@@ -37,7 +37,6 @@ struct FFactoryInspectionModel
 {
     EFactoryDetailTab Tab=EFactoryDetailTab::Selection;
     bool PanelOpen=false, PaletteOpen=true, ShowAllSensors=true;
-    bool ShowAllDemoCases=false;
     FString LooseSelection, FocusedIssue, SelectedChannel=TEXT("arrival.speed");
     TArray<FFactoryIssue> Issues;
     TOptional<FFactoryIssue> InteractionIssue;

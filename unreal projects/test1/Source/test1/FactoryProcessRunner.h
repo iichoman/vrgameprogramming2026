@@ -91,6 +91,7 @@ public:
     virtual FName OperationType() const override { return TEXT("assembly_line_test"); }
     virtual bool Validate(FString& Error) const override;
     virtual bool Start() override;
+    bool SkipToNextProcess();
     virtual void Stop() override;
     virtual void Reset() override;
     virtual void Step(double Dt) override;

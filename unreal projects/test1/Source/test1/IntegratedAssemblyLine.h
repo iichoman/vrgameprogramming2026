@@ -22,7 +22,21 @@ struct FDoorOperationSnapshot
 };
 
 UENUM(BlueprintType)
-enum class EAssemblyLineStage : uint8 { Idle, Wheels, Transfer, Door, Complete, Stopped, Fault };
+enum class EAssemblyLineStage : uint8 { Idle, Wheels, Transfer, Door, Complete, Stopped, Fault, Extension };
+
+enum class EAssemblyProcessProgress : uint8 { Running, Complete, Fault };
+/** Line-owned route entry. Validate is read-only; Enter prepares a supported vehicle,
+ * clears this operation's stale commands and starts its real sensor/control gates.
+ * Added glass/seat operations implement this contract, never the UI button. */
+struct FAssemblyProcessEntry
+{
+    FName Id;
+    FString Label;
+    TFunction<bool(FString&)> Validate;
+    TFunction<bool()> Enter;
+    TFunction<EAssemblyProcessProgress(double)> Advance;
+    TFunction<void()> Stop;
+};
 
 /** One vehicle, two sequential stations, with the existing measured joint controllers. */
 UCLASS(NotBlueprintable)
@@ -64,6 +78,12 @@ public:
     UFUNCTION() virtual void StopLine();
     UFUNCTION() virtual bool AdvanceLine(double Seconds);
     UFUNCTION() virtual FString GetSummary() const;
+    bool RegisterFollowingProcess(FAssemblyProcessEntry Entry);
+    bool CanSkipToNextProcess() const;
+    FString NextProcessLabel() const;
+    virtual bool SkipToNextProcess();
+    FString SkippedProcessSummary() const;
+    bool WasProcessSkipped(FName Id) const { return SkippedProcesses.Contains(Id); }
     virtual void BeginPlay() override;
     virtual void Tick(float Seconds) override;
 protected:
@@ -80,6 +100,13 @@ protected:
     FTransform TransferVehicleStart, TransferCarriageStart;
     double TransferTime = 0;
     bool bReady = false;
+    TArray<FAssemblyProcessEntry> ProcessRoute;
+    TArray<FName> SkippedProcesses;
+    int32 ActiveProcessIndex = 0;
+    bool EnterFollowingProcess(bool Skipping);
+    bool PrepareDoorStation();
+    virtual void BeforeProcessEntry(FName Id) {}
+    virtual void AfterProcessEntry() {}
     void Fail(const FString& Reason);
     bool PrepareDoor(ADoorAssemblyCell* Cell, int32 Index);
 };

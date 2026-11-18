@@ -405,6 +405,10 @@ bool AFactoryRuntime::ValidateRun(FString& Error) const
 }
 bool AFactoryRuntime::StartCycle(){Inspection().StartError.Empty();const bool OK=bUseAssemblyIntegration?AssemblyProcess->Start():(WheelProcess&&WheelProcess->Start());if(!OK)Inspection().StartError=Status;return OK;}
 void AFactoryRuntime::StopCycle(){if(bUseAssemblyIntegration)AssemblyProcess->Stop();else if(WheelProcess)WheelProcess->Stop();}
+bool AFactoryRuntime::SkipToNextProcess()
+{
+    return bUseAssemblyIntegration&&AssemblyProcess&&AssemblyProcess->SkipToNextProcess();
+}
 void AFactoryRuntime::ResetCycle(){if(bUseAssemblyIntegration)AssemblyProcess->Reset();else if(WheelProcess)WheelProcess->Reset();if(InspectionState){InspectionState->Sensors.Empty();InspectionState->NextRefresh=0;InspectionState->StartError.Empty();InspectionState->InteractionIssue.Reset();}bNeedsPanel=true;}
 void AFactoryRuntime::StepSimulation(double Dt){if(bUseAssemblyIntegration)AssemblyProcess->Step(Dt);else if(WheelProcess)WheelProcess->Step(Dt);}
 FString AFactoryRuntime::StateText() const

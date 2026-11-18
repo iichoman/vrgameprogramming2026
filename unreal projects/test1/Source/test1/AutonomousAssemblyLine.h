@@ -36,11 +36,18 @@ public:
 	/** Factory demo adapter: presets 0..13 are legacy checks, 14..19 are incident experiments. */
 	bool ConfigureIncidentDemo(int32 Preset);
 	int32 GetFactoryCheck() const { return FactoryCheck; }
+    bool SelectRandomSituation(FName Process=NAME_None);
+    FString SituationSummary() const;
+    int32 SelectedIncidentPreset=0;
+    bool bRandomSituation=false;
+    double NormalSituationProbability=.35;
+    int32 SituationSeed=0, SituationDraw=0;
 protected:
+	virtual void BeforeProcessEntry(FName Id) override;
 	virtual void BeforeSensorStep(double Dt) override;
 private:
 	FRandomStream Random;
-	int32 FactoryCheck = 5;
+	int32 FactoryCheck = 0;
 	ERandomWheelEvent Planned[2];
 	double FirstSeenAt[2] = {-1,-1};
 	double TriggerAfter[2] = {0,0};

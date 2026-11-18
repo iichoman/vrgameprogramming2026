@@ -109,6 +109,8 @@ public:
     bool LoadLayout(const FString& Slot = TEXT("A"));
     void RestoreDefault();
     bool StartCycle();
+    bool SkipToNextProcess();
+    UFUNCTION() bool RunProcessEntryChecks();
     void StopCycle();
     void ResetCycle();
     void FitView();

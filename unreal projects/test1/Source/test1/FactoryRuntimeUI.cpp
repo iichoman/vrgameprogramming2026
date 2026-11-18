@@ -1,7 +1,8 @@
-﻿#include "FactorySensorChart.h"
+#include "FactorySensorChart.h"
 #include "FactoryRuntime.h"
 #include "FactoryProcessRunner.h"
 #include "AutonomousAssemblyLine.h"
+#include "AssemblySituationCatalog.h"
 #include "WheelAssemblyCell.h"
 #include "FactoryEquipmentRegistry.h"
 #include "FactoryViewport.h"
@@ -159,12 +160,14 @@ void AFactoryRuntime::CreatePanel()
     auto Top=SNew(SHorizontalBox);
     Top->AddSlot().FillWidth(1).VAlign(VAlign_Center)[SNew(STextBlock).Font(HeadingFont).ColorAndOpacity(Text).Text_Lambda([this](){return FText::FromString(TEXT("공장 시뮬레이터  ·  ")+StateText()+(bDirty?TEXT("  • 미저장"):TEXT("")));})];
     Top->AddSlot().AutoWidth().Padding(3,0)[Button(TEXT("실행"),[this](){if(!StartCycle()){RefreshInspection();OpenDetails(EFactoryDetailTab::Problems);}},Editing)];
+    if(bUseAssemblyIntegration)Top->AddSlot().AutoWidth().Padding(3,0)[Button(TEXT("다음 공정"),[this](){SkipToNextProcess();},
+        TAttribute<bool>::CreateLambda([this](){return IsValid(TestAssemblyLine)&&TestAssemblyLine->CanSkipToNextProcess();}))];
     Top->AddSlot().AutoWidth().Padding(3,0)[Button(TEXT("정지"),[this](){StopCycle();},TAttribute<bool>::CreateLambda([this](){return RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;}))];
     Top->AddSlot().AutoWidth().Padding(3,0)[Button(TEXT("편집 복귀"),[this](){ResetCycle();},TAttribute<bool>::CreateLambda([this](){return !CanEdit();}))];
     Top->AddSlot().AutoWidth().Padding(3,0)[Button(TEXT("실행 취소"),[this](){UndoEdit();},TAttribute<bool>::CreateLambda([this](){return CanUndo();}))];
     Top->AddSlot().AutoWidth().Padding(3,0)[Button(TEXT("다시 실행"),[this](){RedoEdit();},TAttribute<bool>::CreateLambda([this](){return CanRedo();}))];
     Top->AddSlot().AutoWidth().Padding(3,0)[Button(TEXT("공장·저장"),[this](){OpenDetails(EFactoryDetailTab::Layout);})];
-    Top->AddSlot().AutoWidth().Padding(3,0)[Button(TEXT("기능 시연"),[this](){OpenDetails(EFactoryDetailTab::Demo);})];
+    Top->AddSlot().AutoWidth().Padding(3,0)[Button(TEXT("상황 시연"),[this](){OpenDetails(EFactoryDetailTab::Demo);})];
     Top->AddSlot().AutoWidth().Padding(3,0)[Button(TEXT("상세 정보"),[this](){Inspection().PanelOpen=!Inspection().PanelOpen;bNeedsPanel=true;})];
 
     if(Model.Tab==EFactoryDetailTab::Selection)
@@ -231,49 +234,35 @@ void AFactoryRuntime::CreatePanel()
     else if(Model.Tab==EFactoryDetailTab::Results){Label(TEXT("작업 결과"),true);Dynamic([this](){return ResultDetails();});}
     else if(Model.Tab==EFactoryDetailTab::Demo)
     {
-        Label(TEXT("기능별 시연"),true);
-        Label(TEXT("항목 선택 → 상단 실행. 다른 항목은 편집 복귀 후 선택하세요."));
+        Label(TEXT("상황 시연"),true);
         if(bUseAssemblyIntegration)
         {
-            const TCHAR* Names[]={TEXT("센서 정상"),TEXT("부품 누락·보충"),TEXT("위치 센서 끊김"),TEXT("파지 실패·재시도"),TEXT("휠 위치 변화"),TEXT("난수 사건"),TEXT("물리 파지 정상"),TEXT("저마찰·낙하 복구"),TEXT("과중량·낙하 복구"),TEXT("휠 규격 과대"),TEXT("휠 규격 과소"),TEXT("차문 규격 과대"),TEXT("차문 규격 과소"),TEXT("도킹 초과·후진")};
-            Dynamic([this](){const int32 Kind=IsValid(TestAssemblyLine)?TestAssemblyLine->GetFactoryCheck():-1;
-                const TCHAR* Names[]={TEXT("센서 정상"),TEXT("부품 누락·보충"),TEXT("위치 센서 끊김"),TEXT("파지 실패·재시도"),TEXT("휠 위치 변화"),TEXT("난수 사건"),TEXT("물리 파지 정상"),TEXT("저마찰·낙하 복구"),TEXT("과중량·낙하 복구"),TEXT("휠 규격 과대"),TEXT("휠 규격 과소"),TEXT("차문 규격 과대"),TEXT("차문 규격 과소"),TEXT("도킹 초과·후진")};
-                return Kind>=0&&Kind<UE_ARRAY_COUNT(Names)?FString(TEXT("선택: "))+Names[Kind]:TEXT("조립 라인 연결 없음");});
-            auto DemoButton=[this,&Button,&Editing,Names](int32 Kind)->TSharedRef<SWidget>{
-                const FString Caption=(IsValid(TestAssemblyLine)&&TestAssemblyLine->GetFactoryCheck()==Kind?TEXT("● "):TEXT(""))+FString(Names[Kind]);
-                return Button(Caption,[this,Kind](){if(IsValid(TestAssemblyLine)&&TestAssemblyLine->ConfigureIncidentDemo(Kind))ResetCycle();},Editing);};
-            Label(TEXT("발표용 시연 선택"),true);
-            Pair(DemoButton(6),DemoButton(7));Pair(DemoButton(8),DemoButton(9));
-            Rows->AddSlot().AutoHeight()[Button(Model.ShowAllDemoCases?TEXT("추가 시연 접기"):TEXT("추가 시연 펼치기"),[this](){Inspection().ShowAllDemoCases=!Inspection().ShowAllDemoCases;bNeedsPanel=true;})];
-            if(Model.ShowAllDemoCases)
+            Label(TEXT("상황 선택 후 실행 · 다음 공정은 앞 공정을 건너뛰고 바로 시작합니다."));
+            Dynamic([this](){return IsValid(TestAssemblyLine)?TestAssemblyLine->SituationSummary():TEXT("라인 연결 없음");});
+            Rows->AddSlot().AutoHeight().Padding(0,4)[Button(TEXT("무작위 상황"),[this](){
+                if(IsValid(TestAssemblyLine)&&TestAssemblyLine->SelectRandomSituation())ResetCycle();},Editing)];
+            Dynamic([this](){return IsValid(TestAssemblyLine)?FString::Printf(TEXT("정상 %.0f%% · 돌발상황 %.0f%%"),
+                TestAssemblyLine->NormalSituationProbability*100,(1-TestAssemblyLine->NormalSituationProbability)*100):FString();});
+            auto Cases=SNew(SWrapBox).UseAllottedSize(true);
+            for(const auto& Case:AssemblySituations::Catalog())
             {
-                Pair(DemoButton(0),DemoButton(1));Pair(DemoButton(2),DemoButton(3));Pair(DemoButton(4),DemoButton(5));
-                Pair(DemoButton(10),DemoButton(11));Pair(DemoButton(12),DemoButton(13));
+                const int32 Preset=Case.Preset;
+                Cases->AddSlot().Padding(0,3,4,0)[Button(Case.Label,[this,Preset](){
+                    if(IsValid(TestAssemblyLine)&&TestAssemblyLine->ConfigureIncidentDemo(Preset))ResetCycle();},Editing)];
             }
-            Label(TEXT("새 돌발상황 · 복구 시연"),true);
-            Pair(Button(TEXT("운반 중 마찰 저하"),[this](){if(IsValid(TestAssemblyLine)&&TestAssemblyLine->ConfigureIncidentDemo(14))ResetCycle();},Editing),
-                Button(TEXT("레이저 재스캔"),[this](){if(IsValid(TestAssemblyLine)&&TestAssemblyLine->ConfigureIncidentDemo(15))ResetCycle();},Editing));
-            Pair(Button(TEXT("과대 휠 교체"),[this](){if(IsValid(TestAssemblyLine)&&TestAssemblyLine->ConfigureIncidentDemo(16))ResetCycle();},Editing),
-                Button(TEXT("과소 휠 교체"),[this](){if(IsValid(TestAssemblyLine)&&TestAssemblyLine->ConfigureIncidentDemo(17))ResetCycle();},Editing));
-            Rows->AddSlot().AutoHeight()[Button(TEXT("확장 난수 사건"),[this](){if(IsValid(TestAssemblyLine)&&TestAssemblyLine->ConfigureIncidentDemo(18))ResetCycle();},Editing)];
-            Rows->AddSlot().AutoHeight()[Button(TEXT("차체 위치 변동 · 재스캔"),[this](){if(IsValid(TestAssemblyLine)&&TestAssemblyLine->ConfigureIncidentDemo(19))ResetCycle();},Editing)];
-            Rows->AddSlot().AutoHeight()[Button(TEXT("지그 이물질 · 안착 불량"),[this](){if(IsValid(TestAssemblyLine)&&TestAssemblyLine->ConfigureIncidentDemo(20))ResetCycle();},Editing)];
-            Rows->AddSlot().AutoHeight()[Button(TEXT("잘못된 안착 · 강제 체결 손상"),[this](){if(IsValid(TestAssemblyLine)&&TestAssemblyLine->ConfigureIncidentDemo(21))ResetCycle();},Editing)];
-            Dynamic([this](){if(!IsValid(TestAssemblyLine)||!IsValid(TestAssemblyLine->WheelCell))return FString(TEXT("연결 대기"));const auto* W=TestAssemblyLine->WheelCell.Get();
-                return FString::Printf(TEXT("설정: 마찰 저하 %s · 불량 휠 교체 %s · 확장 난수 %s\n레이저 재시도 %d/%d · 휠 교체 %d회 · 현재 단계 %d"),
-                    W->bGripDegradesInTransit?TEXT("켬"):TEXT("끔"),W->bReplaceRejectedWheel?TEXT("켬"):TEXT("끔"),TestAssemblyLine->bExtendedRandomEvents?TEXT("켬"):TEXT("끔"),W->LaserScanRetries,W->MaxLaserScanAttempts,W->WheelReplacements,W->WheelReplacePhase);});
-            Label(TEXT("사건 기록 · 측정과 대응"),true);
-            Dynamic([this](){return IsValid(TestAssemblyLine)&&IsValid(TestAssemblyLine->WheelCell)?TestAssemblyLine->WheelCell->GetIncidentSummary(5):TEXT("연결 대기");});
-            Label(TEXT("판단 근거 · 현재 값과 마지막 표본"),true);
-            Dynamic([this](){return DemoEvidenceText(IsValid(TestAssemblyLine)?TestAssemblyLine->WheelCell.Get():nullptr);});
-            Label(TEXT("파지 사고 대상 (정상 물리는 네 휠 모두 적용)"),true);
-            const TCHAR* Targets[]={TEXT("왼쪽 앞"),TEXT("왼쪽 뒤"),TEXT("오른쪽 앞"),TEXT("오른쪽 뒤")};
-            for(int Target=0;Target<4;++Target)Rows->AddSlot().AutoHeight()[Button(Targets[Target],[this,Target](){if(TestAssemblyLine&&TestAssemblyLine->WheelCell)TestAssemblyLine->WheelCell->GripIncidentWheelIndex=Target;},Editing)];
-            Dynamic([this](){const TCHAR* T[]={TEXT("왼쪽 앞"),TEXT("왼쪽 뒤"),TEXT("오른쪽 앞"),TEXT("오른쪽 뒤")};return TestAssemblyLine&&TestAssemblyLine->WheelCell?FString(TEXT("선택한 파지 사고 대상: "))+T[FMath::Clamp(TestAssemblyLine->WheelCell->GripIncidentWheelIndex,0,3)]:TEXT("");});
-            Label(TEXT("레이저 3단계 · 왼쪽 앞 휠"),true);
-            Dynamic([this](){return IsValid(TestAssemblyLine)&&IsValid(TestAssemblyLine->WheelCell)?TestAssemblyLine->WheelCell->GetLaserInspectionSummary().Replace(TEXT("통과"),TEXT("스캔 유효")):TEXT("연결 대기");});
-            Label(TEXT("스캔 유효는 측정 성공입니다. 장착 품질은 최종 중심 오차와 공정 결과를 함께 확인하세요."));
-            Label(TEXT("저마찰·과중량은 휠 낙하 → 작업자 표시 이동 → 격리·대체 휠 공급 → 재검사·조립을 보여줍니다. 휠 규격 과대/과소는 공급 위치에서 측정 후 격리합니다."));
+            Rows->AddSlot().AutoHeight()[Cases];
+            Dynamic([this](){return IsValid(TestAssemblyLine)?TestAssemblyLine->SkippedProcessSummary():FString();});
+            Label(TEXT("파지 사고 대상"),true);
+            auto Targets=SNew(SWrapBox).UseAllottedSize(true);
+            const TCHAR* Names[]={TEXT("왼쪽 앞"),TEXT("왼쪽 뒤"),TEXT("오른쪽 앞"),TEXT("오른쪽 뒤")};
+            for(int Target=0;Target<4;++Target)
+                Targets->AddSlot().Padding(0,3,4,0)[Button(Names[Target],[this,Target](){
+                    if(TestAssemblyLine&&TestAssemblyLine->WheelCell)TestAssemblyLine->WheelCell->GripIncidentWheelIndex=Target;},Editing)];
+            Rows->AddSlot().AutoHeight()[Targets];
+            Dynamic([this](){const TCHAR* Names[]={TEXT("왼쪽 앞"),TEXT("왼쪽 뒤"),TEXT("오른쪽 앞"),TEXT("오른쪽 뒤")};
+                return TestAssemblyLine&&TestAssemblyLine->WheelCell?FString(TEXT("대상: "))+Names[FMath::Clamp(TestAssemblyLine->WheelCell->GripIncidentWheelIndex,0,3)]:FString();});
+            Label(TEXT("사건 기록"),true);
+            Dynamic([this](){return IsValid(TestAssemblyLine)&&IsValid(TestAssemblyLine->WheelCell)?TestAssemblyLine->WheelCell->GetIncidentSummary(3):TEXT("대기");});
         }
         else
         {
@@ -288,6 +277,7 @@ void AFactoryRuntime::CreatePanel()
     else if(Model.Tab==EFactoryDetailTab::Sensors)
     {
         Label(TEXT("센서 모니터"),true);
+        if(bUseAssemblyIntegration)Dynamic([this](){return DemoEvidenceText(IsValid(TestAssemblyLine)?TestAssemblyLine->WheelCell.Get():nullptr);});
         if(bUseAssemblyIntegration)
         {
             Rows->AddSlot().AutoHeight().Padding(0,4)[SNew(SCheckBox)

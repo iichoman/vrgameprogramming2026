@@ -1,4 +1,4 @@
-﻿#include "FactoryRuntime.h"
+#include "FactoryRuntime.h"
 #include "FactoryAssemblyEquipment.h"
 #include "FactoryEquipmentRegistry.h"
 #include "AutonomousAssemblyLine.h"
@@ -21,6 +21,7 @@ bool AFactoryRuntime::RunModularEditorChecks()
     bool Pass=true;TArray<TSharedPtr<FJsonValue>> Checks;
     auto Check=[&](const TCHAR* Name,bool OK){auto C=MakeShared<FJsonObject>();C->SetStringField(TEXT("check"),Name);C->SetBoolField(TEXT("passed"),OK);Checks.Add(MakeShared<FJsonValueObject>(C));Pass&=OK;UE_LOG(LogTemp,Display,TEXT("FACTORY_MODULAR %s %s: %s"),Name,OK?TEXT("PASS"):TEXT("FAIL"),*Status);};
     const auto Original=Layout;const auto Initial=Layout.ToJson();FString Error;FFactoryLayout Read;
+    if(FParse::Param(FCommandLine::Get(),TEXT("FactoryProcessEntryFocus")))return RunProcessEntryChecks();
     if(FParse::Param(FCommandLine::Get(),TEXT("FactoryGripReuseFocus")))
     {
         // Reuse the LEFT robot recipe on the right, retaining the station's pose and task bindings.

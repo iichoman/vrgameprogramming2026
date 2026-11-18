@@ -43,6 +43,18 @@ bool UFactoryAssemblyProcessRunner::Start()
     R->SimulationSeconds=R->TravelCm=R->AlignmentMm=R->SimRemainder=0;
     R->RunState=EFactoryRunState::Transfer;R->Status=L->Status;return true;
 }
+bool UFactoryAssemblyProcessRunner::SkipToNextProcess()
+{
+    auto* R=Runtime(this);auto* L=R?R->TestAssemblyLine.Get():nullptr;
+    if(!IsValid(L)||!L->CanSkipToNextProcess())return false;
+    FString Error;if(!Validate(Error)){R->Status=Error;return false;}
+    R->CancelEdit();L->SetActorTickEnabled(false);
+    if(!L->SkipToNextProcess())
+    {R->Status=L->Status;if(L->Stage==EAssemblyLineStage::Fault)R->RunState=EFactoryRunState::Fault;return false;}
+    R->SimRemainder=0;R->RunState=EFactoryRunState::Transfer;R->Status=L->Status;
+    R->Inspection().Sensors.Empty();R->Inspection().NextRefresh=0;
+    R->Inspection().StartError.Empty();R->bNeedsPanel=true;return true;
+}
 void UFactoryAssemblyProcessRunner::Stop()
 {
     auto* R=Runtime(this);if(!R||!Running(R)||!IsValid(R->TestAssemblyLine))return;
@@ -93,7 +105,8 @@ bool AFactoryRuntime::RunAssemblyIntegrationChecks()
     auto Check=[&](const TCHAR* Name,bool Ok){auto O=MakeShared<FJsonObject>();O->SetStringField(TEXT("check"),Name);O->SetBoolField(TEXT("passed"),Ok);Checks.Add(MakeShared<FJsonValueObject>(O));Pass&=Ok;UE_LOG(LogTemp,Display,TEXT("ASSEMBLY_INTEGRATION %s %s %s"),Name,Ok?TEXT("PASS"):TEXT("FAIL"),*Status);};
     FString Error;Check(TEXT("explicit_cell_references"),bUseAssemblyIntegration&&AssemblyProcess->Validate(Error));
     if(!Pass)return false;
-    auto* L=TestAssemblyLine.Get();const int32 Seed=L->BaseSeed;
+    auto* L=TestAssemblyLine.Get();const int32 Seed=L->BaseSeed;const int32 PreviousPreset=L->SelectedIncidentPreset;
+    L->ConfigureIncidentDemo(5);
     int32 OldRobots=0;for(TActorIterator<AFactoryEquipment> It(GetWorld());It;++It)
         if(It->GetOwner()==this&&It->GetDefinition().Kind!=EFactoryItemKind::Zone&&!It->GetDefinition().EffectiveTypeId().StartsWith(TEXT("assembly_")))++OldRobots;
     Check(TEXT("old_factory_equipment_replaced"),OldRobots==0&&VehicleRoot==nullptr&&WheelRoot==nullptr);
@@ -112,7 +125,7 @@ bool AFactoryRuntime::RunAssemblyIntegrationChecks()
     }
     ResetCycle();Advance(24);StartCycle();Advance(240);L->Sensors->bPublishPosition=false;Advance(120);
     Check(TEXT("sensor_dropout_stops_run"),RunState==EFactoryRunState::Fault);
-    L->BaseSeed=Seed;L->RunNumber=0;ResetCycle();
+    L->BaseSeed=Seed;L->RunNumber=0;L->ConfigureIncidentDemo(PreviousPreset);ResetCycle();
     Check(TEXT("reset_returns_to_editing"),CanEdit()&&L->WheelCell->MountedCount==0);
     const auto Original=Layout;Layout.WidthCm=1200;Check(TEXT("hall_resize_cannot_authorize_outside_test_cell"),!AssemblyProcess->Validate(Error));Layout=Original;
     auto Report=MakeShared<FJsonObject>();Report->SetBoolField(TEXT("success"),Pass);Report->SetArrayField(TEXT("checks"),Checks);

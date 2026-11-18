@@ -1,4 +1,4 @@
-﻿#include "FactoryInspection.h"
+#include "FactoryInspection.h"
 #include "FactoryRuntime.h"
 #include "FactoryAssemblyEquipment.h"
 #include "FactoryEquipment.h"
@@ -261,6 +261,7 @@ FString AFactoryRuntime::ProcessDetails() const
 {
     FString Out=StateText()+TEXT("\n\n차체 반입 → 휠 4개 → 구역 이송 → 차문 4개\n\n");
     const auto* W=TestAssemblyLine?TestAssemblyLine->WheelCell.Get():nullptr;
+    if(TestAssemblyLine)Out+=TestAssemblyLine->SkippedProcessSummary();
     if(TestAssemblyLine)Out+=FString::Printf(TEXT("차문 장착 %d/4\n\n"),TestAssemblyLine->MountedDoorCount);
     if(W&&W->SlipRecoveryPhase>0)
         Out+=FString::Printf(TEXT("낙하 복구 %d/4 · %s · 이전 부품 %.0f kg\n로봇 대기 중 · 작업자 회수와 대체 휠 공급\n\n"),
@@ -273,6 +274,7 @@ FString AFactoryRuntime::ProcessDetails() const
         {if(W->FastenedWheels.IsValidIndex(S->WheelIndex)&&W->FastenedWheels[S->WheelIndex])State=TEXT("장착 완료");
             else for(int I=0;I<W->LaneCount();++I)if(const auto* Lane=W->LaneSnapshot(I))if(Lane->WheelIndex==S->WheelIndex)State=WheelStageLabel(Lane->Stage);}
         else if(S){const auto* D=TestAssemblyLine?TestAssemblyLine->ActiveDoorCell(T.Id):nullptr;FDoorOperationSnapshot Result;if(TestAssemblyLine&&TestAssemblyLine->DoorSnapshot(T.Id,Result)&&Result.bComplete)State=TEXT("시연 장착 완료");else if(D)State=D->State==EDoorAssemblyState::Fault?TEXT("이상 중단"):D->State==EDoorAssemblyState::Idle?TEXT("대기"):TEXT("진행 중");}
+        if(S&&TestAssemblyLine&&TestAssemblyLine->WasProcessSkipped(S->WheelIndex>=0?FName(TEXT("wheels")):FName(TEXT("doors"))))State=TEXT("건너뜀 / 미검사");
         Out+=(S?S->Label:T.Id)+TEXT(" · ")+State+TEXT("\n담당: ")+(T.RobotId.IsEmpty()?TEXT("없음"):ObjectName(T.RobotId))+TEXT("\n부품: ")+ObjectName(T.PartId)+TEXT("\n\n");
     }
     return Out+TEXT("상세 상태\n")+Status;
@@ -283,6 +285,7 @@ FString AFactoryRuntime::ResultDetails() const
     FString Out=FString::Printf(TEXT("%s · %.2f초\n"),*StateText(),SimulationSeconds);
     if(TestAssemblyLine){if(TestAssemblyLine->DoorCell)Out+=TestAssemblyLine->DoorCell->PartDamageSummary();
         if(TestAssemblyLine->SecondDoorCell)Out+=TestAssemblyLine->SecondDoorCell->PartDamageSummary();}
+    if(TestAssemblyLine)Out+=TestAssemblyLine->SkippedProcessSummary();
     if(TestAssemblyLine)Out+=FString::Printf(TEXT("차문 장착 %d/4\n"),TestAssemblyLine->MountedDoorCount);
     auto* W=TestAssemblyLine?TestAssemblyLine->WheelCell.Get():nullptr;
     if(W)

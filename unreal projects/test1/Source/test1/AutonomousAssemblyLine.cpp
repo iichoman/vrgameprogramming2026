@@ -1,4 +1,5 @@
-﻿#include "AutonomousAssemblyLine.h"
+#include "AutonomousAssemblyLine.h"
+#include "AssemblySituationCatalog.h"
 #include "WheelAssemblyCell.h"
 #include "DoorAssemblyCell.h"
 #include "CamryAssembly.h"
@@ -61,6 +62,7 @@ bool AAutonomousAssemblyLine::ResetLine()
 		}
 	}
 	Record(TEXT("RANDOM_SEED"),FString::FromInt(CurrentSeed));
+    Record(TEXT("SITUATION"),SituationSummary());
 	if (bExtendedRandomEvents && FactoryCheck == 5) Record(TEXT("RANDOM_LINE_EVENT"),ExtendedEventName(ExtendedEvent));
 	return true;
 }
@@ -79,6 +81,7 @@ const TCHAR* AAutonomousAssemblyLine::ExtendedEventName(int32 Kind)
 void AAutonomousAssemblyLine::SetFactoryCheck(int32 Kind)
 {
 	FactoryCheck = FMath::Clamp(Kind, 0, 13);
+    SelectedIncidentPreset=FactoryCheck;bRandomSituation=false;
     if (WheelCell)
     {
         WheelCell->bGripIncidentOverride = FactoryCheck >= 6 && FactoryCheck <= 8;
@@ -99,6 +102,7 @@ void AAutonomousAssemblyLine::SetFactoryCheck(int32 Kind)
 bool AAutonomousAssemblyLine::ConfigureIncidentDemo(int32 Preset)
 {
     if (!IsValid(WheelCell) || Preset < 0 || Preset > 21) return false;
+    bRandomSituation=false;
     const int32 BaseCheck = Preset <= 13 ? Preset : Preset == 14 ? 6 : Preset == 15 ? 0
         : Preset == 16 ? 9 : Preset == 17 ? 10 : Preset >= 19 ? 0 : 5;
     // The line adapter configures the cell before ResetLine; the UI never writes equipment state.
@@ -106,7 +110,7 @@ bool AAutonomousAssemblyLine::ConfigureIncidentDemo(int32 Preset)
     WheelCell->bReplaceRejectedWheel = false;
     WheelCell->LaserTransientBlockScans = 0;
     WheelCell->bDemoChassisShiftBeforeMount = false;
-    SetFactoryCheck(BaseCheck);
+    SetFactoryCheck(BaseCheck);SelectedIncidentPreset=Preset;
     for(auto* Door:{DoorCell.Get(),SecondDoorCell.Get()})if(Door)
     {Door->FixtureDebrisMm=0;Door->bForceMisalignedFastening=false;}
     if(DoorCell&&Preset>=20){DoorCell->FixtureDebrisMm=Preset==20?4:20;DoorCell->bForceMisalignedFastening=Preset==21;}
@@ -122,6 +126,25 @@ bool AAutonomousAssemblyLine::ConfigureIncidentDemo(int32 Preset)
     return true;
 }
 
+bool AAutonomousAssemblyLine::SelectRandomSituation(FName Process)
+{
+    const int32 Seed=int32(uint32(BaseSeed)+uint32(++SituationDraw));
+    const int32 Preset=AssemblySituations::Choose(Seed,Process,NormalSituationProbability);
+    if(!ConfigureIncidentDemo(Preset))return false;
+    SituationSeed=Seed;bRandomSituation=true;return true;
+}
+FString AAutonomousAssemblyLine::SituationSummary() const
+{
+    return (bRandomSituation?FString::Printf(TEXT("무작위 · 시드 %d · "),SituationSeed):FString(TEXT("선택: ")))
+        +AssemblySituations::Label(SelectedIncidentPreset);
+}
+void AAutonomousAssemblyLine::BeforeProcessEntry(FName Id)
+{
+    // A skipped wheel incident cannot happen at the door station. Draw only
+    // from inputs belonging to the process entered, preserving the random mode.
+    if(bRandomSituation)SelectRandomSituation(Id);
+    Record(TEXT("SITUATION"),SituationSummary());
+}
 void AAutonomousAssemblyLine::InjectEvent(int32 Index)
 {
 	if (!WheelCell || !WheelCell->LeftSensors) return;

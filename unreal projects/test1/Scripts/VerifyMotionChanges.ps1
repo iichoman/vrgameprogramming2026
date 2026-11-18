@@ -1,4 +1,4 @@
-﻿param([int]$TimeoutSeconds=600,[switch]$ExtendedChecks,[switch]$UIOnly,[switch]$ModularOnly,[switch]$IncidentFocus,[switch]$UnitOnly,[switch]$SkipLiveCoding,[switch]$ReuseFocus,[switch]$DualFocus)
+param([int]$TimeoutSeconds=600,[switch]$ExtendedChecks,[switch]$UIOnly,[switch]$ModularOnly,[switch]$IncidentFocus,[switch]$UnitOnly,[switch]$SkipLiveCoding,[switch]$ReuseFocus,[switch]$DualFocus,[switch]$ProcessEntryFocus,[switch]$SkipSituationUI)
 $ErrorActionPreference='Stop'
 $project=Split-Path $PSScriptRoot -Parent
 $uproject=Join-Path $project 'test1.uproject'
@@ -10,6 +10,7 @@ $reportFolder=Join-Path $project 'Saved\MotionVerification'
 New-Item -ItemType Directory -Path $reportFolder -Force | Out-Null
 $result=[ordered]@{}
 if($DualFocus){$ReuseFocus=$true}
+if($ProcessEntryFocus){$ModularOnly=$true}
 if($IncidentFocus -or $ReuseFocus){$ModularOnly=$true}
 
 # Attempt the active original project's Live Coding compiler path once. This
@@ -43,7 +44,7 @@ function Run-EngineCheck([string]$Name,[string[]]$Extra,[bool]$Render=$false) {
     $process.Refresh();return $process.ExitCode
 }
 $started=[DateTime]::UtcNow
-if($UnitOnly -or $ReuseFocus -or (-not $UIOnly -and -not $ModularOnly)) {
+if($UnitOnly -or $ReuseFocus -or $ProcessEntryFocus -or (-not $UIOnly -and -not $ModularOnly)) {
 $result.unitExit=Run-EngineCheck 'MotionUnitTests' @('-ExecCmds=Automation RunTests DigitalTwin.Assembly+test1.RobotControl','-TestExit=Automation Test Queue Empty',"-ReportExportPath=$reportFolder\UnitTests")
 $unitReport=Join-Path $reportFolder 'UnitTests\index.json'
 if((Test-Path -LiteralPath $unitReport) -and (Get-Item -LiteralPath $unitReport).LastWriteTimeUtc -gt $started) {
@@ -73,9 +74,11 @@ if($UIOnly -or $ModularOnly -or ($ExtendedChecks -and $result.factory.success -e
     if($IncidentFocus){$checks=@(@{Key='merge';Flag='FactoryModularAutoTest';Report='FactoryMergeReport.json'})}
     if($ReuseFocus){$checks=@(@{Key='reuse';Flag='FactoryModularAutoTest';Report='FactoryReuseReport.json'})}
     if($DualFocus){$checks=@(@{Key='dual';Flag='FactoryModularAutoTest';Report='FactoryDualGripReport.json'})}
+    if($ProcessEntryFocus){$checks=@(@{Key='processEntry';Flag='FactoryModularAutoTest';Report='FactoryProcessEntryReport.json'})}
     foreach($check in $checks) {
         $checkStart=[DateTime]::UtcNow
         $extra=@('/Game/DigitalTwin/Maps/factory_p1','-game',('-'+$check.Flag))
+        if($ProcessEntryFocus){$extra+='-FactoryProcessEntryFocus'}
         if($IncidentFocus){$extra+='-FactoryIncidentFocus'}
         if($ReuseFocus){$extra+=@('-FactoryGripReuseFocus','-LogCmds=LogTemp Verbose')}
         if($DualFocus){$extra+='-FactoryGripDualFocus'}
@@ -89,7 +92,11 @@ if($UIOnly -or $ModularOnly -or ($ExtendedChecks -and $result.factory.success -e
         } else {$result[$check.Key]='Missing or stale report';$extendedFailed=$true}
     }
 }
-$summaryName=if($DualFocus){'dual-summary.json'}elseif($ReuseFocus){'reuse-summary.json'}elseif($UnitOnly -and $ModularOnly){'contact-summary.json'}elseif($UnitOnly){'unit-summary.json'}elseif($UIOnly){'ui-summary.json'}elseif($IncidentFocus){'merge-summary.json'}elseif($ModularOnly){'modular-summary.json'}else{'summary.json'}
+if($ProcessEntryFocus -and -not $SkipSituationUI -and -not $extendedFailed){
+    $result.situationUIExit=Run-EngineCheck 'Motion_SituationUI' @('/Game/DigitalTwin/Maps/factory_p1','-game','-FactoryInspectionCapture') $true
+    $extendedFailed=$extendedFailed -or $result.situationUIExit -ne 0
+}
+$summaryName=if($ProcessEntryFocus){'process-entry-summary.json'}elseif($DualFocus){'dual-summary.json'}elseif($ReuseFocus){'reuse-summary.json'}elseif($UnitOnly -and $ModularOnly){'contact-summary.json'}elseif($UnitOnly){'unit-summary.json'}elseif($UIOnly){'ui-summary.json'}elseif($IncidentFocus){'merge-summary.json'}elseif($ModularOnly){'modular-summary.json'}else{'summary.json'}
 $result | ConvertTo-Json -Depth 12 | Set-Content (Join-Path $reportFolder $summaryName) -Encoding UTF8
 $result | ConvertTo-Json -Depth 12
-if($extendedFailed -or (($UnitOnly -or $ReuseFocus -or (-not $UIOnly -and -not $ModularOnly)) -and ($result.unitExit -ne 0 -or $result.unitFailed -ne 0 -or (-not $UnitOnly -and ($result.factoryExit -ne 0 -or $result.factory.success -ne $true))))) {exit 1}
+if($extendedFailed -or (($UnitOnly -or $ReuseFocus -or $ProcessEntryFocus -or (-not $UIOnly -and -not $ModularOnly)) -and ($result.unitExit -ne 0 -or $result.unitFailed -ne 0 -or (-not $UnitOnly -and ($result.factoryExit -ne 0 -or $result.factory.success -ne $true))))) {exit 1}

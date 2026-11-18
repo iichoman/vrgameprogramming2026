@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "IntegratedAssemblyLine.h"
@@ -96,6 +96,7 @@ public:
     void DrawSensorVisualization() const;
     void SetSensorVisualization(bool Enabled);
 protected:
+    virtual void AfterProcessEntry() override;
 	virtual void BeforeSensorStep(double Dt) {}
 	void Record(const FString& Kind, const FString& Message);
 private:

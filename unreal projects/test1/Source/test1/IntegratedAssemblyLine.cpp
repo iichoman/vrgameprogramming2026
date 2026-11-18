@@ -1,4 +1,4 @@
-﻿#include "IntegratedAssemblyLine.h"
+#include "IntegratedAssemblyLine.h"
 #include "SensorAssemblyLine.h"
 #include "AutonomousAssemblyLine.h"
 #include "WheelAssemblyCell.h"
@@ -130,6 +130,16 @@ namespace
 AIntegratedAssemblyLine::AIntegratedAssemblyLine()
 {
     PrimaryActorTick.bCanEverTick = true;
+    FAssemblyProcessEntry Wheels; Wheels.Id=TEXT("wheels");Wheels.Label=TEXT("휠 장착");
+    ProcessRoute.Add(MoveTemp(Wheels));
+    FAssemblyProcessEntry Doors;Doors.Id=TEXT("doors");Doors.Label=TEXT("문 장착");
+    Doors.Validate=[this](FString& Error){
+        const bool Valid=IsValid(WheelCell)&&IsValid(DoorCell)&&IsValid(WheelCell->Assembly)
+            &&IsValid(WheelCell->TransportCarriage)&&!DoorStationOffsetCm.ContainsNaN()
+            &&VehicleAtWheelStation.IsValid()&&CarriageAtWheelStation.IsValid();
+        if(!Valid)Error=TEXT("문 공정의 차체·운반대·준비 위치 연결을 확인하세요.");return Valid;};
+    Doors.Enter=[this](){return PrepareDoorStation();};
+    ProcessRoute.Add(MoveTemp(Doors));
     RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("LineRoot"));
     static ConstructorHelpers::FObjectFinder<UStaticMesh> Cube(TEXT("/Engine/BasicShapes/Cube"));
     for(int I=0;I<4;++I)
@@ -139,6 +149,84 @@ AIntegratedAssemblyLine::AIntegratedAssemblyLine()
         if(Cube.Succeeded())Post->SetStaticMesh(Cube.Object);
         Post->SetCollisionProfileName(TEXT("BlockAll"));Post->SetVisibility(false);LiftSupports.Add(Post);
     }
+}
+bool AIntegratedAssemblyLine::RegisterFollowingProcess(FAssemblyProcessEntry Entry)
+{
+    if(Stage!=EAssemblyLineStage::Idle||Entry.Id.IsNone()||Entry.Label.IsEmpty()
+        ||!Entry.Validate||!Entry.Enter||!Entry.Advance||!Entry.Stop
+        ||ProcessRoute.ContainsByPredicate([&](const auto& P){return P.Id==Entry.Id;}))return false;
+    ProcessRoute.Add(MoveTemp(Entry));return true;
+}
+bool AIntegratedAssemblyLine::CanSkipToNextProcess() const
+{
+    return Stage!=EAssemblyLineStage::Complete&&ProcessRoute.IsValidIndex(ActiveProcessIndex+1);
+}
+FString AIntegratedAssemblyLine::NextProcessLabel() const
+{
+    return CanSkipToNextProcess()?ProcessRoute[ActiveProcessIndex+1].Label:FString();
+}
+FString AIntegratedAssemblyLine::SkippedProcessSummary() const
+{
+    FString Out;
+    for(const auto& P:ProcessRoute)if(SkippedProcesses.Contains(P.Id))
+        Out+=P.Label+TEXT(" · 건너뜀 / 미검사\n");
+    return Out;
+}
+bool AIntegratedAssemblyLine::SkipToNextProcess(){return EnterFollowingProcess(true);}
+bool AIntegratedAssemblyLine::EnterFollowingProcess(bool Skipping)
+{
+    if(!ProcessRoute.IsValidIndex(ActiveProcessIndex+1)|| (Skipping&&!CanSkipToNextProcess()))return false;
+    auto& Next=ProcessRoute[ActiveProcessIndex+1];FString Error;
+    if(!Next.Validate(Error)){if(Skipping)Status=Error;else Fail(Error);return false;}
+    // Validate before any mutation. Stop the old executor before moving the product.
+    if(!Skipping&&ProcessRoute[ActiveProcessIndex].Stop)ProcessRoute[ActiveProcessIndex].Stop();
+    if(Skipping)
+    {
+        const bool AlreadyDone=ActiveProcessIndex==0&&WheelCell&&WheelCell->Outcome==EWheelOutcome::Pass;
+        if(!AlreadyDone)SkippedProcesses.AddUnique(ProcessRoute[ActiveProcessIndex].Id);
+        StopLine();
+    }
+    BeforeProcessEntry(Next.Id);
+    ++ActiveProcessIndex;
+    if(!Next.Enter()){Fail(Status);return false;}
+    bReady=true;
+    if(ActiveProcessIndex>=2)Stage=EAssemblyLineStage::Extension;
+    AfterProcessEntry();
+    Status=Next.Label+TEXT(" · 준비 위치 이동 / 센서 검사 후 실행");return true;
+}
+bool AIntegratedAssemblyLine::PrepareDoorStation()
+{
+    auto* Car=WheelCell->Assembly.Get();auto* Carriage=WheelCell->TransportCarriage.Get();
+    if(WheelCell->Outcome!=EWheelOutcome::Pass)
+    {
+        // A demo skip abandons the unfinished operation, including held/falling
+        // wheels. Return them to supply; never fabricate a mounted/pass result.
+        Car->SetActorTransform(WheelStationPose());Carriage->SetActorTransform(CarriageAtWheelStation);
+        const bool Transport=WheelCell->bEnableTransport;WheelCell->bEnableTransport=false;
+        const bool Reset=WheelCell->ResetAtStation(WheelStationPose(),CarriageAtWheelStation);
+        WheelCell->bEnableTransport=Transport;
+        if(!Reset){Status=WheelCell->Status;return false;}
+    }
+    ExpectedVehicle=VehicleAtWheelStation;ExpectedVehicle.AddToTranslation(DoorStationOffsetCm);
+    ExpectedCarriage=CarriageAtWheelStation;ExpectedCarriage.AddToTranslation(DoorStationOffsetCm);
+    Car->SetActorTransform(ExpectedVehicle);Carriage->SetActorTransform(ExpectedCarriage);
+    if(!VehicleAssemblyMounting::SetRearExtension(*Car,0)){Status=TEXT("문 작업용 허브 자세 복원 실패");return false;}
+    UpdateLiftSupports();WheelCell->UpdateFastenedWheels();
+    if(!DoorCell->ResetCycle()){Status=DoorCell->Status;return false;}
+    DoorSupplyWorld=Car->GetLeftDoor()->GetComponentTransform();
+    if(SecondDoorCell)
+    {
+        if(!SecondDoorCell->ResetCycle()){Status=SecondDoorCell->Status;return false;}
+        SecondDoorSupplyWorld=Car->GetRightDoor()->GetComponentTransform();
+    }
+    Car->GetLeftDoor()->SetWorldTransform(DoorSupplyWorld);
+    if(SecondDoorCell)Car->GetRightDoor()->SetWorldTransform(SecondDoorSupplyWorld);
+    TransferVehicleStart=ExpectedVehicle;TransferCarriageStart=ExpectedCarriage;
+    TransferTime=TransferSeconds+DockSeconds;TransferProgress=1;
+    Stage=EAssemblyLineStage::Transfer;
+    // The regular transfer exit performs supply inspection, replacement, IK and
+    // alignment checks. Teleporting does not certify any of these conditions.
+    return true;
 }
 void AIntegratedAssemblyLine::UpdateLiftSupports()
 {
@@ -158,6 +246,7 @@ void AIntegratedAssemblyLine::UpdateLiftSupports()
 void AIntegratedAssemblyLine::Fail(const FString& Reason)
 {
     const FString Saved = Reason;
+    if(ProcessRoute.IsValidIndex(ActiveProcessIndex)&&ProcessRoute[ActiveProcessIndex].Stop)ProcessRoute[ActiveProcessIndex].Stop();
     if (WheelCell) WheelCell->StopCycle();
     if (DoorCell) DoorCell->StopCycle();
     if(SecondDoorCell)SecondDoorCell->StopCycle();
@@ -264,6 +353,8 @@ bool AIntegratedAssemblyLine::PrepareDoor(ADoorAssemblyCell* Cell, int32 Index)
 bool AIntegratedAssemblyLine::ResetLine()
 {
     bReady = false;
+    if(ProcessRoute.IsValidIndex(ActiveProcessIndex)&&ProcessRoute[ActiveProcessIndex].Stop)ProcessRoute[ActiveProcessIndex].Stop();
+    ActiveProcessIndex=0;SkippedProcesses.Reset();
     if (!IsValid(WheelCell) || !IsValid(DoorCell) || !IsValid(WheelCell->Assembly)
         || DoorCell->Assembly != WheelCell->Assembly || !IsValid(WheelCell->TransportCarriage)
         || !WheelCell->bEnableTransport || !FMath::IsFinite(TransferSeconds) || TransferSeconds <= 0
@@ -349,6 +440,7 @@ bool AIntegratedAssemblyLine::StartLine()
 void AIntegratedAssemblyLine::StopLine()
 {
     if (Stage == EAssemblyLineStage::Idle || Stage == EAssemblyLineStage::Complete || Stage == EAssemblyLineStage::Fault) return;
+    if(ProcessRoute.IsValidIndex(ActiveProcessIndex)&&ProcessRoute[ActiveProcessIndex].Stop)ProcessRoute[ActiveProcessIndex].Stop();
     WheelCell->StopCycle(); DoorCell->StopCycle();if(SecondDoorCell)SecondDoorCell->StopCycle();
     Stage = EAssemblyLineStage::Stopped;
     Status = TEXT("정지 · 현재 자세 유지, R로 초기화 후 다시 시작");
@@ -370,6 +462,18 @@ bool AIntegratedAssemblyLine::AdvanceLine(double Seconds)
     ElapsedSeconds += Seconds;
     auto* Car = WheelCell->Assembly.Get();
     auto* Carriage = WheelCell->TransportCarriage.Get();
+    if(Stage==EAssemblyLineStage::Extension)
+    {
+        if(DoorCell)DoorCell->AdvanceSimulation(Seconds);if(SecondDoorCell)SecondDoorCell->AdvanceSimulation(Seconds);
+        const auto Progress=ProcessRoute[ActiveProcessIndex].Advance(Seconds);
+        if(Progress==EAssemblyProcessProgress::Fault){Fail(Status);return false;}
+        if(Progress==EAssemblyProcessProgress::Complete)
+        {
+            if(ProcessRoute.IsValidIndex(ActiveProcessIndex+1))return EnterFollowingProcess(false);
+            Stage=EAssemblyLineStage::Complete;Status=TEXT("등록 공정 완료");
+        }
+        return true;
+    }
     if (Stage == EAssemblyLineStage::Wheels)
     {
         const bool Ok = WheelCell->AdvanceSimulation(Seconds);
@@ -430,7 +534,7 @@ bool AIntegratedAssemblyLine::AdvanceLine(double Seconds)
             {Fail(Status);return false;}
             if (!StartDoorOperation(DoorCell)) { Fail(DoorCell->Status); return false; }
             if(SecondDoorCell&&!StartDoorOperation(SecondDoorCell)){Fail(SecondDoorCell->Status);return false;}
-            Stage = EAssemblyLineStage::Door;
+            ActiveProcessIndex=1;Stage = EAssemblyLineStage::Door;
         }
     }
     else if (Stage == EAssemblyLineStage::Door)
@@ -459,8 +563,9 @@ bool AIntegratedAssemblyLine::AdvanceLine(double Seconds)
                     return true;
                 }
             }
+            if(ProcessRoute.IsValidIndex(ActiveProcessIndex+1))return EnterFollowingProcess(false);
             Stage = EAssemblyLineStage::Complete;
-            Status = bFourDoorMode?TEXT("완료 · 휠 4개와 문 4개 장착"):SecondDoorCell?TEXT("완료 · 휠 4개와 앞문 2개 시험 장착·검사 완료"):TEXT("완료 · 타이어 4개와 왼쪽 앞문 장착·검사 합격");
+            Status = !SkippedProcesses.IsEmpty()?TEXT("선택 공정 완료 · 이전 공정 건너뜀 / 미검사"):bFourDoorMode?TEXT("완료 · 휠 4개와 문 4개 장착"):SecondDoorCell?TEXT("완료 · 휠 4개와 앞문 2개 시험 장착·검사 완료"):TEXT("완료 · 타이어 4개와 왼쪽 앞문 장착·검사 합격");
         }
     }
     return Stage != EAssemblyLineStage::Fault;
