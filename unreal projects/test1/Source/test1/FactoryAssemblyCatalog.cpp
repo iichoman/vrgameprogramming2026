@@ -175,5 +175,9 @@ bool AFactoryRuntime::ValidateAssemblyBindings(FString& Error) const
     const auto* RightFront=Layout.Tasks.FindByPredicate([](const auto& T){return T.Id==TEXT("door_fr");});
     if(LeftFront && RightFront && LeftFront->RobotId==RightFront->RobotId)
     {Error=TEXT("현재 두 도어는 병렬 작업이므로 서로 다른 로봇에 할당하세요.");return false;}
+    const auto* LeftRear=Layout.Tasks.FindByPredicate([](const auto& T){return T.Id==TEXT("door_rl");});
+    const auto* RightRear=Layout.Tasks.FindByPredicate([](const auto& T){return T.Id==TEXT("door_rr");});
+    if(LeftRear && RightRear && LeftRear->RobotId==RightRear->RobotId)
+    {Error=TEXT("좌우 뒷문은 병렬 작업이므로 서로 다른 로봇에 할당하세요.");return false;}
     return true;
 }

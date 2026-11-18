@@ -1,4 +1,4 @@
-param([int]$TimeoutSeconds=360)
+param([int]$TimeoutSeconds=360,[switch]$ExtendedChecks,[switch]$UIOnly)
 $ErrorActionPreference='Stop'
 $project=Split-Path $PSScriptRoot -Parent
 $uproject=Join-Path $project 'test1.uproject'
@@ -31,14 +31,17 @@ $suffix=[int](Get-Date -Format 'HHmmss')
 $result.buildExit=$LASTEXITCODE
 if($LASTEXITCODE -ne 0) { $result | ConvertTo-Json | Set-Content "$reportFolder\summary.json" -Encoding UTF8;Get-Content (Join-Path $logs 'MotionVerificationBuild.log') -Tail 30;exit 1 }
 
-function Run-EngineCheck([string]$Name,[string[]]$Extra) {
-    $argsList=@($uproject)+$Extra+@('-nullrhi','-unattended','-nosplash','-nosound','-NoSourceControl','-NoLiveCoding',"-abslog=$logs\$Name.log")
+function Run-EngineCheck([string]$Name,[string[]]$Extra,[bool]$Render=$false) {
+    $display=if($Render){@('-RenderOffscreen','-windowed','-ForceRes','-ResX=1600','-ResY=900','-RobotMotionSynchronousTest','-ini:Engine:[/Script/Engine.RendererSettings]:r.GenerateMeshDistanceFields=False','-ini:Engine:[/Script/Engine.RendererSettings]:r.RayTracing=False')}else{@('-nullrhi')}
+    $exe=if($Render){Join-Path $engine 'Binaries\Win64\UnrealEditor.exe'}else{$editor}
+    $argsList=@($uproject)+$Extra+$display+@('-unattended','-nosplash','-nosound','-NoSourceControl','-NoLiveCoding',"-abslog=$logs\$Name.log")
     $quoted=@($argsList | ForEach-Object {'"'+$_+'"'})
-    $process=Start-Process -FilePath $editor -ArgumentList $quoted -WorkingDirectory $project -WindowStyle Hidden -PassThru
+    $process=Start-Process -FilePath $exe -ArgumentList $quoted -WorkingDirectory $project -WindowStyle Hidden -PassThru
     if(-not $process.WaitForExit($TimeoutSeconds*1000)) { Stop-Process -Id $process.Id;return 'timeout' }
     $process.Refresh();return $process.ExitCode
 }
 $started=[DateTime]::UtcNow
+if(-not $UIOnly) {
 $result.unitExit=Run-EngineCheck 'MotionUnitTests' @('-ExecCmds=Automation RunTests DigitalTwin.Assembly+test1.RobotControl','-TestExit=Automation Test Queue Empty',"-ReportExportPath=$reportFolder\UnitTests")
 $unitReport=Join-Path $reportFolder 'UnitTests\index.json'
 if((Test-Path -LiteralPath $unitReport) -and (Get-Item -LiteralPath $unitReport).LastWriteTimeUtc -gt $started) {
@@ -52,6 +55,28 @@ if((Test-Path -LiteralPath $factory) -and (Get-Item -LiteralPath $factory).LastW
     Copy-Item -LiteralPath $factory -Destination "$reportFolder\FactoryTaskReport.json" -Force
     $result.factory=Get-Content -LiteralPath $factory -Raw -Encoding UTF8 | ConvertFrom-Json
 } else { $result.factory='Missing or stale report' }
-$result | ConvertTo-Json -Depth 12 | Set-Content "$reportFolder\summary.json" -Encoding UTF8
+}
+$extendedFailed=$false
+if($UIOnly -or ($ExtendedChecks -and $result.factory.success -eq $true)) {
+    $checks=@(
+        @{Key='direct';Flag='FactoryDirectAutoTest';Report='FactoryDirectReport.json'},
+        @{Key='inspection';Flag='FactoryInspectionAutoTest';Report='FactoryInspectionReport.json'},
+        @{Key='integration';Flag='FactoryAssemblyAutoTest';Report='FactoryAssemblyIntegrationReport.json'}
+    )
+    if($UIOnly){$checks=@($checks | Where-Object Key -ne 'integration')}
+    foreach($check in $checks) {
+        $checkStart=[DateTime]::UtcNow
+        $exitCode=Run-EngineCheck ('Motion_'+$check.Key) @('/Game/DigitalTwin/Maps/factory_p1','-game',('-'+$check.Flag)) ($check.Key -ne 'integration')
+        $path=Join-Path $project ('Saved\'+$check.Report)
+        if((Test-Path -LiteralPath $path) -and (Get-Item -LiteralPath $path).LastWriteTimeUtc -gt $checkStart) {
+            $report=Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+            Copy-Item -LiteralPath $path -Destination $reportFolder -Force
+            $result[$check.Key]=@{exitCode=$exitCode;success=$report.success;passed=@($report.checks | Where-Object passed).Count;failed=@($report.checks | Where-Object {-not $_.passed})}
+            $extendedFailed=$extendedFailed -or $exitCode -ne 0 -or $report.success -ne $true
+        } else {$result[$check.Key]='Missing or stale report';$extendedFailed=$true}
+    }
+}
+$summaryName=if($UIOnly){'ui-summary.json'}else{'summary.json'}
+$result | ConvertTo-Json -Depth 12 | Set-Content (Join-Path $reportFolder $summaryName) -Encoding UTF8
 $result | ConvertTo-Json -Depth 12
-if($result.unitExit -ne 0 -or $result.unitFailed -ne 0 -or $result.factoryExit -ne 0 -or $result.factory.success -ne $true) {exit 1}
+if($extendedFailed -or (-not $UIOnly -and ($result.unitExit -ne 0 -or $result.unitFailed -ne 0 -or $result.factoryExit -ne 0 -or $result.factory.success -ne $true))) {exit 1}

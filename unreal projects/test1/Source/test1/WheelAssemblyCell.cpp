@@ -11,6 +11,53 @@
 #include "UObject/ConstructorHelpers.h"
 #include "Engine/World.h"
 #include "DrawDebugHelpers.h"
+#include "VehicleProcessTest.h"
+#include "EngineUtils.h"
+
+namespace
+{
+// Resolve the visible part by stable module identity, never by the invisible proxy's pose alone.
+bool CheckWheelVisuals(AWheelAssemblyCell* Cell,const TArray<TObjectPtr<USceneComponent>>& Roots,ACamryAssembly* Car,bool Repair,FString& Error)
+{
+    if(!Car)return false;
+    const FName Ids[]={TEXT("Wheel_FL"),TEXT("Wheel_RL"),TEXT("Wheel_FR"),TEXT("Wheel_RR")};
+    AVehicleProcessModule* Modules[4]={};int Found=0;
+    for(TActorIterator<AVehicleProcessModule> It(Cell->GetWorld());It;++It)if(It->VehicleFrame==Car)
+        for(int I=0;I<4;++I)if(It->ModuleId==Ids[I]){if(Modules[I]){Error=TEXT("중복 휠 모델: ")+Ids[I].ToString();return false;}Modules[I]=*It;++Found;}
+    if(!Found){if(Cell->UsesTaskBindings()){Error=TEXT("작업에 연결할 실제 휠 모델이 없습니다.");return false;}return true;} // Standalone primitive demonstrations use the cell meshes.
+    for(int I=0;I<4;++I)
+    {
+        auto* M=Modules[I];auto* Root=Roots.IsValidIndex(I)?Roots[I].Get():nullptr;
+        if(!M||!Root||!M->bHasReferencePose){Error=TEXT("실제 휠 모델/기준 연결 누락: ")+Ids[I].ToString();return false;}
+        // Calibration is relative to the nominal hub, independent of the
+        // temporary lift/droop and scanned hub displacement during execution.
+        auto NominalHub=Cell->GetMountWorld(I);
+        FVector Offset=VehicleAssemblyMounting::HubOffset(*Car,I);
+        if(I==0&&Cell->bLaserScanFrontLeftHub)Offset+=Cell->FrontLeftHubOffsetCm;
+        NominalHub.AddToTranslation(-Car->GetBodyFrame()->GetComponentTransform().TransformVectorNoScale(Offset));
+        const FTransform InWheel=(M->ReferencePoseInVehicle*Car->GetActorTransform()).GetRelativeTransform(NominalHub);
+        if(Repair)
+        {
+            M->bWheelMotionEnabled=false;M->SetActorTickEnabled(false);
+            M->GetRootComponent()->SetAbsolute(false,false,false);
+            M->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform); // Rebuild both sides of the attachment after reinstancing.
+            if(!M->AttachToComponent(Root,FAttachmentTransformRules::KeepWorldTransform)){Error=TEXT("휠 모델 연결 실패: ")+Ids[I].ToString();return false;}
+            M->GetRootComponent()->SetRelativeTransform(InWheel);
+        }
+        if(M->GetRootComponent()->GetAttachParent()!=Root||M->bWheelMotionEnabled||!M->GetActorTransform().Equals(InWheel*Root->GetComponentTransform(),.01))
+        {Error=TEXT("실제 휠 모델이 제어 위치를 따라오지 않습니다: ")+Ids[I].ToString();return false;}
+        TArray<UStaticMeshComponent*> Meshes;M->GetComponents(Meshes);bool HasMesh=false;
+        for(auto* Mesh:Meshes)if(Mesh->GetStaticMesh())
+        {
+            HasMesh=true;
+            if(Mesh->GetAttachParent()!=M->GetRootComponent()||!Mesh->GetComponentTransform().Equals(Mesh->GetRelativeTransform()*M->GetActorTransform(),.01))
+            {Error=TEXT("휠 렌더 메시 연결 오류: ")+Ids[I].ToString();return false;}
+        }
+        if(!HasMesh){Error=TEXT("휠 모델 메시가 없습니다: ")+Ids[I].ToString();return false;}
+    }
+    return true;
+}
+}
 
 void UWheelRobotSensorBank::Reset()
 {
@@ -432,6 +479,7 @@ bool AWheelAssemblyCell::ResetCycle()
 		CarriageAtStation = TransportCarriage->GetActorTransform();
 		bStationCaptured = true;
 	}
+    if(!CheckWheelVisuals(this,WheelRoots,Assembly,true,Status)){Outcome=EWheelOutcome::Blocked;return false;}
 	MountedCount = 0; SimulationTimeSeconds = 0; Accumulator = 0;
 	bLeftWheelSlipFall = false; LeftWheelSlipFallSeconds = 0; LeftWheelSlipVelocityCmps = FVector::ZeroVector;
 	SlipRecoveryPhase=0;SlipRecoveryPhaseSeconds=0;SlipFailureMassKg=0;bSlipFailureLowFriction=false;
@@ -481,6 +529,7 @@ bool AWheelAssemblyCell::ResetCycle()
 bool AWheelAssemblyCell::StartCycle()
 {
 	if (bRunning || Outcome != EWheelOutcome::NotEvaluated) { Status = TEXT("Reset before starting a new cycle."); return false; }
+    if(!CheckWheelVisuals(this,WheelRoots,Assembly,false,Status)){Fail(Status);return false;}
 	if (!bEnableTransport && !ValidateSetup()) { Fail(Status); return false; }
 	if (bEnableTransport && (!bStationCaptured || !IsValid(Assembly) || !IsValid(TransportCarriage)
 		|| !Assembly->GetActorTransform().Equals(ExpectedVehicle, 1.e-3)
@@ -512,6 +561,7 @@ bool AWheelAssemblyCell::StartCycle()
 
 bool AWheelAssemblyCell::BeginWheel(int32 Side)
 {
+    TGuardValue<int32> DiagnosticLane(EvaluatingLane,Side);
 	FWheelLane& Lane = Lanes[Side];
     if(!LaneEnabled(Side)){Lane.Stage=EWheelStage::Complete;return true;}
     Lane.WheelIndex = UsesTaskBindings()?TaskQueue[Side][Lane.Completed]:Side * 2 + Lane.Completed;
@@ -571,6 +621,7 @@ void AWheelAssemblyCell::SetStage(int32 Side, EWheelStage Next, const FString& M
 
 bool AWheelAssemblyCell::MoveTo(int32 Side, EWheelStage Next, const FTransform& WheelTarget)
 {
+    TGuardValue<int32> DiagnosticLane(EvaluatingLane,Side);
 	FWheelLane& Lane = Lanes[Side];
 	Lane.TargetWheel = WheelTarget;
 	Lane.TargetTCP = (Lane.bHeld ? Lane.WheelInTCP.Inverse() : TCPFor(Side)) * WheelTarget;
@@ -597,8 +648,10 @@ void AWheelAssemblyCell::WaitForLeftSensor(int32 Side,EWheelStage WaitStage, con
 
 void AWheelAssemblyCell::Fail(const FString& Reason)
 {
+    FailedWheelIndex=EvaluatingLane>=0?Lanes[EvaluatingLane].WheelIndex:INDEX_NONE;
+    FailedStage=EvaluatingLane>=0?Lanes[EvaluatingLane].Stage:EWheelStage::Idle;
 	const FString Saved = Reason;
-	for(const FWheelLane& Lane:Lanes)if(Lane.Stage!=EWheelStage::Idle&&Lane.Stage!=EWheelStage::Complete&&Lane.Stage!=EWheelStage::Fault)
+	if(EvaluatingLane<0)for(const FWheelLane& Lane:Lanes)if(Lane.Stage!=EWheelStage::Idle&&Lane.Stage!=EWheelStage::Complete&&Lane.Stage!=EWheelStage::Fault)
 	{FailedWheelIndex=Lane.WheelIndex;FailedStage=Lane.Stage;break;}
 	bRunning = false; bTransporting = false; Outcome = EWheelOutcome::Blocked;
 	if (LeftRobot) LeftRobot->Halt();
@@ -631,6 +684,7 @@ void AWheelAssemblyCell::RefreshQuality()
 
 void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
 {
+    TGuardValue<int32> DiagnosticLane(EvaluatingLane,Side);
 	FWheelLane& Lane = Lanes[Side];
 	if (!LaneEnabled(Side)||Lane.Stage == EWheelStage::Complete) return;
 	ARobotArm* Robot = RobotFor(Side);
@@ -919,6 +973,7 @@ bool AWheelAssemblyCell::AdvanceSimulation(double DeltaSeconds)
 	if (!FMath::IsFinite(DeltaSeconds) || DeltaSeconds < 0 || DeltaSeconds > 1 || FixedStepSeconds <= 0 || FixedStepSeconds > 0.02) return false;
 	UpdateFastenedWheels();
 	if (!bRunning && !HasPassiveWork()) return true;
+    if(bRunning&&!CheckWheelVisuals(this,WheelRoots,Assembly,false,Status)){Fail(Status);return false;}
     Accumulator += DeltaSeconds;
     while (Accumulator + 1.e-10 >= FixedStepSeconds)
 	{

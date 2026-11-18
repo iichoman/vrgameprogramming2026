@@ -44,7 +44,7 @@ bool ARobotArm::AdvanceMotionPlanning()
     // frame. Share a 4 ms soft budget across arms, with 1.5 ms per work slice.
     // Commandlet/manual pre-BeginPlay tests have no rendering frame to yield to.
     static uint64 BudgetFrame=MAX_uint64;static double FrameUsed=0;
-    const bool LimitFrame=FApp::CanEverRender()&&GetWorld()&&GetWorld()->HasBegunPlay()&&!IsRunningCommandlet();
+    const bool LimitFrame=FApp::CanEverRender()&&GetWorld()&&GetWorld()->HasBegunPlay()&&!IsRunningCommandlet()&&!SynchronousMotionTest();
     if(LimitFrame&&BudgetFrame!=GFrameCounter){BudgetFrame=GFrameCounter;FrameUsed=0;}
     if(LimitFrame&&FrameUsed>=.004)return true;
     const double Begin=FPlatformTime::Seconds(),BudgetEnd=Begin+(LimitFrame?FMath::Min(.0015,.004-FrameUsed):.0015);

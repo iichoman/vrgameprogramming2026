@@ -71,12 +71,15 @@ protected:
     FTransform DoorSupplyWorld;
     UPROPERTY(Transient) TObjectPtr<ARobotArm> LeftDoorRobot;
     FTransform BaselineTCPInLeftDoor;
+    FTransform BaselineTCPInRightDoor;
+    FVector FrontDoorPickupOffsets[2];
+    double FrontDoorSizeScales[2]={1,1};
     FTransform SecondDoorSupplyWorld;
     FTransform ExpectedVehicle, ExpectedCarriage;
     double TransferTime = 0;
     bool bReady = false;
     void Fail(const FString& Reason);
-    bool PrepareDoor(int32 Index);
+    bool PrepareDoor(ADoorAssemblyCell* Cell, int32 Index);
 };
 
 UCLASS(NotBlueprintable)

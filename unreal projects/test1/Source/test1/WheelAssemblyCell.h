@@ -269,6 +269,7 @@ private:
 	UPROPERTY() TArray<TObjectPtr<UStaticMeshComponent>> TireVisuals;
 	UPROPERTY() TArray<TObjectPtr<UStaticMeshComponent>> HubVisuals;
 	FWheelLane Lanes[4];
+    int32 EvaluatingLane=INDEX_NONE;
 	FTransform FastenedInBody[4];
 	FTransform BodyAtStart;
 	FTransform RobotAtStart[4];

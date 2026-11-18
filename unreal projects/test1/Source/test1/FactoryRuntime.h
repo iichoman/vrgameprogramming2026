@@ -177,7 +177,7 @@ public:
     void OrbitCamera(FVector2D Delta);
     void FocusSelected();
     bool bZoneLabels = false;
-    bool bEquipmentLabels = true;
+    bool bEquipmentLabels = false;
     bool bRouteVisible = true;
     bool bHallSelected = false;
     FString PendingTypeId;

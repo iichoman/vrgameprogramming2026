@@ -360,10 +360,9 @@ void AFactoryRuntime::UpdateCamera()
     const FRotator ViewRotation(bTopView?-90:CameraPitch,CameraYaw,0);
     const FVector P=Target-ViewRotation.Vector()*(bTopView?10000:CameraWidth*.9);
     ViewCamera->SetActorLocation(P);ViewCamera->SetActorRotation(ViewRotation);
-    for(const auto& Entry:Equipment)if(Entry.Value)Entry.Value->OrientLabel(ViewCamera->GetActorRotation().Yaw);
 }
 void AFactoryRuntime::FitView(){CameraWidth=FMath::Max(Layout.LengthCm*1.5,Layout.WidthCm*2.4);CameraCentre=Layout.HallOrigin+FVector2D(Layout.LengthCm*.5-CameraWidth*.1,0);CameraYaw=-90;bTopView=true;UpdateCamera();}
-void AFactoryRuntime::FocusWorkcell(){if(bUseAssemblyIntegration){CameraCentre=FVector2D(400,-120);CameraWidth=2800;CameraYaw=90;CameraPitch=-40;bTopView=false;UpdateCamera();return;}auto* S=Layout.Find(Layout.StationId);CameraCentre=S?S->Position+FVector2D(100,-180):FVector2D(Layout.LengthCm*.5,0);CameraWidth=1800;CameraYaw=90;CameraPitch=-46;bTopView=false;UpdateCamera();}
+void AFactoryRuntime::FocusWorkcell(){if(bUseAssemblyIntegration){CameraCentre=FVector2D(200,-120);CameraWidth=3200;CameraYaw=90;CameraPitch=-40;bTopView=false;UpdateCamera();return;}auto* S=Layout.Find(Layout.StationId);CameraCentre=S?S->Position+FVector2D(100,-180):FVector2D(Layout.LengthCm*.5,0);CameraWidth=1800;CameraYaw=90;CameraPitch=-46;bTopView=false;UpdateCamera();}
 void AFactoryRuntime::ToggleView(){bTopView=!bTopView;UpdateCamera();}
 void AFactoryRuntime::ZoomIn(){CameraWidth=FMath::Max(250.,CameraWidth*.85);UpdateCamera();}
 void AFactoryRuntime::ZoomOut(){CameraWidth=FMath::Min(30000.,CameraWidth/ .85);UpdateCamera();}

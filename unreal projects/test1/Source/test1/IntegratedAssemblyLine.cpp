@@ -194,13 +194,13 @@ bool AIntegratedAssemblyLine::StartDoorOperation(ADoorAssemblyCell* Cell)
     else Cell->RequestBinding=FAssemblyOperationRequest();
     return Cell->StartCycle();
 }
-bool AIntegratedAssemblyLine::PrepareDoor(int32 Index)
+bool AIntegratedAssemblyLine::PrepareDoor(ADoorAssemblyCell* Cell, int32 Index)
 {
-    if (!bFourDoorMode || !DoorModules.IsValidIndex(Index) || !IsValid(DoorModules[Index])) return false;
-    DoorCell->DoorSizeScale=1.0;
+    if (!Cell || !bFourDoorMode || !DoorModules.IsValidIndex(Index) || !IsValid(DoorModules[Index])) return false;
+    Cell->DoorSizeScale=1.0;
     const bool bRight = Index >= 2;
-    DoorCell->TargetModule=DoorModules[Index];
-    DoorCell->Robot=bRight ? RightDoorRobot.Get() : LeftDoorRobot.Get();
+    Cell->TargetModule=(Index % 2) ? DoorModules[Index].Get() : nullptr;
+    Cell->Robot=bRight ? RightDoorRobot.Get() : LeftDoorRobot.Get();
     const auto* Car=WheelCell->Assembly.Get();
     const FTransform BodyWorld=Car->GetBodyFrame()->GetComponentTransform();
     const FTransform OldMount=Car->GetDoorPoseController(ECamryDoorSide::Left)->GetReferencePoseInBody()*BodyWorld;
@@ -232,22 +232,29 @@ bool AIntegratedAssemblyLine::PrepareDoor(int32 Index)
         };
         FVector RearCenter,FrontCenter;
         if(!MountedCenter(Index,RearCenter)||!MountedCenter(2,FrontCenter))
-        {DoorCell->Status=Status=TEXT("도어 파지 보정 실패 · 기준 메시 형상 없음");return false;}
+        {Cell->Status=Status=TEXT("도어 파지 보정 실패 · 기준 메시 형상 없음");return false;}
         const FTransform FrontMount=Car->GetDoorPoseController(ECamryDoorSide::Right)->GetReferencePoseInBody()*BodyWorld;
-        GraspWorld=SecondDoorCell->TCPInDoorCm*FrontMount;
+        GraspWorld=BaselineTCPInRightDoor*FrontMount;
         GraspWorld.AddToTranslation(RearCenter-FrontCenter);
-        DoorCell->Robot=SecondDoorCell->Robot;
+        Cell->Robot=SecondDoorCell->Robot;
     }
     else if (bRight) GraspWorld.SetRotation((FQuat(FVector::UpVector,PI)*GraspWorld.GetRotation()).GetNormalized());
-    if(DoorTaskRobots.Num()==4) DoorCell->Robot=DoorTaskRobots[Index];
-    if(!IsValid(DoorCell->Robot)){Status=TEXT("도어 작업 로봇 미할당");return false;}
-    DoorCell->OperationTaskId=DoorModules[Index]->ModuleId.ToString().ToLower();
-    DoorCell->TCPInDoorCm=GraspWorld.GetRelativeTransform(NewMount);
-    DoorCell->PickupOffsetBodyCm=FVector(0,bRight ? 100 : -100,20)
+    if(DoorTaskRobots.Num()==4) Cell->Robot=DoorTaskRobots[Index];
+    if(!IsValid(Cell->Robot)){Status=TEXT("도어 작업 로봇 미할당");return false;}
+    Cell->OperationTaskId=DoorModules[Index]->ModuleId.ToString().ToLower();
+    Cell->TCPInDoorCm=GraspWorld.GetRelativeTransform(NewMount);
+    Cell->PickupOffsetBodyCm=FVector(0,bRight ? 100 : -100,20)
         +WheelCell->Assembly->GetBodyFrame()->GetComponentTransform().InverseTransformVectorNoScale(DoorSupplyOffsetsWorldCm.FindRef(Index));
-    DoorCell->ApproachOffsetBodyCm=FVector(0,bRight ? 25 : -25,0);
-    DoorCell->TransferOffsetBodyCm=FVector(0,bRight ? 50 : -50,25);
-    return DoorCell->PrepareNextOperation();
+    if(Index % 2 == 0)
+    {
+        Cell->TCPInDoorCm=bRight ? BaselineTCPInRightDoor : BaselineTCPInLeftDoor;
+        Cell->PickupOffsetBodyCm=FrontDoorPickupOffsets[bRight?1:0];
+        Cell->DoorSizeScale=FrontDoorSizeScales[bRight?1:0];
+    }
+    Cell->ApproachOffsetBodyCm=FVector(0,bRight ? 25 : -25,0);
+    Cell->TransferOffsetBodyCm=FVector(0,bRight ? 50 : -50,25);
+    if(!Cell->PrepareNextOperation()){Status=Cell->Status;return false;}
+    return true;
 }
 bool AIntegratedAssemblyLine::ResetLine()
 {
@@ -263,7 +270,10 @@ bool AIntegratedAssemblyLine::ResetLine()
     MountedDoorCount=0;CompletedDoorOperations.Reset();
     DoorCell->OperationTaskId=TEXT("door_fl");
     if (!DoorCell->TargetModule || !IsValid(LeftDoorRobot)) LeftDoorRobot=DoorCell->Robot;
-    if (!bFourDoorMode || DoorCell->TargetModule==nullptr) BaselineTCPInLeftDoor=DoorCell->TCPInDoorCm;
+    if (!DoorCell->TargetModule)
+    {BaselineTCPInLeftDoor=DoorCell->TCPInDoorCm;FrontDoorPickupOffsets[0]=DoorCell->PickupOffsetBodyCm;FrontDoorSizeScales[0]=DoorCell->DoorSizeScale;}
+    if(SecondDoorCell && !SecondDoorCell->TargetModule)
+    {BaselineTCPInRightDoor=SecondDoorCell->TCPInDoorCm;FrontDoorPickupOffsets[1]=SecondDoorCell->PickupOffsetBodyCm;FrontDoorSizeScales[1]=SecondDoorCell->DoorSizeScale;}
     DoorModules.Reset();
     const FName DoorIds[]={TEXT("Door_FL"),TEXT("Door_RL"),TEXT("Door_FR"),TEXT("Door_RR")};
     for (const FName Id:DoorIds)
@@ -273,7 +283,7 @@ bool AIntegratedAssemblyLine::ResetLine()
             if (It->ModuleId==Id && It->VehicleFrame==WheelCell->Assembly) { Found=*It; break; }
         DoorModules.Add(Found);
     }
-    bFourDoorMode=IsValid(RightDoorRobot) && IsValid(LeftDoorRobot);
+    bFourDoorMode=IsValid(SecondDoorCell) && IsValid(RightDoorRobot) && IsValid(LeftDoorRobot);
     for (const auto& Module:DoorModules) bFourDoorMode &= IsValid(Module) && Module->bHasReferencePose;
     auto* Car = WheelCell->Assembly.Get();
     if(!VehicleAssemblyMounting::SetRearExtension(*Car,0)) {Fail(TEXT("후방 허브 기준 자세 복원 실패"));return false;}
@@ -284,6 +294,14 @@ bool AIntegratedAssemblyLine::ResetLine()
     {
         if(DoorCell->TargetModule) DoorCell->TCPInDoorCm=BaselineTCPInLeftDoor;
         DoorCell->TargetModule=nullptr;
+        DoorCell->PickupOffsetBodyCm=FrontDoorPickupOffsets[0];
+        DoorCell->DoorSizeScale=FrontDoorSizeScales[0];
+        SecondDoorCell->TargetModule=nullptr;
+        SecondDoorCell->TCPInDoorCm=BaselineTCPInRightDoor;
+        SecondDoorCell->PickupOffsetBodyCm=FrontDoorPickupOffsets[1];
+        SecondDoorCell->DoorSizeScale=FrontDoorSizeScales[1];
+        SecondDoorCell->OperationTaskId=TEXT("door_fr");
+        SecondDoorCell->Robot=RightDoorRobot;
         DoorCell->Robot=LeftDoorRobot;
         DoorCell->ApproachOffsetBodyCm=FVector(0,-25,0);
         DoorCell->TransferOffsetBodyCm=FVector(0,-50,25);
@@ -382,6 +400,10 @@ bool AIntegratedAssemblyLine::AdvanceLine(double Seconds)
         Status = T < 1 ? TEXT("3/4 타이어 장착 차체를 문 작업 구역으로 이송") : TEXT("문 작업 구역 도킹 확인");
         if (TransferTime + 1.e-9 >= TransferSeconds + DockSeconds)
         {
+            // The rear panel lip passes behind the front panel. Fit both rears
+            // first; then both fronts admit a fixed-attitude straight insertion.
+            if(bFourDoorMode && (!PrepareDoor(DoorCell,1)||!PrepareDoor(SecondDoorCell,3)))
+            {Fail(Status);return false;}
             if (!StartDoorOperation(DoorCell)) { Fail(DoorCell->Status); return false; }
             if(SecondDoorCell&&!StartDoorOperation(SecondDoorCell)){Fail(SecondDoorCell->Status);return false;}
             Stage = EAssemblyLineStage::Door;
@@ -393,20 +415,23 @@ bool AIntegratedAssemblyLine::AdvanceLine(double Seconds)
         { Fail(TEXT("Carriage moved during door assembly.")); return false; }
         if (!DoorCell->AdvanceSimulation(Seconds) || DoorCell->Outcome == EDoorCellOutcome::QualityFail || DoorCell->Outcome == EDoorCellOutcome::Stopped)
         { Fail(DoorCell->Status); return false; }
-        if(SecondDoorCell&&MountedDoorCount==0&&(!SecondDoorCell->AdvanceSimulation(Seconds)||SecondDoorCell->Outcome==EDoorCellOutcome::QualityFail||SecondDoorCell->Outcome==EDoorCellOutcome::Stopped))
+        if(SecondDoorCell&&(!SecondDoorCell->AdvanceSimulation(Seconds)||SecondDoorCell->Outcome==EDoorCellOutcome::QualityFail||SecondDoorCell->Outcome==EDoorCellOutcome::Stopped))
         {Fail(SecondDoorCell->Status);return false;}
-        Status = TEXT("4/4 앞문 장착 · ") + DoorCell->GetStateLabel();
+        Status = (bFourDoorMode&&MountedDoorCount==0?TEXT("4/4 뒷문 장착 · "):TEXT("4/4 앞문 장착 · ")) + DoorCell->GetStateLabel();
         if (DoorCell->State == EDoorAssemblyState::Complete&&(!SecondDoorCell||SecondDoorCell->State==EDoorAssemblyState::Complete))
         {
             if (DoorCell->Outcome != EDoorCellOutcome::Pass||(SecondDoorCell&&SecondDoorCell->Outcome!=EDoorCellOutcome::Pass)) { Fail(DoorCell->Status); return false; }
             CaptureDoorResult(DoorCell);
-            if(MountedDoorCount==0)CaptureDoorResult(SecondDoorCell);
+            CaptureDoorResult(SecondDoorCell);
             if(bFourDoorMode)
             {
-                MountedDoorCount=MountedDoorCount==0?2:MountedDoorCount+1;
+                MountedDoorCount+=2;
                 if(MountedDoorCount<4)
                 {
-                    if(!PrepareDoor(MountedDoorCount==2?1:3)||!StartDoorOperation(DoorCell)){Fail(DoorCell->Status);return false;}
+                    if(!PrepareDoor(DoorCell,0)||!PrepareDoor(SecondDoorCell,2))
+                    {Fail(Status);return false;}
+                    if(!StartDoorOperation(DoorCell)){Fail(DoorCell->Status);return false;}
+                    if(!StartDoorOperation(SecondDoorCell)){Fail(SecondDoorCell->Status);return false;}
                     return true;
                 }
             }

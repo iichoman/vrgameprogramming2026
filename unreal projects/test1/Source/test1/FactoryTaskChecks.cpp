@@ -44,9 +44,10 @@ bool RearWheelInsertionClear(AWheelAssemblyCell& Cell,int Index,FString& Why)
     return true;
 }
 
-void ProbeDoorInsertion(AIntegratedAssemblyLine& Line)
+bool RearFirstDoorInsertionClear(AIntegratedAssemblyLine& Line)
 {
     const auto* Car=Line.WheelCell->Assembly.Get();
+    bool Pass=true;int Cases=0;
     for(int Index=0;Index<4;++Index)
     {
         if(!Line.DoorModules.IsValidIndex(Index)||!Line.DoorTaskRobots.IsValidIndex(Index))continue;
@@ -77,8 +78,12 @@ void ProbeDoorInsertion(AIntegratedAssemblyLine& Line)
             UE_LOG(LogTemp,Display,TEXT("DOOR_INSERTION_PROBE task=%s neighbor=%d first_out=%.1f %s"),*Module->ModuleId.ToString(),Occupied,First,*Reason);
             Reason.Empty();const bool Seated=Clear(0,Reason);
             UE_LOG(LogTemp,Display,TEXT("DOOR_SEATED_PROBE task=%s neighbor=%d clear=%d %s"),*Module->ModuleId.ToString(),Occupied,Seated,*Reason);
+            // Virtual CAD fixtures only: runtime obstacles are never removed.
+            // Rear panels enter an empty seam; fronts enter beside seated rears.
+            if(Occupied==(Index%2==0)){Pass&=First<0&&Seated;++Cases;}
         }
     }
+    return Pass&&Cases==4;
 }
 }
 
@@ -101,12 +106,24 @@ bool AFactoryRuntime::RunTaskAssignmentChecks()
     FFactoryLayout Loaded;Check(TEXT("v4_roundtrip_includes_part_and_task_binding"),FFactoryLayout::FromJson(Layout.ToJson(),Loaded,Error)&&Loaded.ToJson()==Layout.ToJson());UndoEdit();
     auto Bad=Layout;Bad.Tasks[1].Id=Bad.Tasks[0].Id;Check(TEXT("duplicate_task_rejected"),!Bad.Validate(Error));
     Bad=Layout;Bad.Tasks[0].PartId=TEXT("missing");Check(TEXT("invalid_part_rejected"),!Bad.Validate(Error));
+    const auto Assigned=Layout;
+    Task(TEXT("door_rr"))->RobotId=Task(TEXT("door_rl"))->RobotId;
+    Check(TEXT("parallel_rear_doors_require_distinct_robots"),!ValidateAssemblyBindings(Error));
+    Layout=Assigned;
     auto Advance=[&](int N){for(int I=0;I<N;++I)StepSimulation(1./120);};
     double HeadSwing[2]={0,0};bool RearPickupObserved[2]={false,false};
     bool RearClearanceChecked=false,RearClearance=true;FString RearClearanceFailure;
+    bool DoorOrderValid=true,DoorOrderObserved=false;
     auto Run=[&](){ResetCycle();Advance(24);bool Ok=StartCycle();for(int I=0;I<36000&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)
     {
         StepSimulation(1./120);auto* Cell=TestAssemblyLine->WheelCell.Get();
+        if(TestAssemblyLine->Stage==EAssemblyLineStage::Door)
+        {
+            DoorOrderObserved=true;
+            const bool RearPhase=TestAssemblyLine->MountedDoorCount==0;
+            DoorOrderValid&=TestAssemblyLine->DoorCell->GetOperationTaskId()==(RearPhase?TEXT("door_rl"):TEXT("door_fl"))
+                &&TestAssemblyLine->SecondDoorCell->GetOperationTaskId()==(RearPhase?TEXT("door_rr"):TEXT("door_fr"));
+        }
         if(!RearClearanceChecked&&TestAssemblyLine->Stage==EAssemblyLineStage::Wheels&&!Cell->bTransporting)
         {
             RearClearanceChecked=true;
@@ -123,7 +140,7 @@ bool AFactoryRuntime::RunTaskAssignmentChecks()
     }return Ok&&RunState==EFactoryRunState::Complete;};
     Check(TEXT("two_robot_tasks_full_cycle"),Run());const double TwoSeconds=SimulationSeconds;
     const int TwoMountedWheels=TestAssemblyLine->WheelCell->MountedCount,TwoMountedDoors=TestAssemblyLine->MountedDoorCount;
-    ProbeDoorInsertion(*TestAssemblyLine);
+    Check(TEXT("rear_first_door_order_has_clear_straight_insertions"),RearFirstDoorInsertionClear(*TestAssemblyLine));
     Check(TEXT("lifted_rear_wheels_allow_straight_insertion"),RearClearanceChecked&&RearClearance);
     if(!RearClearance)UE_LOG(LogTemp,Warning,TEXT("REAR_INSERTION_CLEARANCE %s"),*RearClearanceFailure);
     auto* TwoWheelCell=TestAssemblyLine->WheelCell.Get();
@@ -154,6 +171,7 @@ bool AFactoryRuntime::RunTaskAssignmentChecks()
     for(const FString Id:{TEXT("door_fl"),TEXT("door_rl"),TEXT("door_fr"),TEXT("door_rr")})
     {FDoorOperationSnapshot Snapshot;DoorResults&=TestAssemblyLine->DoorSnapshot(Id,Snapshot)&&Snapshot.TaskId==Id&&Snapshot.bComplete;}
     Check(TEXT("four_independent_door_completion_records"),DoorResults);
+    Check(TEXT("rear_doors_complete_before_front_pair_starts"),DoorOrderObserved&&DoorOrderValid);
     ResetCycle();Advance(24);StartCycle();Advance(240);StopCycle();Advance(240);
     Check(TEXT("stop_in_task_mode"),RunState==EFactoryRunState::Stopped);
     ResetCycle();Check(TEXT("reset_clears_task_execution"),CanEdit()&&W->MountedCount==0);

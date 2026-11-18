@@ -7,7 +7,20 @@
 #include "Engine/World.h"
 #include "Misc/ScopeExit.h"
 #include "Misc/App.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "RobotCommercialProfile.h"
+
+namespace
+{
+// Explicit test-runner opt-in: a blocking simulation loop cannot advance the
+// rendering frame counter. Interactive PIE always retains its frame budget.
+bool SynchronousMotionTest()
+{
+    static const bool Enabled=FApp::IsUnattended()&&FParse::Param(FCommandLine::Get(),TEXT("RobotMotionSynchronousTest"));
+    return Enabled;
+}
+}
 
 ARobotArm::ARobotArm()
 {
@@ -200,7 +213,7 @@ bool ARobotArm::StepControl(double Dt)
     // Cold CAD acceleration structures are built off-thread before planning.
     // Hold the current pose until ready, rather than counting asset preparation
     // against the IK budget or accepting unchecked geometry. Headless tests wait.
-    if(!MotionScene.PrepareGeometry(!FApp::CanEverRender()))
+    if(!MotionScene.PrepareGeometry(!FApp::CanEverRender()||SynchronousMotionTest()))
     {LastStatus=TEXT("충돌 형상 준비 중 · 로봇 대기");return true;}
     if(PendingMotion&&!AdvanceMotionPlanning())return false;
     const auto PreviousAngles=Angles;const auto PreviousControllers=Controllers;
