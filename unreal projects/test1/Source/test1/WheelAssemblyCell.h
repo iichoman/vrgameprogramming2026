@@ -110,7 +110,7 @@ enum class EWheelControlMode : uint8 { Basic, IndependentVerification };
 UENUM(BlueprintType)
 enum class EWheelOutcome : uint8 { NotEvaluated, Pass, QualityFail, Blocked, Stopped };
 UENUM(BlueprintType)
-enum class EWheelStage : uint8 { Idle, ApproachPickup, Grip, Lift, Transfer, ApproachMount, Align, Fasten, Release, Retract, Reposition, WaitSupply, WaitPose, Complete, Fault, Stopped };
+enum class EWheelStage : uint8 { Idle, ApproachPickup, Grip, Lift, Transfer, RecheckHub, ApproachMount, Align, Fasten, Release, Retract, Reposition, WaitSupply, WaitPose, Complete, Fault, Stopped };
 
 // A read-only assessment boundary. Geometric demo checks are never promoted to physical quality.
 enum class EWheelControlAssessment : uint8 { Waiting, Running, Completed, Failed };
@@ -156,6 +156,12 @@ public:
     UPROPERTY(EditAnywhere, Category="Wheel Cell|Laser") bool bLaserScanFrontLeftHub = false;
     UPROPERTY(EditAnywhere, Category="Wheel Cell|Laser") bool bBlockFrontLeftLaser = false;
     UPROPERTY(EditAnywhere, Category="Wheel Cell|Laser", meta=(Units="cm")) FVector FrontLeftHubOffsetCm = FVector::ZeroVector;
+    /** Demo only: move the docked vehicle and carriage before the front-left mount scan. */
+    UPROPERTY(EditAnywhere, Category="Wheel Cell|Laser") bool bDemoChassisShiftBeforeMount = false;
+    UPROPERTY(EditAnywhere, Category="Wheel Cell|Laser", meta=(Units="cm")) FVector DemoChassisShiftCm = FVector(2,0,0);
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") bool bDemoChassisShiftApplied = false;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") int32 HubRecheckCount = 0;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser", meta=(Units="mm")) double DockToPreMountShiftMm = 0;
     UPROPERTY(EditAnywhere, Category="Wheel Cell|Laser", meta=(Units="mm")) double LaserOutlierMm = 0;
     /** Demo: the first N scan attempts of a cycle are occluded, then the beam clears. */
     UPROPERTY(EditAnywhere, Category="Wheel Cell|Laser", meta=(ClampMin="0")) int32 LaserTransientBlockScans = 0;
@@ -361,6 +367,8 @@ private:
 	FWheelLane Lanes[4];
 	FTransform FastenedInBody[4];
 	FTransform BodyAtStart;
+	FTransform DockBodyWorld;
+	FTransform CarriageAfterDemoShift;
 	FTransform RobotAtStart[4];
 	double Accumulator = 0;
 	double SlipRecoveryPhaseSeconds = 0;

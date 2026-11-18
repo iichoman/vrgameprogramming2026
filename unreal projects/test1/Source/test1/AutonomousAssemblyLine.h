@@ -33,7 +33,7 @@ public:
 	virtual void Tick(float Seconds) override;
 	// 0: no injected event, 1..4: first left wheel only, 5: original seeded mode.
 	void SetFactoryCheck(int32 Kind);
-	/** Factory demo adapter: presets 0..13 are legacy checks, 14..18 are incident experiments. */
+	/** Factory demo adapter: presets 0..13 are legacy checks, 14..19 are incident experiments. */
 	bool ConfigureIncidentDemo(int32 Preset);
 	int32 GetFactoryCheck() const { return FactoryCheck; }
 protected:

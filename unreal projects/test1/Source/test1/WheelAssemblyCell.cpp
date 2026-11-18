@@ -329,7 +329,7 @@ bool AWheelAssemblyCell::ScanFrontLeftHubOnce(bool bScanWheel)
 	FrontLeftHubProxy->SetSphereRadius(RadiusCm);
 	FrontLeftHubProxy->SetWorldLocation(bScanWheel?GetWheelWorld(0).GetLocation():GetMountWorld(0).GetLocation());
 	const FVector NominalCenter = bScanWheel?FrontLeftHubScan.MeasuredWorld.GetLocation():(FTransform(FQuat::Identity,
-		MountCentersCm.Num() == 4 ? MountCentersCm[0] : FVector(FrontXcm,-HubHalfTrackCm,HubHeightCm)) * BodyAtStart).GetLocation();
+		MountCentersCm.Num() == 4 ? MountCentersCm[0] : FVector(FrontXcm,-HubHalfTrackCm,HubHeightCm)) * DockBodyWorld).GetLocation();
 	const FVector Origin = bScanWheel ? NominalCenter+BodyAtStart.TransformVectorNoScale(FVector(0,-60,0))
 		: RobotForWheel(0)->GetTCPWorld().GetLocation();
 	Reading.ScanOriginWorld = Origin;
@@ -511,6 +511,7 @@ bool AWheelAssemblyCell::ValidateSetup()
 	{ Status = TEXT("Wheel geometry, control times and tolerances must be positive finite values."); return false; }
 	if (!FMath::IsFinite(RearXcm) || FixedStepSeconds > 0.02 || FaultWheelIndex < 0 || FaultWheelIndex > 3
 		|| MaxAutoGripAttempts < 2
+		|| DemoChassisShiftCm.ContainsNaN() || DemoChassisShiftCm.Size() > 5.0
 		|| SensorBiasMm.ContainsNaN() || InitialOffsetMm.ContainsNaN() || InitialRotationDeg.ContainsNaN()
 		|| !LeftTCPInWheel.IsValid() || !RightTCPInWheel.IsValid()
 		|| !LeftTCPInWheel.GetScale3D().Equals(FVector::OneVector, 1.e-6)
@@ -545,6 +546,7 @@ bool AWheelAssemblyCell::ResetCycle()
 	}
 	if (!ValidateSetup() || !LeftRobot->InitializeArm() || !RightRobot->InitializeArm())
 	{ Outcome = EWheelOutcome::Blocked; Status += TEXT(" Robot calibration failed or references missing."); return false; }
+	DockBodyWorld=BodyAtStart;
 	for(int32 S=0;S<LaneCount();++S)if(LaneEnabled(S)&&!RobotFor(S)->InitializeArm())return false;
 	if (bEnableTransport)
 	{
@@ -571,6 +573,8 @@ bool AWheelAssemblyCell::ResetCycle()
 	for(int32 Side=0;Side<LaneCount();++Side)if(IsValid(RobotFor(Side)))RobotFor(Side)->SetDroppedWheelCollision(false);
 	FrontLeftHubScan = FWheelHubScanReading();
 	FrontLeftDockScan = FrontLeftPreMountScan = FrontLeftFinalWheelScan = FWheelHubScanReading();
+	bDemoChassisShiftApplied=false; HubRecheckCount=0; DockToPreMountShiftMm=0;
+	CarriageAfterDemoShift=CarriageAtStation;
 	FrontLeftWheelMeasuredDiameterCm = 0; bFrontLeftWheelSizePassed = false;
 	FrontLeftWheelSizeMeasuredAt=-1;LeftGripMeasuredAt=-1;
 	WheelSizeNearHitWorld = WheelSizeFarHitWorld = FVector::ZeroVector;
@@ -1037,13 +1041,37 @@ void AWheelAssemblyCell::StepLane(int32 Side, double Dt)
 	case EWheelStage::Transfer:
 		if (Lane.WheelIndex==0 && bLaserScanFrontLeftHub)
 		{
+			if (bDemoChassisShiftBeforeMount && !bDemoChassisShiftApplied)
+			{
+				const FVector Offset=BodyAtStart.TransformVectorNoScale(DemoChassisShiftCm);
+				Assembly->AddActorWorldOffset(Offset);
+				if(bEnableTransport && IsValid(TransportCarriage)) TransportCarriage->AddActorWorldOffset(Offset);
+				BodyAtStart=Assembly->GetBodyFrame()->GetComponentTransform();
+				if(IsValid(TransportCarriage))CarriageAfterDemoShift=TransportCarriage->GetActorTransform();
+				bDemoChassisShiftApplied=true;
+			}
 			const FVector DockCenter=FrontLeftDockScan.MeasuredWorld.GetLocation();
 			if (!ScanFrontLeftHub()) { Fail(TEXT("장착 직전 허브 재스캔 실패 · ")+FrontLeftHubScan.FailureReason); break; }
+			DockToPreMountShiftMm=FVector::Distance(DockCenter,FrontLeftHubScan.MeasuredWorld.GetLocation())*10;
+			if(DockToPreMountShiftMm>5)
+			{
+				if(!bDemoChassisShiftApplied || HubRecheckCount>0)
+				{ Fail(FString::Printf(TEXT("도킹 후 허브 위치 변화 %.2fmm · 재도킹 필요"),DockToPreMountShiftMm)); break; }
+				++HubRecheckCount;
+				OpenIncident(TEXT("chassis_shift"),0,Lane.Stage,TEXT("도킹 후 허브 이동"),TEXT("mm"),
+					DockToPreMountShiftMm,5,TEXT("기존 목표 폐기 · 팔 후퇴 · 허브 재스캔 후 재접근"));
+				MoveTo(Side,EWheelStage::RecheckHub,OffsetOutward(GetMountTargetWorld(0),Side,65));
+				break;
+			}
 			FrontLeftPreMountScan=FrontLeftHubScan;
-			const double ShiftMm=FVector::Distance(DockCenter,FrontLeftPreMountScan.MeasuredWorld.GetLocation())*10;
-			if (ShiftMm>5) { Fail(FString::Printf(TEXT("도킹 후 허브 위치 변화 %.2fmm · 재도킹 필요"),ShiftMm)); break; }
 		}
 		MoveTo(Side, EWheelStage::ApproachMount, OffsetOutward(GetMountTargetWorld(Lane.WheelIndex), Side, 25)); break;
+	case EWheelStage::RecheckHub:
+		if(!ScanFrontLeftHub()) { Fail(TEXT("차체 이동 후 허브 재스캔 실패 · ")+FrontLeftHubScan.FailureReason); break; }
+		FrontLeftPreMountScan=FrontLeftHubScan;
+		CloseIncidents(TEXT("chassis_shift"),TEXT("recovered"));
+		MoveTo(Side,EWheelStage::ApproachMount,OffsetOutward(GetMountTargetWorld(0),Side,25));
+		break;
 	case EWheelStage::ApproachMount:
 		MoveTo(Side, EWheelStage::Align, GetMountTargetWorld(Lane.WheelIndex)); break;
 	case EWheelStage::Align:
@@ -1132,7 +1160,8 @@ bool AWheelAssemblyCell::AdvanceSimulation(double DeltaSeconds)
 		}
 		if (!IsValid(Assembly) || !Assembly->GetBodyFrame()
 			|| !IsValid(LeftRobot) || !IsValid(RightRobot)
-			|| (bEnableTransport && (!IsValid(TransportCarriage) || !TransportCarriage->GetActorTransform().Equals(CarriageAtStation, 1.e-3)))
+			|| (bEnableTransport && (!IsValid(TransportCarriage) || !TransportCarriage->GetActorTransform().Equals(
+				bDemoChassisShiftApplied ? CarriageAfterDemoShift : CarriageAtStation, 1.e-3)))
 			|| !Assembly->GetBodyFrame()->GetComponentTransform().Equals(BodyAtStart, bEnableTransport ? 1.e-3 : 1.e-6)
 			|| (!UsesTaskBindings()&&!LeftRobot->GetActorTransform().Equals(RobotAtStart[0], 1.e-6))
 			|| (!UsesTaskBindings()&&!RightRobot->GetActorTransform().Equals(RobotAtStart[1], 1.e-6)))
@@ -1372,6 +1401,18 @@ void AWheelAssemblyCell::Tick(float DeltaSeconds)
 	AdvanceFrontLeftWheelReject(DeltaSeconds);
 	if(GetWorld()&&(GetWorld()->WorldType==EWorldType::PIE||GetWorld()->WorldType==EWorldType::Game))
 	{
+		if(bDemoChassisShiftApplied && FrontLeftDockScan.bValid && FrontLeftHubScan.bValid)
+		{
+			const FVector Before=FrontLeftDockScan.MeasuredWorld.GetLocation();
+			const FVector After=FrontLeftHubScan.MeasuredWorld.GetLocation();
+			DrawDebugLine(GetWorld(),Before,After,FColor::Yellow,false,0.08f,0,5.f);
+			DrawDebugSphere(GetWorld(),Before,9,12,FColor::Cyan,false,0.08f,0,2.f);
+			DrawDebugSphere(GetWorld(),After,9,12,FColor::Yellow,false,0.08f,0,2.f);
+			DrawDebugString(GetWorld(),After+FVector(0,0,125),
+				FString::Printf(TEXT("HUB SHIFT %.1f mm / LIMIT 5.0 mm\n%s"),DockToPreMountShiftMm,
+					FrontLeftPreMountScan.bValid?TEXT("RESCAN OK - NEW TARGET"):TEXT("RETRACT - RESCAN")),
+				nullptr,FColor::Yellow,0.08f,false,1.f);
+		}
 		if (bFrontLeftWheelRejected && !RejectedWheelInstanceId.IsEmpty())
 		{
 			DrawDebugString(GetWorld(),DroppedWheelCollision->GetComponentLocation()+FVector(0,0,95),

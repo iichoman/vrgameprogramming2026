@@ -112,6 +112,25 @@ bool AFactoryRuntime::RunModularEditorChecks()
         &&FVector::Distance(LaserCell->FrontLeftPreMountScan.MeasuredWorld.GetLocation(),
             LaserCell->FrontLeftFinalWheelScan.MeasuredWorld.GetLocation())*10<=LaserCell->QualityToleranceMm);
     const FVector BaselineHubMeasurement=Scan.MeasuredWorld.GetLocation();
+    TestAssemblyLine->ConfigureIncidentDemo(19);
+    ResetCycle();
+    for(int32 I=0;I<24;++I)StepSimulation(1./120);
+    const bool ChassisShiftStarted=StartCycle();
+    bool HubRetreatObserved=false;
+    for(int32 I=0;I<120*300&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)
+    {
+        StepSimulation(1./120);
+        HubRetreatObserved|=TestAssemblyLine->WheelCell->GetLeftStage()==EWheelStage::RecheckHub;
+    }
+    const auto* RecheckCell=TestAssemblyLine->WheelCell.Get();
+    Check(TEXT("chassis_shift_retracts_rescans_and_completes"),ChassisShiftStarted
+        &&RunState==EFactoryRunState::Complete&&RecheckCell->bDemoChassisShiftApplied
+        &&RecheckCell->HubRecheckCount==1&&HubRetreatObserved
+        &&RecheckCell->DockToPreMountShiftMm>5
+        &&RecheckCell->FrontLeftPreMountScan.bValid&&RecheckCell->FrontLeftFinalWheelScan.bValid
+        &&RecheckCell->CountIncidents(TEXT("chassis_shift"),TEXT("recovered"))==1
+        &&RecheckCell->MountedCount==4);
+    TestAssemblyLine->ConfigureIncidentDemo(0);
     TestAssemblyLine->WheelCell->FrontLeftHubOffsetCm=FVector(2,0,0);
     ResetCycle();
     for(int32 I=0;I<24;++I)StepSimulation(1./120);
