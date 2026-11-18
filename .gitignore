@@ -30,3 +30,5 @@
 **/.DS_Store
 **/Thumbs.db
 **/desktop.ini
+
+!/output/pdf/자동차_조립_디지털트윈_발표.pdf
