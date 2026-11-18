@@ -13,6 +13,8 @@
 #include "Serialization/JsonSerializer.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 
 bool AFactoryRuntime::RunModularEditorChecks()
 {
@@ -21,6 +23,25 @@ bool AFactoryRuntime::RunModularEditorChecks()
     const auto Original=Layout;const auto Initial=Layout.ToJson();FString Error;FFactoryLayout Read;
     Check(TEXT("three_registered_bound_team_robots"),bUseAssemblyIntegration&&Layout.AssemblyBindings.Num()==3&&ValidateAssemblyBindings(Error));
     Check(TEXT("v3_roundtrip_preserves_explicit_bindings"),FFactoryLayout::FromJson(Initial,Read,Error)&&Read.ToJson()==Initial);
+    // The factory UI sends one request to the line adapter; selecting a new case clears prior faults.
+    const bool DemoAdapterValid=TestAssemblyLine && TestAssemblyLine->ConfigureIncidentDemo(14)
+        &&TestAssemblyLine->WheelCell->bGripDegradesInTransit
+        &&TestAssemblyLine->ConfigureIncidentDemo(15)
+        &&!TestAssemblyLine->WheelCell->bGripDegradesInTransit
+        &&TestAssemblyLine->WheelCell->LaserTransientBlockScans==2
+        &&TestAssemblyLine->ConfigureIncidentDemo(16)
+        &&TestAssemblyLine->WheelCell->bReplaceRejectedWheel
+        &&TestAssemblyLine->WheelCell->LaserTransientBlockScans==0
+        &&TestAssemblyLine->ConfigureIncidentDemo(18)
+        &&TestAssemblyLine->bExtendedRandomEvents
+        &&TestAssemblyLine->ConfigureIncidentDemo(5)
+        &&!TestAssemblyLine->bExtendedRandomEvents
+        &&!TestAssemblyLine->WheelCell->bReplaceRejectedWheel
+        &&TestAssemblyLine->ConfigureIncidentDemo(11)
+        &&TestAssemblyLine->DoorCell->bReplaceRejectedDoor
+        &&TestAssemblyLine->ConfigureIncidentDemo(5)
+        &&!TestAssemblyLine->DoorCell->bReplaceRejectedDoor;
+    Check(TEXT("incident_demo_adapter_resets_previous_fault_configuration"),DemoAdapterValid);
     auto Broken=Layout;Broken.AssemblyBindings.Add(TEXT("assembly_door"),TEXT("missing"));
     Check(TEXT("dangling_operation_binding_rejected"),!Broken.Validate(Error));
     bSnap=false;
@@ -101,16 +122,54 @@ bool AFactoryRuntime::RunModularEditorChecks()
         &&FVector::Distance(LaserCell->FrontLeftPreMountScan.MeasuredWorld.GetLocation(),
             LaserCell->FrontLeftFinalWheelScan.MeasuredWorld.GetLocation())*10<=LaserCell->QualityToleranceMm);
     const FVector BaselineHubMeasurement=Scan.MeasuredWorld.GetLocation();
+    TestAssemblyLine->ConfigureIncidentDemo(19);
+    ResetCycle();
+    for(int32 I=0;I<24;++I)StepSimulation(1./120);
+    const bool ChassisShiftStarted=StartCycle();
+    bool HubRetreatObserved=false;
+    const auto RackBeforeShift=TestAssemblyLine->WheelCell->GetPickupWorld(1);
+    bool SmoothTransfer=true,TransferObserved=false,OtherHeld=true,OtherHoldObserved=false;
+    for(int32 I=0;I<120*300&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)
+    {
+        const bool FirstTransfer=TestAssemblyLine->Stage==EAssemblyLineStage::Transfer&&TestAssemblyLine->TransferProgress==0;
+        const auto Before=TestAssemblyLine->WheelCell->Assembly->GetActorLocation();
+        const bool Rechecking=TestAssemblyLine->WheelCell->GetLeftStage()==EWheelStage::RecheckHub;
+        const auto OtherAngles=TestAssemblyLine->WheelCell->RightRobot->GetAnglesRadians();
+        StepSimulation(1./120);
+        const bool StillRechecking=TestAssemblyLine->WheelCell->GetLeftStage()==EWheelStage::RecheckHub;
+        HubRetreatObserved|=StillRechecking;
+        if(FirstTransfer){TransferObserved=true;SmoothTransfer&=FVector::Distance(Before,TestAssemblyLine->WheelCell->Assembly->GetActorLocation())<.05;}
+        if(Rechecking&&StillRechecking){OtherHoldObserved=true;OtherHeld&=OtherAngles==TestAssemblyLine->WheelCell->RightRobot->GetAnglesRadians();}
+    }
+    const auto* RecheckCell=TestAssemblyLine->WheelCell.Get();
+    Check(TEXT("chassis_shift_retracts_rescans_and_completes"),ChassisShiftStarted
+        &&RunState==EFactoryRunState::Complete&&RecheckCell->bDemoChassisShiftApplied
+        &&RecheckCell->HubRecheckCount==1&&HubRetreatObserved
+        &&RecheckCell->DockToPreMountShiftMm>5
+        &&RecheckCell->FrontLeftPreMountScan.bValid&&RecheckCell->FrontLeftFinalWheelScan.bValid
+        &&RecheckCell->CountIncidents(TEXT("chassis_shift"),TEXT("recovered"))==1
+        &&RecheckCell->MountedCount==4);
+    TestAssemblyLine->ConfigureIncidentDemo(0);
+    Check(TEXT("shift_recheck_holds_other_arm"),OtherHoldObserved&&OtherHeld);
+    Check(TEXT("shift_preserves_supply_rack_reference"),RackBeforeShift.Equals(RecheckCell->GetPickupWorld(1),.001));
+    Check(TEXT("shift_transfer_starts_continuously"),TransferObserved&&SmoothTransfer);
     TestAssemblyLine->WheelCell->FrontLeftHubOffsetCm=FVector(2,0,0);
     ResetCycle();
     for(int32 I=0;I<24;++I)StepSimulation(1./120);
     StartCycle();
     for(int32 I=0;I<120*300&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)StepSimulation(1./120);
     const auto& ShiftedScan=TestAssemblyLine->WheelCell->FrontLeftHubScan;
-    Check(TEXT("laser_measured_hub_shift_changes_mount_target"),RunState==EFactoryRunState::Complete
+    // This offset moves the scan proxy, not the CAD hub. Retargeting must not
+    // authorize driving the rim through the unchanged physical hub geometry.
+    Check(TEXT("shifted_scan_proxy_retargets_but_cad_mismatch_blocks_insertion"),RunState==EFactoryRunState::Fault
+        &&!TestAssemblyLine->WheelCell->FastenedWheels[0]
+        &&TestAssemblyLine->WheelCell->FailedStage==EWheelStage::Align
+        &&TestAssemblyLine->WheelCell->GetMountTargetWorld(0).Equals(ShiftedScan.MeasuredWorld,.001)
         &&ShiftedScan.bValid&&FMath::IsNearlyEqual(
             ShiftedScan.MeasuredWorld.GetLocation().X-BaselineHubMeasurement.X,2.0,.1));
     TestAssemblyLine->WheelCell->FrontLeftHubOffsetCm=FVector::ZeroVector;
+    if(!FParse::Param(FCommandLine::Get(),TEXT("FactoryIncidentFocus")))
+    {
     TestAssemblyLine->WheelCell->LaserOutlierMm=10;
     ResetCycle();
     for(int32 I=0;I<24;++I)StepSimulation(1./120);
@@ -129,6 +188,31 @@ bool AFactoryRuntime::RunModularEditorChecks()
         &&!TestAssemblyLine->WheelCell->FrontLeftHubScan.bValid
         &&TestAssemblyLine->WheelCell->MountedCount==0);
     TestAssemblyLine->WheelCell->bBlockFrontLeftLaser=false;
+    // Transient occlusion: two blocked attempts, then the third measurement is accepted.
+    TestAssemblyLine->WheelCell->LaserTransientBlockScans=2;
+    ResetCycle();
+    for(int32 I=0;I<24;++I)StepSimulation(1./120);
+    const bool RescanStarted=StartCycle();
+    for(int32 I=0;I<120*300&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)StepSimulation(1./120);
+    Check(TEXT("laser_transient_block_rescans_then_completes"),RescanStarted&&RunState==EFactoryRunState::Complete
+        &&TestAssemblyLine->WheelCell->FrontLeftDockScan.bValid
+        &&TestAssemblyLine->WheelCell->FrontLeftDockScan.Attempts==3
+        &&TestAssemblyLine->WheelCell->LaserScanRetries==2
+        &&TestAssemblyLine->WheelCell->MountedCount==4);
+    // Occlusion outlasting the attempt limit still blocks pickup.
+    Check(TEXT("incident_log_records_laser_rescan_as_recovered"),
+        TestAssemblyLine->WheelCell->CountIncidents(TEXT("laser_rescan"),TEXT("recovered"))==1
+        &&TestAssemblyLine->WheelCell->CountIncidents(TEXT("safety_stop"),TEXT("stopped"))==0);
+    TestAssemblyLine->WheelCell->LaserTransientBlockScans=3;
+    ResetCycle();
+    for(int32 I=0;I<24;++I)StepSimulation(1./120);
+    StartCycle();
+    for(int32 I=0;I<120*20&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)StepSimulation(1./120);
+    Check(TEXT("laser_rescan_limit_blocks_pickup"),RunState==EFactoryRunState::Fault
+        &&!TestAssemblyLine->WheelCell->FrontLeftHubScan.bValid
+        &&TestAssemblyLine->WheelCell->FrontLeftHubScan.Attempts==3
+        &&TestAssemblyLine->WheelCell->MountedCount==0);
+    TestAssemblyLine->WheelCell->LaserTransientBlockScans=0;
     TestAssemblyLine->WheelCell->bLaserScanFrontLeftHub=false;
     for(int32 Kind : {0,1,2,3,4,6,7,8,9,10})
     {
@@ -141,6 +225,7 @@ bool AFactoryRuntime::RunModularEditorChecks()
         bool NormalWheelSizeObserved=false;
         bool NormalDoorSizeObserved=false;
         bool SupplyTransitObserved=false;
+        bool SupplyRecoveredOnlyAfterVerification=true;
         TOptional<FVector> SupplyTransitFirstPosition;
         bool GripRetryMovementObserved=false;
         TOptional<FVector> GripRetryFirstTcp;
@@ -185,6 +270,10 @@ bool AFactoryRuntime::RunModularEditorChecks()
             NormalDoorSizeObserved|=Kind==0&&TestAssemblyLine->DoorCell->bDoorSizePassed
                 &&TestAssemblyLine->DoorCell->MeasuredDoorWidthCm>0;
             const auto* SupplyCell=TestAssemblyLine->WheelCell.Get();
+            if(Kind==1&&TestAssemblyLine->RecoveredEvents>0)
+                SupplyRecoveredOnlyAfterVerification &= SupplyCell->CountIncidents(TEXT("supply_verified"),TEXT("observed"))>0
+                    &&SupplyCell->CountIncidents(TEXT("supply_missing"),TEXT("recovered"))>0
+                    &&Stage!=EWheelStage::WaitSupply;
             if(Kind==1&&SupplyCell->IsWheelVisible(0)
                 &&FVector::Distance(SupplyCell->GetWheelWorld(0).GetLocation(),SupplyCell->GetPickupWorld(0).GetLocation())>20.0
                 &&Stage==EWheelStage::WaitSupply&&!SupplyCell->LeftSensors->Presence.bDetected)
@@ -196,6 +285,46 @@ bool AFactoryRuntime::RunModularEditorChecks()
         }
         const auto* Line=TestAssemblyLine.Get();
         auto* Cell=Line->WheelCell.Get();
+        if(Kind==1)
+        {
+            const FWheelIncidentRecord* Event=Cell->Incidents.FindByPredicate([](const FWheelIncidentRecord& R){return R.Kind==TEXT("supply_missing");});
+            const FWheelIncidentRecord* Dispatch=Cell->Incidents.FindByPredicate([](const FWheelIncidentRecord& R){return R.Kind==TEXT("spare_dispatched");});
+            const FWheelIncidentRecord* Arrival=Cell->Incidents.FindByPredicate([](const FWheelIncidentRecord& R){return R.Kind==TEXT("spare_arrived");});
+            const FWheelIncidentRecord* Verified=Cell->Incidents.FindByPredicate([](const FWheelIncidentRecord& R){return R.Kind==TEXT("supply_verified");});
+            const FFactoryTask* Task=Layout.Tasks.FindByPredicate([](const FFactoryTask& T){return T.Id==TEXT("wheel_fl");});
+            Check(TEXT("incident_identifies_demo_request_product_and_part"),Event
+                &&Task
+                &&Event->RunEpoch==Line->RunNumber-1
+                &&Event->RequestId==Cell->RequestId
+                &&Event->ProductInstanceId==Cell->ProductInstanceId
+                &&Event->PartInstanceId==Event->ProductInstanceId+TEXT("/")+Task->PartId+TEXT("/initial")
+                &&Event->PartId==Task->PartId
+                &&Event->TaskId==Task->Id
+                &&Event->TargetPort==Task->TargetPort
+                &&Event->SourcePort==Task->SourcePort
+                &&Cell->GetIncidentCsv().Contains(TEXT("task_id,target_port,source_port")));
+            Check(TEXT("missing_wheel_supply_history_waits_for_arrival_and_rescan"),Event&&Dispatch&&Arrival&&Verified
+                &&Event->DetectedAt<Dispatch->DetectedAt
+                &&Dispatch->DetectedAt<Arrival->DetectedAt
+                &&Arrival->DetectedAt<=Verified->DetectedAt
+                &&Dispatch->Measured>100.0&&Dispatch->Unit==TEXT("cm")
+                &&Arrival->Measured<=Arrival->Limit&&Arrival->Unit==TEXT("cm")
+                &&Verified->Measured>=65.0&&Verified->Measured<=67.0
+                &&Verified->Outcome==TEXT("observed")&&Event->Outcome==TEXT("recovered")
+                &&SupplyRecoveredOnlyAfterVerification
+                &&Event->RequestId==Verified->RequestId&&Event->PartInstanceId==Verified->PartInstanceId
+                &&Cell->GetIncidentCsv().Contains(TEXT("spare_arrived")));
+        }
+        if(Kind==0)
+        {
+            const auto Assessment=Cell->GetEvaluationSnapshot();
+            Check(TEXT("demo_completion_does_not_claim_physical_quality"),
+                RunState==EFactoryRunState::Complete
+                &&Assessment.Control==EWheelControlAssessment::Completed
+                &&Assessment.DemoGeometry==EWheelQualityAssessment::DemoGeometryPassed
+                &&Assessment.PhysicalQuality==EWheelQualityAssessment::NotAssessed
+                &&Assessment.Model==EWheelModelAssessment::DemoOnly);
+        }
         if(Kind==9||Kind==10)
         {
             RefreshInspection();
@@ -251,18 +380,148 @@ bool AFactoryRuntime::RunModularEditorChecks()
         Check(*FString::Printf(TEXT("selected_sensor_case_%d"),Kind),
             Began&&RunState==EFactoryRunState::Complete&&Cell->MountedCount==4&&EventObserved&&DecisionObserved);
     }
+    }
     for(int32 Kind : {11,12})
     {
         TestAssemblyLine->SetFactoryCheck(Kind);
         ResetCycle();
         for(int32 I=0;I<24;++I)StepSimulation(1./120);
         const bool Began=StartCycle();
+        bool RejectedBeforeGrip=false,HoldVisualObserved=false,SpareTransitObserved=false,RescanPassed=false;
+        for(int32 I=0;I<120*300&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)
+        {
+            StepSimulation(1./120);
+            const auto* Current=TestAssemblyLine->DoorCell.Get();
+            RejectedBeforeGrip|=Current->DoorReplacePhase==1&&Current->State==EDoorAssemblyState::WaitReplacement
+                &&!Current->bDoorHeld&&Current->RejectedDoorWidthCm>0
+                &&(Kind==11?Current->RejectedDoorWidthCm>Current->NominalDoorWidthCm+1
+                    :Current->RejectedDoorWidthCm<Current->NominalDoorWidthCm-1);
+            HoldVisualObserved|=Current->DoorReplacePhase==2&&Current->bDoorSizeRejected
+                &&Current->GetRejectedDoorVisualCount()>0;
+            SpareTransitObserved|=Current->DoorReplacePhase==2
+                &&FVector::Distance(Current->Assembly->GetLeftDoor()->GetComponentLocation(),Current->GetPickupDoorWorld().GetLocation())>20.0;
+            RescanPassed|=Current->DoorReplacements==1&&Current->bDoorSizePassed
+                &&FMath::Abs(Current->MeasuredDoorWidthCm-Current->NominalDoorWidthCm)<=1.0;
+        }
+        auto* Door=TestAssemblyLine->DoorCell.Get();
+        Check(Kind==11?TEXT("oversized_door_rejected_replaced_rescanned_and_cycle_completes")
+            :TEXT("undersized_door_rejected_replaced_rescanned_and_cycle_completes"),
+            Began&&RejectedBeforeGrip&&HoldVisualObserved&&SpareTransitObserved&&RescanPassed
+            &&RunState==EFactoryRunState::Complete&&TestAssemblyLine->MountedDoorCount==4);
+        if(Kind==11)
+        {
+            TestAssemblyLine->SetFactoryCheck(11);
+            Door->bReplaceRejectedDoor=false;
+            ResetCycle();
+            for(int32 I=0;I<24;++I)StepSimulation(1./120);
+            const bool StopBegan=StartCycle();
+            for(int32 I=0;I<120*300&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)StepSimulation(1./120);
+            for(int32 TickIndex=0;TickIndex<40;++TickIndex)Door->Tick(0.05f);
+            const USceneComponent* RejectedDoorRoot=Door->Assembly->GetLeftDoor();
+            Check(TEXT("door_reject_without_replacement_isolates_and_stops"),StopBegan
+                &&RunState==EFactoryRunState::Fault&&!Door->bDoorHeld&&Door->bDoorSizeRejected
+                &&RejectedDoorRoot&&FVector::Distance(RejectedDoorRoot->GetComponentLocation(),Door->DoorRejectTargetWorld)<0.5);
+        }
+    }
+    if(FParse::Param(FCommandLine::Get(),TEXT("FactoryIncidentFocus")))
+    {
+        // Targeted rerun of the edited chassis/supply/transfer and door replacement boundaries. Keep
+        // the full-suite report intact so earlier incident evidence is retained.
+        ResetCycle();Layout=Original;Rebuild();History.Clear();
+        auto Report=MakeShared<FJsonObject>();Report->SetBoolField(TEXT("success"),Pass);Report->SetArrayField(TEXT("checks"),Checks);
+        FString Json;FJsonSerializer::Serialize(Report,TJsonWriterFactory<>::Create(&Json));
+        return FFileHelper::SaveStringToFile(Json,*(FPaths::ProjectSavedDir()/TEXT("FactoryMergeReport.json")))&&Pass;
+    }
+    for(int32 Kind : {1,2,3,4,9})
+    {
+        // Incident rows: each recoverable event is logged and closed as recovered with no stop row;
+        // a size reject without replacement is closed as stopped together with one stop row.
+        TestAssemblyLine->SetFactoryCheck(Kind);
+        ResetCycle();
+        for(int32 I=0;I<24;++I)StepSimulation(1./120);
+        StartCycle();
         for(int32 I=0;I<120*300&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)StepSimulation(1./120);
-        const auto* Door=TestAssemblyLine->DoorCell.Get();
-        Check(Kind==11?TEXT("oversized_door_laser_rejects_before_pickup"):TEXT("undersized_door_laser_rejects_before_pickup"),
-            Began&&RunState==EFactoryRunState::Fault&&Door->MeasuredDoorWidthCm>0&&!Door->bDoorSizePassed
-            &&(Kind==11?Door->MeasuredDoorWidthCm>Door->NominalDoorWidthCm+1:Door->MeasuredDoorWidthCm<Door->NominalDoorWidthCm-1)
-            &&!Door->bDoorHeld);
+        const auto* LogCell=TestAssemblyLine->WheelCell.Get();
+        const TCHAR* Expected=Kind==1?TEXT("supply_missing"):Kind==2?TEXT("pickup_pose_stale")
+            :Kind==3?TEXT("grip_unconfirmed"):Kind==4?TEXT("pickup_displaced"):TEXT("wheel_size_reject");
+        const bool Stops=Kind==9;
+        Check(*FString::Printf(TEXT("incident_log_case_%d_%s"),Kind,Expected),
+            LogCell->CountIncidents(Expected,Stops?TEXT("stopped"):TEXT("recovered"))>=1
+            &&LogCell->CountIncidents(Expected,TEXT("pending"))==0
+            &&LogCell->CountIncidents(TEXT("safety_stop"),TEXT("stopped"))==(Stops?1:0)
+            &&!LogCell->GetIncidentCsv().IsEmpty());
+    }
+    for(int32 Kind : {9,10})
+    {
+        // Size reject with replacement: hold-point move, spare delivery, re-scan, full cycle.
+        TestAssemblyLine->SetFactoryCheck(Kind);
+        TestAssemblyLine->WheelCell->bReplaceRejectedWheel=true;
+        ResetCycle();
+        for(int32 I=0;I<24;++I)StepSimulation(1./120);
+        const bool ReplaceBegan=StartCycle();
+        bool WaitedWhileReplacing=false;
+        bool SpareTransitUnseen=false;
+        for(int32 I=0;I<120*300&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)
+        {
+            StepSimulation(1./120);
+            const auto* RepCell=TestAssemblyLine->WheelCell.Get();
+            WaitedWhileReplacing|=RepCell->WheelReplacePhase>0&&RepCell->GetLeftStage()==EWheelStage::WaitSupply
+                &&!RepCell->GetLeftGripState().bHeld;
+            SpareTransitUnseen|=RepCell->WheelReplacePhase==2&&!RepCell->LeftSensors->Presence.bDetected;
+        }
+        const auto* RepCell=TestAssemblyLine->WheelCell.Get();
+        Check(Kind==9?TEXT("oversized_wheel_replaced_rescanned_and_cycle_completes"):TEXT("undersized_wheel_replaced_rescanned_and_cycle_completes"),
+            ReplaceBegan&&WaitedWhileReplacing&&SpareTransitUnseen
+            &&RepCell->WheelReplacements==1&&RepCell->WheelReplacePhase==0&&RepCell->bFrontLeftWheelRejected
+            &&(Kind==9?RepCell->RejectedWheelDiameterCm>67:(RepCell->RejectedWheelDiameterCm>0&&RepCell->RejectedWheelDiameterCm<65))
+            &&RepCell->bFrontLeftWheelSizePassed
+            &&FMath::IsNearlyEqual(RepCell->FrontLeftWheelMeasuredDiameterCm,66.0,1.0)
+            &&FVector::Distance(RepCell->WheelRejectStartWorld,RepCell->WheelRejectTargetWorld)>170.0
+            &&RunState==EFactoryRunState::Complete&&RepCell->MountedCount==4);
+        if(Kind==9)
+        {
+            const FWheelIncidentRecord* Reject=RepCell->Incidents.FindByPredicate([](const FWheelIncidentRecord& R){return R.Kind==TEXT("wheel_size_reject");});
+            const FWheelIncidentRecord* SpareEvent=RepCell->Incidents.FindByPredicate([](const FWheelIncidentRecord& R){return R.Kind==TEXT("spare_supplied");});
+            Check(TEXT("rejected_and_spare_wheels_have_distinct_demo_identities"),Reject
+                &&SpareEvent&&SpareEvent->Outcome==TEXT("recovered")
+                &&!RepCell->RejectedWheelInstanceId.IsEmpty()
+                &&RepCell->RejectedWheelInstanceId==Reject->PartInstanceId
+                &&RepCell->SpareWheelInstanceId==SpareEvent->PartInstanceId
+                &&RepCell->SpareWheelInstanceId==RepCell->FrontLeftActiveWheelInstanceId
+                &&RepCell->SpareWheelInstanceId!=RepCell->RejectedWheelInstanceId
+                &&RepCell->GetIncidentCsv().Contains(RepCell->RejectedWheelInstanceId));
+            Check(TEXT("incident_log_closes_replaced_size_reject_as_recovered"),
+                RepCell->CountIncidents(TEXT("wheel_size_reject"),TEXT("recovered"))==1
+                &&RepCell->CountIncidents(TEXT("safety_stop"),TEXT("stopped"))==0);
+        }
+        TestAssemblyLine->WheelCell->bReplaceRejectedWheel=false;
+    }
+    {
+        // Grip degrades in transit: the wheel is held through Lift, slips only after
+        // Transfer begins, then the existing drop recovery finishes the cycle.
+        TestAssemblyLine->ConfigureIncidentDemo(14);
+        ResetCycle();
+        for(int32 I=0;I<24;++I)StepSimulation(1./120);
+        const bool DegradeBegan=StartCycle();
+        bool HeldInTransfer=false;
+        for(int32 I=0;I<120*300&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)
+        {
+            StepSimulation(1./120);
+            const auto* DegCell=TestAssemblyLine->WheelCell.Get();
+            const auto& DegGrip=DegCell->GetLeftGripState();
+            HeldInTransfer|=DegCell->GetLeftStage()==EWheelStage::Transfer&&DegGrip.WheelIndex==0&&DegGrip.bHeld&&DegCell->SlipRecoveryPhase==0;
+        }
+        const auto* DegCell=TestAssemblyLine->WheelCell.Get();
+        Check(TEXT("grip_degrades_in_transit_slips_after_lift_and_recovers"),DegradeBegan&&HeldInTransfer
+            &&DegCell->bSlipFailureGripDegraded&&!DegCell->bSlipFailureLowFriction&&DegCell->SlipFailureMassKg==18.0
+            &&DegCell->SlipFailureStage!=EWheelStage::Grip&&DegCell->SlipFailureStage!=EWheelStage::Lift
+            &&DegCell->SlipFailureTravelCm>20.0
+            &&DegCell->bDroppedWheelHitSurface&&DegCell->SlipRecoveryPhase==0
+            &&RunState==EFactoryRunState::Complete&&DegCell->MountedCount==4);
+        Check(TEXT("incident_log_closes_transit_slip_as_recovered"),
+            DegCell->CountIncidents(TEXT("grip_slip"),TEXT("recovered"))==1
+            &&DegCell->CountIncidents(TEXT("grip_slip"),TEXT("pending"))==0);
+        TestAssemblyLine->WheelCell->bGripDegradesInTransit=false;
     }
     TestAssemblyLine->SetFactoryCheck(13);
     ResetCycle();
@@ -316,6 +575,30 @@ bool AFactoryRuntime::RunModularEditorChecks()
     Check(TEXT("cancelled_request_not_completed_twice_after_drop"),HeldDoor->Operations.Results.Num()==PreviousResults+1
         &&HeldDoor->Operations.Results.Last().Control==EFactoryCommandStatus::Cancelled);
     HeldDoor->PhysicsSettings.GripNormalN=OldNormal;
+    {
+        // Extended seeded pool: whatever line-level event the seed plans must actually
+        // occur, be the only physical event, and end in a complete four-wheel cycle.
+        TestAssemblyLine->SetFactoryCheck(5);
+        TestAssemblyLine->bExtendedRandomEvents=true;
+        bool ExtendedConsistent=true;
+        for(int32 Run=0;Run<4;++Run)
+        {
+            ResetCycle();
+            for(int32 I=0;I<24;++I)StepSimulation(1./120);
+            const int32 Planned=TestAssemblyLine->ExtendedEvent;
+            const bool ExtendedBegan=StartCycle();
+            for(int32 I=0;I<120*300&&RunState>=EFactoryRunState::Approach&&RunState<=EFactoryRunState::Verify;++I)StepSimulation(1./120);
+            const auto* ExtCell=TestAssemblyLine->WheelCell.Get();
+            const bool SlipSeen=ExtCell->SlipFailureMassKg>0&&ExtCell->bDroppedWheelHitSurface;
+            const bool PlanMatched=Planned==1 ? (SlipSeen&&ExtCell->SlipFailureMassKg==90.0&&!ExtCell->bSlipFailureGripDegraded)
+                : Planned==2 ? (SlipSeen&&ExtCell->bSlipFailureGripDegraded) : !SlipSeen;
+            ExtendedConsistent&=ExtendedBegan&&Planned>=0&&Planned<=3&&PlanMatched
+                &&(Planned==3)==TestAssemblyLine->bDockOvershootRecovered
+                &&RunState==EFactoryRunState::Complete&&ExtCell->MountedCount==4;
+        }
+        Check(TEXT("extended_random_line_events_match_plan_and_recover"),ExtendedConsistent);
+        TestAssemblyLine->bExtendedRandomEvents=false;
+    }
     TestAssemblyLine->SetFactoryCheck(5);
     ResetCycle();Layout=Original;Rebuild();History.Clear();
     auto Report=MakeShared<FJsonObject>();Report->SetBoolField(TEXT("success"),Pass);Report->SetArrayField(TEXT("checks"),Checks);

@@ -35,9 +35,46 @@ struct FWheelHubScanReading
 	UPROPERTY(VisibleAnywhere) FTransform MeasuredWorld = FTransform::Identity;
 	UPROPERTY(VisibleAnywhere) FString TargetPort = TEXT("hub_fl");
 	UPROPERTY(VisibleAnywhere) FString FailureReason;
+	/** Scan attempts used for this reading, including the accepted or final failed one. */
+	UPROPERTY(VisibleAnywhere) int32 Attempts = 0;
 	UPROPERTY(VisibleAnywhere) FVector ScanOriginWorld = FVector::ZeroVector;
 	UPROPERTY(VisibleAnywhere) TArray<FVector> RayEndsWorld;
 	UPROPERTY(VisibleAnywhere) TArray<FVector> HitPointsWorld;
+};
+
+/** One detected incident: what was compared, the limit, the cell's response and how it ended.
+ * Written by the cell when it decides; a UI should display these rows rather than re-derive them.
+ * Kind and Outcome are stable English ids. Outcome: pending, observed, recovered, stopped. */
+USTRUCT(BlueprintType)
+struct FWheelIncidentRecord
+{
+	GENERATED_BODY()
+	UPROPERTY(VisibleAnywhere) FString Kind;
+	UPROPERTY(VisibleAnywhere) FString RequestId;
+	UPROPERTY(VisibleAnywhere) FString ProductInstanceId;
+	UPROPERTY(VisibleAnywhere) FString PartInstanceId;
+	UPROPERTY(VisibleAnywhere) int32 RunEpoch = INDEX_NONE;
+	UPROPERTY(VisibleAnywhere) FString PartId;
+	UPROPERTY(VisibleAnywhere) FString TaskId;
+	UPROPERTY(VisibleAnywhere) FString TargetPort;
+	UPROPERTY(VisibleAnywhere) FString SourcePort;
+	UPROPERTY(VisibleAnywhere) FString Stage;
+	UPROPERTY(VisibleAnywhere) double DetectedAt = -1;
+	UPROPERTY(VisibleAnywhere) FString Quantity;
+	UPROPERTY(VisibleAnywhere) FString Unit;
+	/** Value the decision used: a sensor or laser reading, a count, or the grip model's slip. */
+	UPROPERTY(VisibleAnywhere) double Measured = 0;
+	UPROPERTY(VisibleAnywhere) double Limit = 0;
+	UPROPERTY(VisibleAnywhere) FString Response;
+	UPROPERTY(VisibleAnywhere) FString Outcome = TEXT("pending");
+	UPROPERTY(VisibleAnywhere) double ResolvedAt = -1;
+};
+
+// Runtime's validated layout task reference, indexed by target wheel position.
+// This is a read-only copy for equipment diagnostics, not a second task owner.
+struct FWheelTaskReference
+{
+    FString TaskId, PartId, TargetPort, SourcePort;
 };
 
 /** Virtual probes read the scene and gripper plant; they never issue arm commands. */
@@ -73,7 +110,19 @@ enum class EWheelControlMode : uint8 { Basic, IndependentVerification };
 UENUM(BlueprintType)
 enum class EWheelOutcome : uint8 { NotEvaluated, Pass, QualityFail, Blocked, Stopped };
 UENUM(BlueprintType)
-enum class EWheelStage : uint8 { Idle, ApproachPickup, Grip, Lift, Transfer, ApproachMount, Align, Fasten, Release, Retract, Reposition, WaitSupply, WaitPose, Complete, Fault, Stopped };
+enum class EWheelStage : uint8 { Idle, ApproachPickup, Grip, Lift, Transfer, RecheckHub, ApproachMount, Align, Fasten, Release, Retract, Reposition, WaitSupply, WaitPose, Complete, Fault, Stopped };
+
+// A read-only assessment boundary. Geometric demo checks are never promoted to physical quality.
+enum class EWheelControlAssessment : uint8 { Waiting, Running, Completed, Failed };
+enum class EWheelQualityAssessment : uint8 { NotAssessed, DemoGeometryPassed, DemoGeometryFailed };
+enum class EWheelModelAssessment : uint8 { DemoOnly, InvalidSetup };
+struct FWheelEvaluationSnapshot
+{
+    EWheelControlAssessment Control = EWheelControlAssessment::Waiting;
+    EWheelQualityAssessment DemoGeometry = EWheelQualityAssessment::NotAssessed;
+    EWheelQualityAssessment PhysicalQuality = EWheelQualityAssessment::NotAssessed;
+    EWheelModelAssessment Model = EWheelModelAssessment::DemoOnly;
+};
 
 struct FWheelLane
 {
@@ -109,7 +158,18 @@ public:
     UPROPERTY(EditAnywhere, Category="Wheel Cell|Laser") bool bLaserScanFrontLeftHub = false;
     UPROPERTY(EditAnywhere, Category="Wheel Cell|Laser") bool bBlockFrontLeftLaser = false;
     UPROPERTY(EditAnywhere, Category="Wheel Cell|Laser", meta=(Units="cm")) FVector FrontLeftHubOffsetCm = FVector::ZeroVector;
+    /** Demo only: move the docked vehicle and carriage before the front-left mount scan. */
+    UPROPERTY(EditAnywhere, Category="Wheel Cell|Laser") bool bDemoChassisShiftBeforeMount = false;
+    UPROPERTY(EditAnywhere, Category="Wheel Cell|Laser", meta=(Units="cm")) FVector DemoChassisShiftCm = FVector(2,0,0);
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") bool bDemoChassisShiftApplied = false;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") int32 HubRecheckCount = 0;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser", meta=(Units="mm")) double DockToPreMountShiftMm = 0;
     UPROPERTY(EditAnywhere, Category="Wheel Cell|Laser", meta=(Units="mm")) double LaserOutlierMm = 0;
+    /** Demo: the first N scan attempts of a cycle are occluded, then the beam clears. */
+    UPROPERTY(EditAnywhere, Category="Wheel Cell|Laser", meta=(ClampMin="0")) int32 LaserTransientBlockScans = 0;
+    /** Attempts per measurement before the cell gives up. A permanent fault still stops the line. */
+    UPROPERTY(EditAnywhere, Category="Wheel Cell|Laser", meta=(ClampMin="1", ClampMax="5")) int32 MaxLaserScanAttempts = 3;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") int32 LaserScanRetries = 0;
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") FWheelHubScanReading FrontLeftHubScan;
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") FWheelHubScanReading FrontLeftDockScan;
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") FWheelHubScanReading FrontLeftPreMountScan;
@@ -120,6 +180,16 @@ public:
     bool bDemoRecoveryEnabled = false;
     double DroppedContactStableSeconds = 0;
     bool HasPassiveWork() const { return bLeftWheelSlipFall || bFrontLeftWheelRejecting; }
+    /** Demo, needs bPhysicalLeftGrip: pad friction decays once the front-left wheel is in Transfer,
+     * so the wheel holds at lift and slips in mid-transit. Assumed contamination, not a measured pad. */
+    UPROPERTY(EditAnywhere, Category="Wheel Cell|Grip") bool bGripDegradesInTransit = false;
+    UPROPERTY(EditAnywhere, Category="Wheel Cell|Grip", meta=(Units="s", ClampMin="0.1")) double GripDegradeSeconds = 1.5;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Grip") double LeftGripFriction = 0.65;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Grip") bool bSlipFailureGripDegraded = false;
+    /** Distance from the pickup pose to where the wheel was when grip was lost. */
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Grip", meta=(Units="cm")) double SlipFailureTravelCm = 0;
+    EWheelStage SlipFailureStage = EWheelStage::Idle;
+    const TCHAR* GetSlipFailureLabel() const;
     double FrontLeftWheelMassKg = 18.0;
     double FrontLeftWheelSizeScale = 1.0;
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") double FrontLeftWheelMeasuredDiameterCm = 0;
@@ -133,6 +203,35 @@ public:
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") FVector WheelRejectTargetWorld = FVector::ZeroVector;
     double WheelRejectElapsedSeconds = 0;
     void AdvanceFrontLeftWheelReject(double DeltaSeconds);
+    /** Sensor-driven left lane only. A size-rejected front-left wheel is moved to the hold point,
+     * a nominal spare travels from reserve to the pickup zone, and the lane resumes only after the
+     * supply sensor sees it and the size scan passes. Off: reject stops the line (previous behaviour).
+     * Demo: the rejected proxy and active spare have separate logical IDs and visuals.
+     * The active spare still reuses the wheel component; there is no stock count or physical inventory. */
+    UPROPERTY(EditAnywhere, Category="Wheel Cell|Laser") bool bReplaceRejectedWheel = false;
+    /** 0 idle, 1 rejected wheel moving to hold point, 2 spare moving to pickup zone. */
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") int32 WheelReplacePhase = 0;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") int32 WheelReplacements = 0;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser", meta=(Units="cm")) double RejectedWheelDiameterCm = 0;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") FVector WheelSpareStartWorld = FVector::ZeroVector;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") FString RejectedWheelInstanceId;
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Laser") FString SpareWheelInstanceId;
+    double WheelReplaceSeconds = 0;
+    void AdvanceWheelReplacement(double DeltaSeconds);
+    /** Incident rows of the current cycle, oldest first. Cleared by ResetCycle. */
+    UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Incidents") TArray<FWheelIncidentRecord> Incidents;
+    // Logical demo identity; it does not imply a separate physical product or spare.
+    FString RequestId, ProductInstanceId;
+    FString FrontLeftActiveWheelInstanceId;
+    int32 RunEpoch = INDEX_NONE;
+    FString GetFrontLeftPartId() const;
+    void SetRunIdentity(const FString& InRequestId, const FString& InProductInstanceId, int32 InRunEpoch);
+    int32 CountIncidents(const TCHAR* Kind, const TCHAR* IncidentOutcome) const;
+    FString GetIncidentSummary(int32 MaxRows = 6) const;
+    FString GetIncidentCsv() const;
+    void OpenIncident(const TCHAR* Kind, int32 WheelIndex, EWheelStage Stage, const TCHAR* Quantity, const TCHAR* Unit,
+        double Measured, double Limit, const FString& Response, const TCHAR* IncidentOutcome = TEXT("pending"));
+    void CloseIncidents(const TCHAR* Kind, const TCHAR* IncidentOutcome);
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Sensors") FVector PreviousPickupWorld = FVector::ZeroVector;
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Sensors") FVector ReplannedPickupWorld = FVector::ZeroVector;
     UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|Grip") bool bLeftWheelSlipFall = false;
@@ -154,6 +253,7 @@ public:
     UPROPERTY(Transient) TArray<TObjectPtr<UWheelRobotSensorBank>> TaskSensors;
     TArray<double> RearTransit[4];
     TArray<int32> TaskPartIndices;
+    TArray<FWheelTaskReference> TaskReferences;
     TMap<int32,FVector> SupplyOffsetsCm;
     int32 PartIndex(int32 Target) const { return TaskPartIndices.IsValidIndex(Target)?TaskPartIndices[Target]:Target; }
     FTransform GetPhysicalPartWorld(int32 Index) const;
@@ -226,6 +326,7 @@ public:
 	UPROPERTY(EditAnywhere, Category="Wheel Cell|Experiment") double MaxPickupDisplacementMm = 500;
 	UPROPERTY(EditAnywhere, Category="Wheel Cell|Experiment") double MaxPickupRotationDeg = 30;
 	UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|State") EWheelOutcome Outcome = EWheelOutcome::NotEvaluated;
+	FWheelEvaluationSnapshot GetEvaluationSnapshot() const;
 	UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|State") FString Status;
 	UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|State") int32 MountedCount = 0;
 	UPROPERTY(VisibleAnywhere, Transient, Category="Wheel Cell|State") double SimulationTimeSeconds = 0;
@@ -243,6 +344,10 @@ public:
 	UFUNCTION() FTransform GetMountWorld(int32 Index) const;
 	FTransform GetMountTargetWorld(int32 Index) const;
 	bool ScanFrontLeftHub(bool bScanWheel=false);
+	bool ScanFrontLeftHubOnce(bool bScanWheel);
+	int32 LaserTransientBlocksRemaining = 0;
+	double GripDegradeStartedAt = -1;
+	bool bGripDegradeSpent = false;
 	UFUNCTION() FTransform GetPickupWorld(int32 Index) const;
 	UFUNCTION() FString GetLaneStage(bool bLeft) const;
 	UFUNCTION() FTransform GetWheelWorld(int32 Index) const;
@@ -272,6 +377,12 @@ private:
     int32 EvaluatingLane=INDEX_NONE;
 	FTransform FastenedInBody[4];
 	FTransform BodyAtStart;
+	FTransform DockBodyWorld;
+    bool bDockReferenceReady=false;
+	FTransform CarriageAfterDemoShift;
+    bool bHubRecheckPending=false;
+    bool ResumeChassisLanes(int32 Side);
+    FVector PendingChassisShift=FVector::ZeroVector;
 	FTransform RobotAtStart[4];
 	double Accumulator = 0;
 	double SlipRecoveryPhaseSeconds = 0;

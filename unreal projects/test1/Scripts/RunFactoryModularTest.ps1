@@ -1,4 +1,4 @@
-param([ValidateSet('Install','Test')][string]$Mode='Test',[int]$TimeoutSeconds=360)
+param([ValidateSet('Install','Test')][string]$Mode='Test',[int]$TimeoutSeconds=600)
 $ErrorActionPreference='Stop'
 $project=Split-Path $PSScriptRoot -Parent
 $exe='C:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe'

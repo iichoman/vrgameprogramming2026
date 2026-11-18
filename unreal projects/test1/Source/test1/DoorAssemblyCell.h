@@ -35,7 +35,7 @@ struct FDoorCellStationQuality
 UENUM()
 enum class EDoorAssemblyState : uint8
 {
-	Idle, ApproachPickup, Grip, Lift, Transfer, ApproachMount, Align, Fasten, Release, Retract, Complete, Stopped, Fault
+	Idle, WaitReplacement, ApproachPickup, Grip, Lift, Transfer, ApproachMount, Align, Fasten, Release, Retract, Complete, Stopped, Fault
 };
 
 /** Door assembly process using measured simulated joint states, not a transform animation. */
@@ -96,6 +96,20 @@ public:
 	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Laser") bool bDoorSizePassed=false;
 	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Laser") FVector DoorSizeLeftHitWorld=FVector::ZeroVector;
 	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Laser") FVector DoorSizeRightHitWorld=FVector::ZeroVector;
+	/** Demo-only reject transfer after a measured size failure; no replacement inventory. */
+	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Laser") bool bDoorSizeRejectMoving=false;
+	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Laser") bool bDoorSizeRejected=false;
+	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Laser") double RejectedDoorWidthCm=0;
+	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Laser") FVector DoorRejectStartWorld=FVector::ZeroVector;
+	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Laser") FVector DoorRejectTargetWorld=FVector::ZeroVector;
+	/** First left door only: leave a rejected visual at hold, deliver a nominal demo spare and re-scan. */
+	UPROPERTY(EditAnywhere, Category="Cell|Laser") bool bReplaceRejectedDoor=false;
+    bool CheckDoorSupply(bool SupplyOnly);
+    bool bSupplyInspectionOnly=false;
+	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Laser") int32 DoorReplacePhase=0;
+	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Laser") int32 DoorReplacements=0;
+	UPROPERTY(VisibleAnywhere, Transient, Category="Cell|Laser") FVector DoorSpareStartWorld=FVector::ZeroVector;
+	int32 GetRejectedDoorVisualCount() const { return RejectedDoorVisuals.Num(); }
 	UPROPERTY(EditAnywhere, Category="Cell|Placement") bool bPreservePlacedDoorOnBeginPlay=true;
 	/** Engineering assumptions for the current gripper's recovery window, not manufacturer limits. */
 	UPROPERTY(EditAnywhere, Category="Cell|Placement") double MaxPickupDisplacementMm=500;
@@ -144,8 +158,16 @@ public:
 	virtual void EndPlay(const EEndPlayReason::Type Reason) override;
 private:
 	UPROPERTY() TObjectPtr<class UBoxComponent> DoorSizeProxy;
+	UPROPERTY(Transient) TObjectPtr<class USceneComponent> RejectedDoorRoot;
+	UPROPERTY(Transient) TArray<TObjectPtr<class UStaticMeshComponent>> RejectedDoorVisuals;
 	TMap<TWeakObjectPtr<UPrimitiveComponent>,FVector> OriginalDoorMeshScales;
 	bool ScanDoorSize();
+	void AdvanceRejectedDoor(double DeltaSeconds);
+	void AdvanceDoorReplacement(double DeltaSeconds);
+	bool CreateRejectedDoorVisual();
+	void ClearRejectedDoorVisual();
+	double DoorRejectElapsedSeconds=0;
+	double DoorReplaceSeconds=0;
 	UPROPERTY(Transient) TObjectPtr<UDoorPoseComponent> ModulePose;
     TWeakObjectPtr<UDoorPoseComponent> Pose;
 	TWeakObjectPtr<UDoorInspectionComponent> Inspection;

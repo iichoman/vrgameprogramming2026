@@ -1,4 +1,4 @@
-param([int]$TimeoutSeconds=360,[switch]$ExtendedChecks,[switch]$UIOnly)
+param([int]$TimeoutSeconds=600,[switch]$ExtendedChecks,[switch]$UIOnly,[switch]$ModularOnly,[switch]$IncidentFocus)
 $ErrorActionPreference='Stop'
 $project=Split-Path $PSScriptRoot -Parent
 $uproject=Join-Path $project 'test1.uproject'
@@ -9,6 +9,7 @@ $logs=Join-Path $project 'Saved\Logs'
 $reportFolder=Join-Path $project 'Saved\MotionVerification'
 New-Item -ItemType Directory -Path $reportFolder -Force | Out-Null
 $result=[ordered]@{}
+if($IncidentFocus){$ModularOnly=$true}
 
 # Attempt the active original project's Live Coding compiler path once. This
 # does not claim that LiveCodingConsole linked/applied the editor patch.
@@ -41,7 +42,7 @@ function Run-EngineCheck([string]$Name,[string[]]$Extra,[bool]$Render=$false) {
     $process.Refresh();return $process.ExitCode
 }
 $started=[DateTime]::UtcNow
-if(-not $UIOnly) {
+if(-not $UIOnly -and -not $ModularOnly) {
 $result.unitExit=Run-EngineCheck 'MotionUnitTests' @('-ExecCmds=Automation RunTests DigitalTwin.Assembly+test1.RobotControl','-TestExit=Automation Test Queue Empty',"-ReportExportPath=$reportFolder\UnitTests")
 $unitReport=Join-Path $reportFolder 'UnitTests\index.json'
 if((Test-Path -LiteralPath $unitReport) -and (Get-Item -LiteralPath $unitReport).LastWriteTimeUtc -gt $started) {
@@ -57,16 +58,21 @@ if((Test-Path -LiteralPath $factory) -and (Get-Item -LiteralPath $factory).LastW
 } else { $result.factory='Missing or stale report' }
 }
 $extendedFailed=$false
-if($UIOnly -or ($ExtendedChecks -and $result.factory.success -eq $true)) {
+if($UIOnly -or $ModularOnly -or ($ExtendedChecks -and $result.factory.success -eq $true)) {
     $checks=@(
         @{Key='direct';Flag='FactoryDirectAutoTest';Report='FactoryDirectReport.json'},
         @{Key='inspection';Flag='FactoryInspectionAutoTest';Report='FactoryInspectionReport.json'},
-        @{Key='integration';Flag='FactoryAssemblyAutoTest';Report='FactoryAssemblyIntegrationReport.json'}
+        @{Key='integration';Flag='FactoryAssemblyAutoTest';Report='FactoryAssemblyIntegrationReport.json'},
+        @{Key='modular';Flag='FactoryModularAutoTest';Report='FactoryModularReport.json'}
     )
-    if($UIOnly){$checks=@($checks | Where-Object Key -ne 'integration')}
+    if($UIOnly){$checks=@($checks | Where-Object {$_.Key -in @('direct','inspection')})}
+    if($ModularOnly){$checks=@($checks | Where-Object Key -eq 'modular')}
+    if($IncidentFocus){$checks=@(@{Key='merge';Flag='FactoryModularAutoTest';Report='FactoryMergeReport.json'})}
     foreach($check in $checks) {
         $checkStart=[DateTime]::UtcNow
-        $exitCode=Run-EngineCheck ('Motion_'+$check.Key) @('/Game/DigitalTwin/Maps/factory_p1','-game',('-'+$check.Flag)) ($check.Key -ne 'integration')
+        $extra=@('/Game/DigitalTwin/Maps/factory_p1','-game',('-'+$check.Flag))
+        if($IncidentFocus){$extra+='-FactoryIncidentFocus'}
+        $exitCode=Run-EngineCheck ('Motion_'+$check.Key) $extra ($check.Key -in @('direct','inspection'))
         $path=Join-Path $project ('Saved\'+$check.Report)
         if((Test-Path -LiteralPath $path) -and (Get-Item -LiteralPath $path).LastWriteTimeUtc -gt $checkStart) {
             $report=Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -76,7 +82,7 @@ if($UIOnly -or ($ExtendedChecks -and $result.factory.success -eq $true)) {
         } else {$result[$check.Key]='Missing or stale report';$extendedFailed=$true}
     }
 }
-$summaryName=if($UIOnly){'ui-summary.json'}else{'summary.json'}
+$summaryName=if($UIOnly){'ui-summary.json'}elseif($IncidentFocus){'merge-summary.json'}elseif($ModularOnly){'modular-summary.json'}else{'summary.json'}
 $result | ConvertTo-Json -Depth 12 | Set-Content (Join-Path $reportFolder $summaryName) -Encoding UTF8
 $result | ConvertTo-Json -Depth 12
-if($extendedFailed -or (-not $UIOnly -and ($result.unitExit -ne 0 -or $result.unitFailed -ne 0 -or $result.factoryExit -ne 0 -or $result.factory.success -ne $true))) {exit 1}
+if($extendedFailed -or (-not $UIOnly -and -not $ModularOnly -and ($result.unitExit -ne 0 -or $result.unitFailed -ne 0 -or $result.factoryExit -ne 0 -or $result.factory.success -ne $true))) {exit 1}

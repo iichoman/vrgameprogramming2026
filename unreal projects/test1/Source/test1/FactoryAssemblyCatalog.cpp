@@ -119,10 +119,18 @@ void AFactoryRuntime::BindAssemblyRobots()
     auto* W=L->WheelCell.Get();
     W->TaskRobots={Find(TEXT("wheel_fl")),Find(TEXT("wheel_rl")),Find(TEXT("wheel_fr")),Find(TEXT("wheel_rr"))};
     W->LeftRobot=W->TaskRobots[0];W->RightRobot=W->TaskRobots[2];L->DoorCell->Robot=Find(TEXT("door_fl"));
-    W->TaskPartIndices.Reset();
+    W->TaskPartIndices.Reset();W->TaskReferences.Reset();
     for(const TCHAR* Id:{TEXT("wheel_fl"),TEXT("wheel_rl"),TEXT("wheel_fr"),TEXT("wheel_rr")})
     {const auto* Task=Layout.Tasks.FindByPredicate([&](const auto& V){return V.Id==Id;});
-        const auto* P=Task&&!Task->PartId.IsEmpty()?FactoryTasks::Find(Task->PartId.Mid(5)):FactoryTasks::Find(Id);W->TaskPartIndices.Add(P?P->WheelIndex:W->TaskPartIndices.Num());}
+        const auto* Spec=FactoryTasks::Find(Id);
+        const auto* P=Task&&!Task->PartId.IsEmpty()?FactoryTasks::Find(Task->PartId.Mid(5)):Spec;
+        W->TaskPartIndices.Add(P?P->WheelIndex:W->TaskPartIndices.Num());
+        FWheelTaskReference Ref;
+        Ref.TaskId=Task?Task->Id:Id;
+        Ref.PartId=Task&&!Task->PartId.IsEmpty()?Task->PartId:TEXT("part_")+Ref.TaskId;
+        Ref.TargetPort=Task?Task->TargetPort:(Spec?Spec->TargetPort:TEXT(""));
+        Ref.SourcePort=Task?Task->SourcePort:(Spec?Spec->SourcePort:TEXT(""));
+        W->TaskReferences.Add(MoveTemp(Ref));}
     if(RightDoorCell)RightDoorCell->Robot=Find(TEXT("door_fr"));
     L->DoorTaskRobots={Find(TEXT("door_fl")),Find(TEXT("door_rl")),Find(TEXT("door_fr")),Find(TEXT("door_rr"))};
     L->RightDoorRobot=Find(TEXT("door_fr"));

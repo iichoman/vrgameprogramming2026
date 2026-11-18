@@ -241,7 +241,7 @@ void AFactoryRuntime::CreatePanel()
                 return Kind>=0&&Kind<UE_ARRAY_COUNT(Names)?FString(TEXT("선택: "))+Names[Kind]:TEXT("조립 라인 연결 없음");});
             auto DemoButton=[this,&Button,&Editing,Names](int32 Kind)->TSharedRef<SWidget>{
                 const FString Caption=(IsValid(TestAssemblyLine)&&TestAssemblyLine->GetFactoryCheck()==Kind?TEXT("● "):TEXT(""))+FString(Names[Kind]);
-                return Button(Caption,[this,Kind](){if(IsValid(TestAssemblyLine)){TestAssemblyLine->SetFactoryCheck(Kind);ResetCycle();}},Editing);};
+                return Button(Caption,[this,Kind](){if(IsValid(TestAssemblyLine)&&TestAssemblyLine->ConfigureIncidentDemo(Kind))ResetCycle();},Editing);};
             Label(TEXT("발표용 시연 선택"),true);
             Pair(DemoButton(6),DemoButton(7));Pair(DemoButton(8),DemoButton(9));
             Rows->AddSlot().AutoHeight()[Button(Model.ShowAllDemoCases?TEXT("추가 시연 접기"):TEXT("추가 시연 펼치기"),[this](){Inspection().ShowAllDemoCases=!Inspection().ShowAllDemoCases;bNeedsPanel=true;})];
@@ -250,6 +250,18 @@ void AFactoryRuntime::CreatePanel()
                 Pair(DemoButton(0),DemoButton(1));Pair(DemoButton(2),DemoButton(3));Pair(DemoButton(4),DemoButton(5));
                 Pair(DemoButton(10),DemoButton(11));Pair(DemoButton(12),DemoButton(13));
             }
+            Label(TEXT("새 돌발상황 · 복구 시연"),true);
+            Pair(Button(TEXT("운반 중 마찰 저하"),[this](){if(IsValid(TestAssemblyLine)&&TestAssemblyLine->ConfigureIncidentDemo(14))ResetCycle();},Editing),
+                Button(TEXT("레이저 재스캔"),[this](){if(IsValid(TestAssemblyLine)&&TestAssemblyLine->ConfigureIncidentDemo(15))ResetCycle();},Editing));
+            Pair(Button(TEXT("과대 휠 교체"),[this](){if(IsValid(TestAssemblyLine)&&TestAssemblyLine->ConfigureIncidentDemo(16))ResetCycle();},Editing),
+                Button(TEXT("과소 휠 교체"),[this](){if(IsValid(TestAssemblyLine)&&TestAssemblyLine->ConfigureIncidentDemo(17))ResetCycle();},Editing));
+            Rows->AddSlot().AutoHeight()[Button(TEXT("확장 난수 사건"),[this](){if(IsValid(TestAssemblyLine)&&TestAssemblyLine->ConfigureIncidentDemo(18))ResetCycle();},Editing)];
+            Rows->AddSlot().AutoHeight()[Button(TEXT("차체 위치 변동 · 재스캔"),[this](){if(IsValid(TestAssemblyLine)&&TestAssemblyLine->ConfigureIncidentDemo(19))ResetCycle();},Editing)];
+            Dynamic([this](){if(!IsValid(TestAssemblyLine)||!IsValid(TestAssemblyLine->WheelCell))return FString(TEXT("연결 대기"));const auto* W=TestAssemblyLine->WheelCell.Get();
+                return FString::Printf(TEXT("설정: 마찰 저하 %s · 불량 휠 교체 %s · 확장 난수 %s\n레이저 재시도 %d/%d · 휠 교체 %d회 · 현재 단계 %d"),
+                    W->bGripDegradesInTransit?TEXT("켬"):TEXT("끔"),W->bReplaceRejectedWheel?TEXT("켬"):TEXT("끔"),TestAssemblyLine->bExtendedRandomEvents?TEXT("켬"):TEXT("끔"),W->LaserScanRetries,W->MaxLaserScanAttempts,W->WheelReplacements,W->WheelReplacePhase);});
+            Label(TEXT("사건 기록 · 측정과 대응"),true);
+            Dynamic([this](){return IsValid(TestAssemblyLine)&&IsValid(TestAssemblyLine->WheelCell)?TestAssemblyLine->WheelCell->GetIncidentSummary(5):TEXT("연결 대기");});
             Label(TEXT("판단 근거 · 현재 값과 마지막 표본"),true);
             Dynamic([this](){return DemoEvidenceText(IsValid(TestAssemblyLine)?TestAssemblyLine->WheelCell.Get():nullptr);});
             Label(TEXT("레이저 3단계 · 왼쪽 앞 휠"),true);

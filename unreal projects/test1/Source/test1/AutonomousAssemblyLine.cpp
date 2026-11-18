@@ -15,7 +15,9 @@ bool AAutonomousAssemblyLine::ResetLine()
 	Demo = EArrivalDemo::Normal;
 	if (WheelCell) { WheelCell->bSensorDrivenLeftRobot = true; WheelCell->bAutoRecoverLeftRobot = true; }
 	if (!Super::ResetLine()) return false;
-	CurrentSeed = BaseSeed + RunNumber++;
+	const int32 ThisRun=RunNumber++;
+	CurrentSeed=BaseSeed+ThisRun;
+	WheelCell->SetRunIdentity(FString::Printf(TEXT("demo_request_%d"),ThisRun),FString::Printf(TEXT("demo_vehicle_%d"),ThisRun),ThisRun);
 	Random.Initialize(CurrentSeed);
 	InjectedEvents = RecoveredEvents = 0;
 	ActiveEvent = TEXT("첫 타이어 공급 측정 대기");
@@ -25,7 +27,7 @@ bool AAutonomousAssemblyLine::ResetLine()
 		FirstSeenAt[Index] = RestoreAt[Index] = SupplyTravelStartedAt[Index] = -1;
 		SupplyTravelFrom[Index] = SupplyTravelTo[Index] = FVector::ZeroVector;
 		TriggerAfter[Index] = Random.FRandRange(.1,.4);
-		bInjected[Index] = bRestored[Index] = false;
+		bInjected[Index] = bRestored[Index] = bSupplyArrivalRecorded[Index] = false;
 	}
 	if (FactoryCheck != 5)
 	{
@@ -33,8 +35,45 @@ bool AAutonomousAssemblyLine::ResetLine()
 		if (FactoryCheck == 0 || FactoryCheck >= 6) bInjected[0] = bRestored[0] = true;
 		else Planned[0] = static_cast<ERandomWheelEvent>(FactoryCheck-1);
 	}
+	// Drawn after the per-wheel plan so existing seeds keep their original wheel events.
+	ExtendedEvent = 0;
+	if (FactoryCheck == 5 && WheelCell)
+	{
+		WheelCell->bPhysicalLeftGrip = false;
+		WheelCell->bLowFrictionGrip = false;
+		WheelCell->bGripDegradesInTransit = false;
+		WheelCell->FrontLeftWheelMassKg = 18.0;
+		bDemoDockOvershoot = false;
+		if (bExtendedRandomEvents)
+		{
+			ExtendedEvent = Random.RandRange(0,3);
+			if (ExtendedEvent == 1 || ExtendedEvent == 2)
+			{
+				// One event per wheel: the front-left wheel carries the physical event,
+				// the rear-left wheel keeps its seeded supply/sensor/grip event.
+				WheelCell->bPhysicalLeftGrip = true;
+                WheelCell->bDemoRecoveryEnabled = true;
+				WheelCell->FrontLeftWheelMassKg = ExtendedEvent == 1 ? 90.0 : 18.0;
+				WheelCell->bGripDegradesInTransit = ExtendedEvent == 2;
+				bInjected[0] = bRestored[0] = true;
+			}
+			bDemoDockOvershoot = ExtendedEvent == 3;
+		}
+	}
 	Record(TEXT("RANDOM_SEED"),FString::FromInt(CurrentSeed));
+	if (bExtendedRandomEvents && FactoryCheck == 5) Record(TEXT("RANDOM_LINE_EVENT"),ExtendedEventName(ExtendedEvent));
 	return true;
+}
+
+const TCHAR* AAutonomousAssemblyLine::ExtendedEventName(int32 Kind)
+{
+	switch (Kind)
+	{
+	case 1: return TEXT("overweight front-left wheel");
+	case 2: return TEXT("grip degrades in transit");
+	case 3: return TEXT("dock overshoot");
+	default: return TEXT("none");
+	}
 }
 
 void AAutonomousAssemblyLine::SetFactoryCheck(int32 Kind)
@@ -45,11 +84,39 @@ void AAutonomousAssemblyLine::SetFactoryCheck(int32 Kind)
         WheelCell->bPhysicalLeftGrip = FactoryCheck >= 6 && FactoryCheck <= 8;
         WheelCell->bDemoRecoveryEnabled = FactoryCheck == 7 || FactoryCheck == 8; // Explicit legacy recovery presentation only.
         WheelCell->bLowFrictionGrip = FactoryCheck == 7;
+        WheelCell->bGripDegradesInTransit = false;
         WheelCell->FrontLeftWheelMassKg = FactoryCheck == 8 ? 90.0 : 18.0;
         WheelCell->FrontLeftWheelSizeScale = FactoryCheck == 9 ? 1.12 : FactoryCheck == 10 ? 0.88 : 1.0;
     }
     bDemoDockOvershoot=FactoryCheck==13;
-    if(DoorCell)DoorCell->DoorSizeScale=FactoryCheck==11?1.12:FactoryCheck==12?0.88:1.0;
+    if(DoorCell)
+    {
+        ConfigureFrontDoorSize(FactoryCheck==11?1.12:FactoryCheck==12?0.88:1.0);
+        DoorCell->bReplaceRejectedDoor=FactoryCheck==11||FactoryCheck==12;
+    }
+}
+
+bool AAutonomousAssemblyLine::ConfigureIncidentDemo(int32 Preset)
+{
+    if (!IsValid(WheelCell) || Preset < 0 || Preset > 19) return false;
+    const int32 BaseCheck = Preset <= 13 ? Preset : Preset == 14 ? 6 : Preset == 15 ? 0
+        : Preset == 16 ? 9 : Preset == 17 ? 10 : Preset == 19 ? 0 : 5;
+    // The line adapter configures the cell before ResetLine; the UI never writes equipment state.
+    bExtendedRandomEvents = false;
+    WheelCell->bReplaceRejectedWheel = false;
+    WheelCell->LaserTransientBlockScans = 0;
+    WheelCell->bDemoChassisShiftBeforeMount = false;
+    SetFactoryCheck(BaseCheck);
+    switch (Preset)
+    {
+    case 14: WheelCell->bGripDegradesInTransit = true; WheelCell->bDemoRecoveryEnabled=true; break;
+    case 15: WheelCell->bLaserScanFrontLeftHub = true; WheelCell->LaserTransientBlockScans = 2; break;
+    case 16: case 17: WheelCell->bReplaceRejectedWheel = true; break;
+    case 18: bExtendedRandomEvents = true; break;
+    case 19: WheelCell->bLaserScanFrontLeftHub = true; WheelCell->bDemoChassisShiftBeforeMount = true; break;
+    default: break;
+    }
+    return true;
 }
 
 void AAutonomousAssemblyLine::InjectEvent(int32 Index)
@@ -94,6 +161,10 @@ void AAutonomousAssemblyLine::AdvanceSupplyDelivery(int32 Index)
 	{
 		SupplyTravelStartedAt[Index]=SensorTime;
 		WheelCell->SetLeftWheelSupplyVisible(Index,true);
+		WheelCell->OpenIncident(TEXT("spare_dispatched"),Index,WheelCell->GetLeftStage(),TEXT("공급 이송 예정 거리"),TEXT("cm"),
+			FVector::Distance(SupplyTravelFrom[Index],SupplyTravelTo[Index]),
+			FVector::Distance(SupplyTravelFrom[Index],SupplyTravelTo[Index]),
+			TEXT("예비 위치에서 공급 위치로 이송 시작"),TEXT("observed"));
 		Record(TEXT("SPARE_DISPATCHED"),FString::Printf(TEXT("wheel %d moving from reserve to pickup"),Index+1));
 	}
 	const double Progress=FMath::Clamp((SensorTime-SupplyTravelStartedAt[Index])/SupplyTravelSeconds,0.0,1.0);
@@ -113,8 +184,20 @@ void AAutonomousAssemblyLine::RestoreEvent(int32 Index)
 	switch (Planned[Index])
 	{
 	case ERandomWheelEvent::SupplyMissing:
-		WheelCell->SetLeftWheelSupplyVisible(Index,true);
-		ActiveEvent = FString::Printf(TEXT("타이어 %d 자동 보충 완료 → 센서 재확인"),Index+1);
+		if (!bSupplyArrivalRecorded[Index])
+		{
+			WheelCell->OpenIncident(TEXT("spare_arrived"),Index,WheelCell->GetLeftStage(),TEXT("공급 위치 오차"),TEXT("cm"),
+				FVector::Distance(WheelCell->GetWheelWorld(Index).GetLocation(),WheelCell->GetPickupWorld(Index).GetLocation()),
+				8.0,TEXT("공급 위치 센서 검출 · 휠 규격/자세 재검사 대기"),TEXT("observed"));
+			bSupplyArrivalRecorded[Index]=true;
+			ActiveEvent=FString::Printf(TEXT("타이어 %d 공급 위치 도착 → 센서·규격 재검사 대기"),Index+1);
+			return;
+		}
+		// Arrival alone is not a recovered assembly. The cell must close the missing-supply
+		// incident and leave WaitSupply after its own fresh sensor and size checks.
+		if (WheelCell->GetLeftStage()==EWheelStage::WaitSupply
+			|| WheelCell->CountIncidents(TEXT("supply_missing"),TEXT("pending"))>0) return;
+		ActiveEvent=FString::Printf(TEXT("타이어 %d 센서·규격 재검사 완료 → 로봇 재개"),Index+1);
 		break;
 	case ERandomWheelEvent::PickupPoseDropout:
 		WheelCell->LeftSensors->bPublishPickupPose = true;

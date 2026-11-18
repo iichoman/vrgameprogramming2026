@@ -45,6 +45,7 @@ public:
     ADoorAssemblyCell* ActiveDoorCell(const FString& TaskId) const;
     TMap<FString,FAssemblyOperationRequest> DoorRequests;
     bool StartDoorOperation(ADoorAssemblyCell* Cell);
+    void ConfigureFrontDoorSize(double Scale);
     bool DoorSnapshot(const FString& TaskId, FDoorOperationSnapshot& Out) const;
     void CaptureDoorResult(ADoorAssemblyCell* Cell);
     UPROPERTY(EditAnywhere) FTransform VehicleAtWheelStation;
@@ -76,6 +77,7 @@ protected:
     double FrontDoorSizeScales[2]={1,1};
     FTransform SecondDoorSupplyWorld;
     FTransform ExpectedVehicle, ExpectedCarriage;
+    FTransform TransferVehicleStart, TransferCarriageStart;
     double TransferTime = 0;
     bool bReady = false;
     void Fail(const FString& Reason);

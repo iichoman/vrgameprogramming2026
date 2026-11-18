@@ -20,12 +20,21 @@ public:
 	UPROPERTY(VisibleAnywhere, Transient, Category="Autonomous Demo") int32 InjectedEvents = 0;
 	UPROPERTY(VisibleAnywhere, Transient, Category="Autonomous Demo") int32 RecoveredEvents = 0;
 	UPROPERTY(VisibleAnywhere, Transient, Category="Autonomous Demo") FString ActiveEvent;
+	/** Seeded mode (factory check 5) only. Adds one seeded line-level event per run:
+	 * none, overweight front-left wheel, grip degrading in transit, or dock overshoot.
+	 * Only events with an implemented recovery are in the pool; size rejects are not. */
+	UPROPERTY(EditAnywhere, Category="Autonomous Demo") bool bExtendedRandomEvents = false;
+	/** 0 none, 1 overweight wheel, 2 grip degrades in transit, 3 dock overshoot. */
+	UPROPERTY(VisibleAnywhere, Transient, Category="Autonomous Demo") int32 ExtendedEvent = 0;
+	static const TCHAR* ExtendedEventName(int32 Kind);
 	virtual bool SelectDemo(EArrivalDemo Selection) override;
 	virtual bool ResetLine() override;
 	virtual FString GetSummary() const override;
 	virtual void Tick(float Seconds) override;
 	// 0: no injected event, 1..4: first left wheel only, 5: original seeded mode.
 	void SetFactoryCheck(int32 Kind);
+	/** Factory demo adapter: presets 0..13 are legacy checks, 14..19 are incident experiments. */
+	bool ConfigureIncidentDemo(int32 Preset);
 	int32 GetFactoryCheck() const { return FactoryCheck; }
 protected:
 	virtual void BeforeSensorStep(double Dt) override;
@@ -42,6 +51,7 @@ private:
 	static constexpr double SupplyTravelSeconds = 1.6;
 	bool bInjected[2] = {false,false};
 	bool bRestored[2] = {false,false};
+	bool bSupplyArrivalRecorded[2] = {false,false};
 	void InjectEvent(int32 Index);
 	void RestoreEvent(int32 Index);
 	void AdvanceSupplyDelivery(int32 Index);

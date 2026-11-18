@@ -194,6 +194,11 @@ bool AIntegratedAssemblyLine::StartDoorOperation(ADoorAssemblyCell* Cell)
     else Cell->RequestBinding=FAssemblyOperationRequest();
     return Cell->StartCycle();
 }
+void AIntegratedAssemblyLine::ConfigureFrontDoorSize(double Scale)
+{
+    FrontDoorSizeScales[0]=Scale;
+    if(DoorCell&&!DoorCell->TargetModule)DoorCell->DoorSizeScale=Scale;
+}
 bool AIntegratedAssemblyLine::PrepareDoor(ADoorAssemblyCell* Cell, int32 Index)
 {
     if (!Cell || !bFourDoorMode || !DoorModules.IsValidIndex(Index) || !IsValid(DoorModules[Index])) return false;
@@ -375,6 +380,7 @@ bool AIntegratedAssemblyLine::AdvanceLine(double Seconds)
         {
             ExpectedVehicle = Car->GetActorTransform();
             ExpectedCarriage = Carriage->GetActorTransform();
+            TransferVehicleStart=ExpectedVehicle;TransferCarriageStart=ExpectedCarriage;
             Stage = EAssemblyLineStage::Transfer;
         }
     }
@@ -385,10 +391,10 @@ bool AIntegratedAssemblyLine::AdvanceLine(double Seconds)
         TransferTime += Seconds;
         const double T = FMath::Clamp(TransferTime / TransferSeconds,0.,1.);
         TransferProgress = T*T*T*(10 + T*(-15 + 6*T));
-        ExpectedVehicle = WheelStationPose();
-        ExpectedVehicle.AddToTranslation((DoorStationOffsetCm-FVector(0,0,WheelStationLiftCm))*TransferProgress);
-        ExpectedCarriage = CarriageAtWheelStation;
-        ExpectedCarriage.AddToTranslation(DoorStationOffsetCm * TransferProgress);
+        ExpectedVehicle = TransferVehicleStart;
+        ExpectedVehicle.SetLocation(FMath::Lerp(TransferVehicleStart.GetLocation(),VehicleAtWheelStation.GetLocation()+DoorStationOffsetCm,TransferProgress));
+        ExpectedCarriage = TransferCarriageStart;
+        ExpectedCarriage.SetLocation(FMath::Lerp(TransferCarriageStart.GetLocation(),CarriageAtWheelStation.GetLocation()+DoorStationOffsetCm,TransferProgress));
         Car->SetActorTransform(ExpectedVehicle);
         Carriage->SetActorTransform(ExpectedCarriage);
         if(!VehicleAssemblyMounting::SetRearExtension(*Car,FMath::Min(WheelStationLiftCm,VehicleAssemblyMounting::RearExtensionCm)*(1-TransferProgress)))
@@ -400,6 +406,22 @@ bool AIntegratedAssemblyLine::AdvanceLine(double Seconds)
         Status = T < 1 ? TEXT("3/4 타이어 장착 차체를 문 작업 구역으로 이송") : TEXT("문 작업 구역 도킹 확인");
         if (TransferTime + 1.e-9 >= TransferSeconds + DockSeconds)
         {
+            // Inspect supplied front panels before either arm enters the door
+            // work area: an oversized front panel can obstruct a rear pickup.
+            if(bFourDoorMode)
+            {
+                bool Pending=false;
+                for(auto* Cell:{DoorCell.Get(),SecondDoorCell.Get()})
+                {
+                    if(Cell->State==EDoorAssemblyState::WaitReplacement)
+                    {if(!Cell->AdvanceSimulation(Seconds)){Fail(Cell->Status);return false;}}
+                    else if(!Cell->CheckDoorSupply(true)){Fail(Cell->Status);return false;}
+                    Pending|=Cell->State==EDoorAssemblyState::WaitReplacement;
+                }
+                if(Pending)return true;
+                FrontDoorSizeScales[0]=DoorCell->DoorSizeScale;
+                FrontDoorSizeScales[1]=SecondDoorCell->DoorSizeScale;
+            }
             // The rear panel lip passes behind the front panel. Fit both rears
             // first; then both fronts admit a fixed-attitude straight insertion.
             if(bFourDoorMode && (!PrepareDoor(DoorCell,1)||!PrepareDoor(SecondDoorCell,3)))

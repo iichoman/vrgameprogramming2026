@@ -279,6 +279,17 @@ FString AFactoryRuntime::ResultDetails() const
     FString Out=FString::Printf(TEXT("%s · %.2f초\n"),*StateText(),SimulationSeconds);
     if(TestAssemblyLine)Out+=FString::Printf(TEXT("차문 장착 %d/4\n"),TestAssemblyLine->MountedDoorCount);
     auto* W=TestAssemblyLine?TestAssemblyLine->WheelCell.Get():nullptr;
+    if(W)
+    {
+        const FWheelEvaluationSnapshot Assessment=W->GetEvaluationSnapshot();
+        const TCHAR* Control=Assessment.Control==EWheelControlAssessment::Completed?TEXT("완료")
+            :Assessment.Control==EWheelControlAssessment::Running?TEXT("진행 중")
+            :Assessment.Control==EWheelControlAssessment::Failed?TEXT("실패·중단"):TEXT("대기");
+        const TCHAR* Geometry=Assessment.DemoGeometry==EWheelQualityAssessment::DemoGeometryPassed?TEXT("시연 기하 검사 통과")
+            :Assessment.DemoGeometry==EWheelQualityAssessment::DemoGeometryFailed?TEXT("시연 기하 검사 실패"):TEXT("미평가");
+        Out+=FString::Printf(TEXT("휠 제어 결과: %s\n휠 기하 검사: %s\n물리적 체결 품질: 미평가\n모델 상태: %s\n"),
+            Control,Geometry,Assessment.Model==EWheelModelAssessment::InvalidSetup?TEXT("필수 설비 연결 무효"):TEXT("교육용 간소화 모델 · 물리 검증 미완료"));
+    }
     if(W)for(const auto& S:FactoryTasks::Catalog())if(S.WheelIndex>=0)
     {const int I=S.WheelIndex;const bool Done=W->FastenedWheels.IsValidIndex(I)&&W->FastenedWheels[I];
         Out+=S.Label+(Done&&W->MountPositionErrorMm.IsValidIndex(I)?FString::Printf(TEXT(" · 장착 / %.2fmm\n"),W->MountPositionErrorMm[I]):TEXT(" · 아직 장착되지 않음\n"));}
